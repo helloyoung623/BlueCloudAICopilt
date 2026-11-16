@@ -72,6 +72,38 @@ Use `src/app/components/operation-menu.tsx` for operation-menu positioning.
 * Keep menus within the viewport with 8px edge padding and scrolling when needed.
   Hover-triggered submenus must stay open while the pointer crosses the gap.
 
+## Navigation typography
+
+Primary sidebar navigation uses the same `"PingFang SC", sans-serif` font family,
+14px font size, and 22px line height in both states. Selection changes weight
+from 400 to 500 and preserves the existing selected background; do not switch
+font-file aliases or increase the size.
+
+## Library prototype
+
+The library uses in-memory example files, not backend storage. Format filters
+are multi-select; time filters are exclusive. Clicking an active recent-period
+option clears it. Custom ranges apply immediately after choosing both endpoints.
+Reopening the filter shows the range as `yyyy.M.d ~ yyyy.M.d` with a checkmark;
+hover or keyboard focus replaces the checkmark with edit and clear actions.
+Clearing the range preserves format filters. Do not add filter chips.
+Filter options keep the same font family, 14px size, and 22px line height in
+both states; selection changes only weight from 400 to 500. Do not swap the
+Regular/Medium font-file aliases because their glyph metrics differ.
+
+The centered content is capped at 960px. Source, update time, and size columns
+are each 168px; filename takes the remainder. Based on the list container width,
+hide size below 824px, update time below 656px, and source below 488px; restore
+in reverse order at the same thresholds. Keep the filename single-line with an
+ellipsis and a full-name tooltip. Row actions overlay the rightmost visible
+column rather than reserving another column. Use explicit library typography,
+including in portals, so global button weights do not override the design.
+
+Date pickers use 288px month panels: show two or one beside the filter when
+space permits, otherwise use an inline back-navigation view. Below a 600px
+viewport, use a single-month bottom sheet. Closing an unfinished selection
+discards its draft and preserves the previously applied range.
+
 ## Send button
 
 Home, conversations, and project tasks share `ChatInput` with the same unshadowed

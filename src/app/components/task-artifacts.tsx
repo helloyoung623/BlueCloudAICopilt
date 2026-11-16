@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { OperationMenu } from "./operation-menu";
+import { cn } from "./ui/utils";
 
 export type TaskArtifactExtension = "pdf" | "docx" | "xlsx" | "pptx" | "html" | "eml";
 export type TaskArtifact = { id: string; name: string; extension: TaskArtifactExtension; size: string };
@@ -25,7 +26,7 @@ const ARTIFACT_LABELS: Record<TaskArtifactExtension, string> = {
   html: "HTML",
 };
 
-export function SmallTip({ label, side = "bottom", children }: { label: string; side?: "top" | "bottom"; children: ReactNode }) {
+export function SmallTip({ label, side = "bottom", children, className }: { label: string; side?: "top" | "bottom"; children: ReactNode; className?: string }) {
   return (
     <TooltipPrimitive.Provider delayDuration={200}>
       <TooltipPrimitive.Root>
@@ -35,7 +36,7 @@ export function SmallTip({ label, side = "bottom", children }: { label: string; 
             side={side}
             sideOffset={4}
             collisionPadding={8}
-            className="z-[500] rounded-[4px] bg-[#181818] px-[8px] py-[4px] font-['PingFang_SC:Regular'] text-[12px] font-normal leading-[20px] tracking-[0.012px] whitespace-nowrap text-[rgba(255,255,255,0.98)] drop-shadow-[0_0_6px_rgba(0,0,0,0.08)]"
+            className={cn("z-[500] rounded-[4px] bg-[#181818] px-[8px] py-[4px] font-['PingFang_SC:Regular'] text-[12px] font-normal leading-[20px] tracking-[0.012px] whitespace-nowrap text-[rgba(255,255,255,0.98)] drop-shadow-[0_0_6px_rgba(0,0,0,0.08)]", className)}
           >
             {label}
             <TooltipPrimitive.Arrow asChild width={27} height={4}>

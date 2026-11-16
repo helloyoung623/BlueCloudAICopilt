@@ -31,6 +31,7 @@ import type { ProjectFiles } from "./components/project-files";
 import { Popover, PopoverAnchor } from "./components/ui/popover";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
+import { LibraryView } from "./components/library-view";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -1298,7 +1299,7 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onNewProjectTask, projectListOpen, automationOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, mobile = false }: {
+function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, mobile = false }: {
   onSearch: () => void;
   mobile?: boolean;
   history: HistoryItem[];
@@ -1310,9 +1311,11 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   onOpenProjects: () => void;
   onOpenAutomation: () => void;
   onOpenArchive: () => void;
+  onOpenLibrary: () => void;
   onNewProjectTask: (projectId: number) => void;
   projectListOpen: boolean;
   automationOpen: boolean;
+  libraryOpen: boolean;
   activeId: number | null;
   activeProjectId: number | null;
   onSelect: (id: number) => void;
@@ -1426,17 +1429,17 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           type="button"
           onClick={onNewChat}
           className={`absolute left-[12px] top-[84px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
-            !projectListOpen && !automationOpen && activeId === null && activeProjectId === null ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
+            !projectListOpen && !automationOpen && !libraryOpen && activeId === null && activeProjectId === null ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
           }`}
         >
           <span className="relative size-[16px] shrink-0">
             <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/a4798.svg" />
           </span>
           <span
-            className={`min-w-px flex-1 truncate text-left text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${
-              !projectListOpen && !automationOpen && activeId === null && activeProjectId === null
-                ? "font-['PingFang_SC:Medium'] font-semibold"
-                : "font-['PingFang_SC:Regular'] font-normal"
+            className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${
+              !projectListOpen && !automationOpen && !libraryOpen && activeId === null && activeProjectId === null
+                ? "font-medium"
+                : "font-normal"
             }`}
           >
             新任务
@@ -1453,7 +1456,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           <span className="relative size-[16px] shrink-0">
             <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/6bcaa.svg" />
           </span>
-          <span className={`min-w-px flex-1 truncate text-left text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${projectListOpen ? "font-['PingFang_SC:Medium'] font-semibold" : "font-['PingFang_SC:Regular'] font-normal"}`}>
+          <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${projectListOpen ? "font-medium" : "font-normal"}`}>
             项目
           </span>
         </button>
@@ -1468,19 +1471,20 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           <span className="relative size-[16px] shrink-0">
             <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/automation-nav-clock.svg" />
           </span>
-          <span className={`min-w-px flex-1 truncate text-left text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${automationOpen ? "font-['PingFang_SC:Medium'] font-semibold" : "font-['PingFang_SC:Regular'] font-normal"}`}>
+          <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${automationOpen ? "font-medium" : "font-normal"}`}>
             自动化任务
           </span>
         </button>
         {/* 资料库 —— Figma 9625:49728：y=204 */}
         <button
           type="button"
-          className="absolute left-[12px] top-[204px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors hover:bg-[#f2f2f2]"
+          onClick={onOpenLibrary}
+          className={`absolute left-[12px] top-[204px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${libraryOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"}`}
         >
           <span className="relative size-[16px] shrink-0">
             <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/f7258.svg" />
           </span>
-          <span className="min-w-px flex-1 truncate text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+          <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${libraryOpen ? "font-medium" : "font-normal"}`}>
             资料库
           </span>
         </button>
@@ -1492,7 +1496,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           <span className="relative size-[16px] shrink-0">
             <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/bacdf.svg" />
           </span>
-          <span className="min-w-px flex-1 truncate text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+          <span className="min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
             会议助手
           </span>
         </button>
@@ -4113,6 +4117,7 @@ export default function App() {
   const [projectListOpen, setProjectListOpen] = useState(false);
   const [automationOpen, setAutomationOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [activeHistoryId, setActiveHistoryId] = useState<number | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -4258,6 +4263,7 @@ export default function App() {
     setStage("idle");
     setProjectListOpen(false);
     setAutomationOpen(false);
+    setLibraryOpen(false);
     clearDraftAttachments(true);
     setInput("");
     setActiveHistoryId(id);
@@ -4276,6 +4282,7 @@ export default function App() {
     setStage("idle");
     setProjectListOpen(false);
     setAutomationOpen(false);
+    setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(id);
     setSelectedProjectId(null);
@@ -4385,6 +4392,7 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(false);
     setArchiveOpen(false);
+    setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(null);
     setSelectedProjectId(null);
@@ -4400,6 +4408,7 @@ export default function App() {
     setProjectListOpen(true);
     setAutomationOpen(false);
     setArchiveOpen(false);
+    setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(null);
     setSelectedProjectId(null);
@@ -4416,6 +4425,7 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(true);
     setArchiveOpen(false);
+    setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(null);
     setSelectedProjectId(null);
@@ -4432,9 +4442,14 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(false);
     setArchiveOpen(true);
+    setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(null);
     setSelectedProjectId(null);
+  };
+  const handleOpenLibrary = () => {
+    handleNewChat();
+    setLibraryOpen(true);
   };
   const handleNewProjectTask = (projectId: number) => {
     handleNewChat();
@@ -4480,9 +4495,11 @@ export default function App() {
           onOpenProjects={handleOpenProjects}
           onOpenAutomation={handleOpenAutomation}
           onOpenArchive={handleOpenArchive}
+          onOpenLibrary={handleOpenLibrary}
           onNewProjectTask={handleNewProjectTask}
           projectListOpen={projectListOpen}
           automationOpen={automationOpen}
+          libraryOpen={libraryOpen}
           activeId={activeHistoryId}
           activeProjectId={activeProjectId}
           onSelect={handleSelectHistory}
@@ -4569,7 +4586,10 @@ export default function App() {
           onSidebarToggle={() => setSidebarOpen(o => !o)}
           onNewChat={messages.length > 0 || activeProject !== null ? handleNewChat : undefined}
         />
-        {automationOpen
+        <div className={libraryOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+          <LibraryView active={libraryOpen} />
+        </div>
+        {libraryOpen ? null : automationOpen
           ? <AutomationListView />
           : archiveOpen
           ? <ArchiveView
