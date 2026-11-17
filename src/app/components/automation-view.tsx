@@ -13,27 +13,6 @@ import { ListPageHeader } from "./list-page-header";
 const AUTOMATION_TABS = ["已启用", "已暂停", "已结束"] as const;
 type AutomationTab = (typeof AUTOMATION_TABS)[number];
 
-// 自动化任务数据（Figma 9625:49728 列表项 / 9872:63167 已暂停态）
-type AutomationTask = {
-  id: string;
-  title: string;
-  cycle: string;
-  description: string;
-  status: AutomationTab;
-};
-const INITIAL_TASKS: AutomationTask[] = [
-  { id: "daily-report", title: "工作日报推送", cycle: "每天", description: "每个工作日晚自动生成并推送日报", status: "已启用" },
-  { id: "brand-monitor", title: "品牌舆情监控", cycle: "每天", description: "每天理清品牌舆情并预警", status: "已启用" },
-];
-
-// 「更多」下拉菜单项（Figma 9625:49728 DropdownMenu #9709:63275）
-const TASK_OPERATIONS = [
-  { label: "编辑", icon: "automation-menu-edit.svg" },
-  { label: "立即执行", icon: "automation-menu-refresh.svg" },
-  { label: "执行记录", icon: "automation-menu-time.svg" },
-  { label: "删除", icon: "automation-menu-delete.svg" },
-] as const;
-
 // 周期下拉（Figma 9773:69719 DropdownMenu 更新版）：
 // 仅一次 → 分隔线 → 每天/每周/每月/每年 → 分隔线 → 自定义
 const CYCLES = ["仅一次", "每天", "每周", "每月", "每年", "自定义"] as const;
@@ -46,6 +25,178 @@ const CUSTOM_UNITS = ["分", "天", "周", "月"] as const;
 type CustomUnit = (typeof CUSTOM_UNITS)[number];
 
 const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"] as const;
+
+// ---------------------------------------------------------------------------
+// 排期条件（弹窗与右侧详情栏共用）
+// state 化后：创建出来的任务能把用户填的周期条件原样带到列表与详情栏里。
+// ---------------------------------------------------------------------------
+export type ScheduleState = {
+  cycle: Cycle;
+  weekday: string;
+  monthDay: string;
+  yearMonth: number;
+  yearDay: string;
+  time: string;
+  customInterval: number;
+  customUnit: CustomUnit;
+  customMonthDay: string;
+};
+const DEFAULT_SCHEDULE: ScheduleState = {
+  cycle: "每天",
+  weekday: "周六",
+  monthDay: "15号",
+  yearMonth: 11,
+  yearDay: "5号",
+  time: "18:00",
+  customInterval: 1,
+  customUnit: "天",
+  customMonthDay: "1号",
+};
+
+// 把排期条件压成卡片副标题里的「周期 · 说明」两段文本
+export function summarizeSchedule(schedule: ScheduleState): { cycle: string; description: string } {
+  const { time } = schedule;
+  switch (schedule.cycle) {
+    case "仅一次":
+      return { cycle: schedule.cycle, description: `${schedule.yearMonth}月${schedule.yearDay} ${time}` };
+    case "每周":
+      return { cycle: schedule.cycle, description: `${schedule.weekday} ${time}` };
+    case "每月":
+      return { cycle: schedule.cycle, description: `${schedule.monthDay} ${time}` };
+    case "每年":
+      return { cycle: schedule.cycle, description: `${schedule.yearMonth}月${schedule.yearDay} ${time}` };
+    case "自定义": {
+      const every = `隔 ${schedule.customInterval} ${schedule.customUnit}`;
+      if (schedule.customUnit === "周") return { cycle: schedule.cycle, description: `${every} ${schedule.weekday} ${time}` };
+      if (schedule.customUnit === "月") return { cycle: schedule.cycle, description: `${every} ${schedule.customMonthDay} ${time}` };
+      return { cycle: schedule.cycle, description: `${every} ${time}` };
+    }
+    default:
+      return { cycle: schedule.cycle, description: `${time} 自动执行` };
+  }
+}
+
+// 把排期条件说成人话，用于新会话里 AI 的回复文案（「每天 18:00」「每周六 18:00」）
+export function describeSchedule(schedule: ScheduleState): string {
+  const { time } = schedule;
+  switch (schedule.cycle) {
+    case "每天":
+      return `每天 ${time}`;
+    case "每周":
+      return `每${schedule.weekday} ${time}`;
+    case "每月":
+      return `每月${schedule.monthDay} ${time}`;
+    case "每年":
+      return `每年${schedule.yearMonth}月${schedule.yearDay} ${time}`;
+    case "仅一次":
+      return `${schedule.yearMonth}月${schedule.yearDay} ${time}`;
+    case "自定义": {
+      const every = `每隔 ${schedule.customInterval} ${schedule.customUnit}`;
+      if (schedule.customUnit === "周") return `${every}的${schedule.weekday} ${time}`;
+      if (schedule.customUnit === "月") return `${every}的${schedule.customMonthDay} ${time}`;
+      return `${every} ${time}`;
+    }
+    default:
+      return time;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 任务图标：不是固定一个文档图标，而是按任务语义去图标库（icons.kubai.design）
+// 里分词检索匹配 —— 这里把可用的图标名与其中文/英文近义词做成词表，
+// 创建任务时用标题 + 「就」的内容做分词打分，命中词最多的图标胜出。
+// 图标文件已离线放在 public/assets/kubai/{name}.svg（统一 8B5CF6 紫色）。
+// ---------------------------------------------------------------------------
+export const AUTOMATION_ICONS = {
+  newspaper: ["早报", "晚报", "资讯", "新闻", "快报", "情报", "研报", "news", "daily", "digest"],
+  "file-text": ["文档", "报告", "总结", "周报", "日报", "纪要", "文案", "撰写", "写作", "doc", "report", "summary", "write"],
+  "file-spreadsheet": ["表格", "台账", "清单", "明细", "excel", "sheet", "csv", "表格整理"],
+  "chart-bar": ["统计", "数据", "报表", "排行", "对比", "报表分析", "chart", "stats", "metric"],
+  "chart-line": ["趋势", "分析", "增长", "走势", "复盘", "经营", "trend", "analytics", "growth"],
+  radar: ["监控", "监测", "舆情", "预警", "盯", "追踪", "风控", "monitor", "alert", "watch", "radar"],
+  eye: ["关注", "观察", "关注度", "曝光", "口碑", "review", "observe"],
+  mail: ["邮件", "邮箱", "收件箱", "发信", "推送邮件", "email", "mail", "inbox"],
+  calendar: ["日程", "会议", "排期", "日历", "预约", "calendar", "meeting", "schedule"],
+  clock: ["定时", "提醒", "周期", "打卡", "催办", "reminder", "cron", "timer"],
+  bell: ["通知", "提醒", "告警", "铃", "notification", "notice", "bell"],
+  search: ["搜索", "调研", "竞品", "检索", "查找", "扒", "search", "research", "competitor"],
+  globe: ["网站", "全球", "海外", "国际化", "域名", "web", "global", "site"],
+  database: ["数据库", "知识库", "资料库", "归档", "沉淀", "database", "knowledge", "archive"],
+  monitor: ["看板", "仪表盘", "大屏", "dashboard", "panel", "screen"],
+  "chart-pie": ["占比", "份额", "结构", "分布", "share", "ratio"],
+} as const;
+
+export type AutomationIcon = keyof typeof AUTOMATION_ICONS;
+
+// 分词匹配：中文按词表最长命中，英文按单词边界命中；同分时取词表里更靠前的图标
+export function resolveAutomationIcon(text: string): AutomationIcon {
+  const source = text.toLowerCase();
+  let bestIcon: AutomationIcon = "file-text";
+  let bestScore = 0;
+  (Object.keys(AUTOMATION_ICONS) as AutomationIcon[]).forEach(icon => {
+    let score = 0;
+    for (const keyword of AUTOMATION_ICONS[icon]) {
+      const word = keyword.toLowerCase();
+      if (!word) continue;
+      if (/^[a-z0-9 -]+$/.test(word)) {
+        // 英文关键词按单词匹配，避免 daily 命中 day
+        if (new RegExp(`(^|[^a-z])${word}([^a-z]|$)`).test(source)) score += word.length * 2;
+      } else if (source.includes(word)) {
+        score += word.length; // 中文按命中词长度加权，长词更具体
+      }
+    }
+    if (score > bestScore) { bestScore = score; bestIcon = icon; }
+  });
+  return bestIcon;
+}
+
+export function automationIconSrc(icon: AutomationIcon | string): string {
+  return `/assets/kubai/${icon}.svg`;
+}
+
+// 自动化任务数据（Figma 9625:49728 列表项 / 9872:63167 已暂停态 / 9787:71282 右侧详情）
+export type AutomationTask = {
+  id: string;
+  title: string;
+  cycle: string;
+  description: string;
+  status: AutomationTab;
+  // 详情栏（9787:71282）展示的完整条件，新建弹窗里填什么就存什么
+  schedule: ScheduleState;
+  prompt: string;
+  // 语义匹配出来的图标（icons.kubai.design），随任务一起存下来保证稳定
+  icon: AutomationIcon;
+};
+export const INITIAL_TASKS: AutomationTask[] = [
+  {
+    id: "daily-report",
+    title: "工作日报推送",
+    cycle: "每天",
+    description: "每个工作日晚自动生成并推送日报",
+    status: "已启用",
+    schedule: { ...DEFAULT_SCHEDULE },
+    prompt: "每个工作日晚自动生成并推送日报",
+    icon: resolveAutomationIcon("工作日报推送 每个工作日晚自动生成并推送日报"),
+  },
+  {
+    id: "brand-monitor",
+    title: "品牌舆情监控",
+    cycle: "每天",
+    description: "每天理清品牌舆情并预警",
+    status: "已启用",
+    schedule: { ...DEFAULT_SCHEDULE },
+    prompt: "每天理清品牌舆情并预警",
+    icon: resolveAutomationIcon("品牌舆情监控 每天理清品牌舆情并预警"),
+  },
+];
+
+// 「更多」下拉菜单项（Figma 9625:49728 DropdownMenu #9709:63275）
+const TASK_OPERATIONS = [
+  { label: "编辑", icon: "automation-menu-edit.svg" },
+  { label: "立即执行", icon: "automation-menu-refresh.svg" },
+  { label: "执行记录", icon: "automation-menu-time.svg" },
+  { label: "删除", icon: "automation-menu-delete.svg" },
+] as const;
 
 // 高级设置（Figma 9783:70644 / 9904:38056 / 9904:38242）
 // 结束时间：三个竖排单选（永不 / 指定时间 / 重复），后两项选中时行内追加日期框、步进器
@@ -311,31 +462,184 @@ function TimezoneSelect({ value, onChange }: { value: string; onChange: (value: 
 }
 
 // ============================================================================
-// 新建自动化任务弹窗（Figma 9665 / 9782 / 9783 / 9785 Modal 720px）
+// 排期条件 chip 组（弹窗 9665:49114 与右侧详情栏 9787:71282 共用）
+//   分/天 → 自定义 隔 1 天 于 18:00（9891:71448）
+//   周    → 自定义 隔 1 周 于 [周六] 的 18:00（9891:72000）
+//   月    → 自定义 隔 1 月 于 [1号]  的 18:00（9891:72961）
 // ============================================================================
-function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const [cycle, setCycle] = useState<Cycle>("每天");
-  const [weekday, setWeekday] = useState<string>("周六");
-  const [monthDay, setMonthDay] = useState<string>("15号");
-  const [yearMonth, setYearMonth] = useState<number>(11);
-  const [yearDay, setYearDay] = useState<string>("5号");
-  const [time, setTime] = useState<string>("18:00");
-  // 自定义周期：隔 N 个单位（分/天/周/月）于某时间
-  // Figma 9891:72000（单位=周）→ 隔 1 周 于 周六 的 18:00
-  // Figma 9891:72961（单位=月）→ 隔 1 月 于 1号 的 18:00
-  // Figma 9891:71448（单位=天）→ 隔 1 天 于 18:00
-  const [customInterval, setCustomInterval] = useState<number>(1);
-  const [customUnit, setCustomUnit] = useState<CustomUnit>("天");
-  // 自定义「月」用的日期（设计稿默认 1号；与「每月」周期的 15号 互不影响）
-  const [customMonthDay, setCustomMonthDay] = useState<string>("1号");
-  const [prompt, setPrompt] = useState("");
-  // 高级设置（Figma 9783:70644）：默认收起，展开后为 结束时间 / 执行方式 / 时区
-  const [advOpen, setAdvOpen] = useState(false);
+function ScheduleEditor({ schedule, onChange }: {
+  schedule: ScheduleState;
+  onChange: (patch: Partial<ScheduleState>) => void;
+}) {
+  const muted = "shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]";
+  const cycle = schedule.cycle;
+  const timeChip = <TimeChip value={schedule.time} onChange={time => onChange({ time })} />;
+  // 「的 + 时间」不可拆成两组：320 宽的详情栏折行时不会把「的」单独留在上一行
+  const tail = (withDe: boolean) => (
+    <span className="flex shrink-0 items-center gap-[8px]">
+      {withDe && <span className={muted}>的</span>}
+      {timeChip}
+    </span>
+  );
+  return (
+    <>
+      {/* 周期 chip 统一带 down-small 箭头（Figma 9665:49114 / 9698:62714） */}
+      <SelectChip
+        options={CYCLES}
+        value={cycle}
+        onChange={value => onChange({ cycle: value as Cycle })}
+        width={120}
+        dividerAfter={CYCLE_DIVIDERS}
+        arrow
+      />
+      {/* 「自定义」的「于」跟在单位 chip 之后，其余周期「于」紧跟周期 chip */}
+      {cycle !== "自定义" && <span className={muted}>于</span>}
+
+      {cycle === "每天" && timeChip}
+
+      {cycle === "每周" && <>
+        <SelectChip options={WEEKDAYS} value={schedule.weekday} onChange={weekday => onChange({ weekday })} width={120} />
+        {tail(true)}
+      </>}
+
+      {cycle === "每月" && <>
+        {/* 31 天单列长列表：固定在下方、最高 320px 可滚动 */}
+        <SelectChip options={DAYS} value={schedule.monthDay} onChange={monthDay => onChange({ monthDay })} width={120} forceBelow maxHeight={320} />
+        {tail(true)}
+      </>}
+
+      {(cycle === "每年" || cycle === "仅一次") && <>
+        <YearDateChip
+          month={schedule.yearMonth}
+          day={schedule.yearDay}
+          onMonthChange={yearMonth => onChange({ yearMonth })}
+          onDayChange={yearDay => onChange({ yearDay })}
+        />
+        {tail(true)}
+      </>}
+
+      {cycle === "自定义" && <>
+        <span className={muted}>隔</span>
+        <NumberStepper value={schedule.customInterval} onChange={customInterval => onChange({ customInterval })} />
+        <SelectChip
+          options={CUSTOM_UNITS}
+          value={schedule.customUnit}
+          onChange={value => onChange({ customUnit: value as CustomUnit })}
+          width={88}
+          arrow
+        />
+        <span className={muted}>于</span>
+        {/* 周：追加星期 chip；月：追加日期 chip（31 天列表固定下方、最高 320 可滚动） */}
+        {schedule.customUnit === "周" && <SelectChip options={WEEKDAYS} value={schedule.weekday} onChange={weekday => onChange({ weekday })} width={120} />}
+        {schedule.customUnit === "月" && <SelectChip options={DAYS} value={schedule.customMonthDay} onChange={customMonthDay => onChange({ customMonthDay })} width={120} forceBelow maxHeight={320} />}
+        {tail(schedule.customUnit === "周" || schedule.customUnit === "月")}
+      </>}
+    </>
+  );
+}
+
+// ============================================================================
+// 高级设置（Figma 9783:70644 / 9904:38056 / 9904:38242）
+// 结束时间（三选一）+ 执行方式（复选框）+ 时区下拉；弹窗与详情栏共用
+// ============================================================================
+function AdvancedSettings() {
   const [endMode, setEndMode] = useState<EndMode>("永不");
   const [endDate, setEndDate] = useState("2025-07-08");
   const [repeatTimes, setRepeatTimes] = useState<number>(10);
   const [newSession, setNewSession] = useState(false);
   const [timezone, setTimezone] = useState<string>(TIMEZONES[0]);
+  return (
+    <div className="flex w-full flex-col gap-[24px]">
+      {/* 结束时间：竖排单选（Figma 9904:38083 Radio-Group：Style=Vertical，行高 22、gap 8）。
+          日期框 / 步进器在设计稿里都是「绝对定位」的子节点（x=89，y=25 / y=55，尺寸 136/120 × 32），
+          不参与排版，所以切换选项时三行位置完全不动（无抖动），两者左边线严格同一条 x 轴。 */}
+      <div className="flex w-full flex-col gap-[8px] px-[12px]">
+        <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">结束时间</span>
+        <div className="relative flex w-fit flex-col gap-[8px] self-start">
+          {END_MODES.map(mode => (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={endMode === mode}
+              onClick={() => setEndMode(mode)}
+              className="flex h-[22px] cursor-pointer items-center gap-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]"
+            >
+              <img
+                src={endMode === mode ? "/assets/automation-radio-on.svg" : "/assets/automation-radio-off.svg"}
+                alt=""
+                className="size-[16px] shrink-0"
+              />
+              <span className="whitespace-nowrap">{mode}</span>
+            </button>
+          ))}
+
+          {/* Figma 9904:38096：指定时间 → 136×32 日期框（#E6E6E6 描边，r4），绝对值 x=89 / y=25 */}
+          {endMode === "指定时间" && (
+            <label className="absolute left-[89px] top-[25px] flex h-[32px] w-[136px] cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#e6e6e6] px-[8px]">
+              <img src="/assets/automation-date-range.svg" alt="" className="size-[16px] shrink-0" />
+              <input
+                type="date"
+                value={endDate}
+                onChange={event => setEndDate(event.target.value)}
+                className="w-full min-w-0 bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none [&::-webkit-calendar-picker-indicator]:hidden [&::-webkit-date-and-time-value]:text-left [&::-webkit-datetime-edit]:p-0"
+              />
+            </label>
+          )}
+
+          {/* Figma 9904:38428：重复 → 120 宽步进器 + 「次后」后缀，绝对值 x=89 / y=55 */}
+          {endMode === "重复" && (
+            <div className="absolute left-[89px] top-[55px]">
+              <NumberStepper value={repeatTimes} onChange={setRepeatTimes} width={120} suffix="次后" min={1} max={99} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 执行方式：复选框「每次执行都开启新会话」 */}
+      <div className="flex w-full flex-col gap-[8px] px-[12px]">
+        <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">执行方式</span>
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={newSession}
+          onClick={() => setNewSession(current => !current)}
+          className="flex w-fit cursor-pointer items-center gap-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]"
+        >
+          {newSession ? (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="size-[16px] shrink-0" aria-hidden>
+              <rect x="2" y="2" width="12" height="12" rx="3" fill="#1E63F5" />
+              <path d="M5 8.2L7.1 10.3L11 6.4" stroke="#FFFFFF" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          ) : (
+            <img src="/assets/automation-checkbox-off.svg" alt="" className="size-[16px] shrink-0" />
+          )}
+          <span className="whitespace-nowrap">每次执行都开启新会话</span>
+        </button>
+      </div>
+
+      {/* 时区：256×32 下拉（#E6E6E6 描边） */}
+      <div className="flex w-full flex-col gap-[8px] px-[12px]">
+        <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">时区</span>
+        <TimezoneSelect value={timezone} onChange={setTimezone} />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// 新建自动化任务弹窗（Figma 9665 / 9782 / 9783 / 9785 Modal 720px）
+// ============================================================================
+function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  // 点「创建」发起一个新会话，由 AI 创建这条任务（Figma 9625:49728）
+  onCreate: (schedule: ScheduleState, prompt: string) => void;
+}) {
+  const [schedule, setSchedule] = useState<ScheduleState>(DEFAULT_SCHEDULE);
+  const [prompt, setPrompt] = useState("");
+  // 高级设置（Figma 9783:70644）：默认收起
+  const [advOpen, setAdvOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -344,56 +648,7 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
     }
   }, [open]);
 
-  // 根据周期渲染「于」之后的条件 chip 组合，严格对应 5 个 Figma 节点
-  const renderCondition = () => {
-    switch (cycle) {
-      case "每天":
-        return <TimeChip value={time} onChange={setTime} />;
-      case "每周":
-        return <>
-          <SelectChip options={WEEKDAYS} value={weekday} onChange={setWeekday} width={120} />
-          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">的</span>
-          <TimeChip value={time} onChange={setTime} />
-        </>;
-      case "每月":
-        return <>
-          {/* 31 天单列长列表：固定在下方、最高 320px 可滚动（用户要求） */}
-          <SelectChip options={DAYS} value={monthDay} onChange={setMonthDay} width={120} forceBelow maxHeight={320} />
-          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">的</span>
-          <TimeChip value={time} onChange={setTime} />
-        </>;
-      case "每年":
-        return <>
-          <YearDateChip month={yearMonth} day={yearDay} onMonthChange={setYearMonth} onDayChange={setYearDay} />
-          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">的</span>
-          <TimeChip value={time} onChange={setTime} />
-        </>;
-      case "仅一次":
-        return <>
-          <YearDateChip month={yearMonth} day={yearDay} onMonthChange={setYearMonth} onDayChange={setYearDay} />
-          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">的</span>
-          <TimeChip value={time} onChange={setTime} />
-        </>;
-      case "自定义":
-        // 设计稿三种单位态：
-        //   分 / 天 → 自定义 隔 1 天 于 18:00（9891:71448）
-        //   周     → 自定义 隔 1 周 于 [周六] 的 18:00（9891:72000）
-        //   月     → 自定义 隔 1 月 于 [1号]  的 18:00（9891:72961）
-        return <div className="flex items-center gap-[8px]">
-          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">隔</span>
-          <NumberStepper value={customInterval} onChange={setCustomInterval} />
-          <SelectChip options={CUSTOM_UNITS} value={customUnit} onChange={value => setCustomUnit(value as CustomUnit)} width={88} arrow />
-          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">于</span>
-          {/* 周：追加班星期 chip；月：追加日期 chip（31 天列表固定下方、最高 320 可滚动） */}
-          {customUnit === "周" && <SelectChip options={WEEKDAYS} value={weekday} onChange={setWeekday} width={120} />}
-          {customUnit === "月" && <SelectChip options={DAYS} value={customMonthDay} onChange={setCustomMonthDay} width={120} forceBelow maxHeight={320} />}
-          {(customUnit === "周" || customUnit === "月") && (
-            <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">的</span>
-          )}
-          <TimeChip value={time} onChange={setTime} />
-        </div>;
-    }
-  };
+  const patchSchedule = (patch: Partial<ScheduleState>) => setSchedule(current => ({ ...current, ...patch }));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -428,13 +683,7 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
             <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">当</span>
             <div className="flex min-h-[40px] w-full flex-wrap items-center gap-[8px] rounded-[8px] border border-[#e6e6e6] bg-white px-[12px] py-[8px]">
               <img src="/assets/automation-time-range.svg" alt="" className="size-[16px] shrink-0" />
-              {/* Figma 9665:49114 9704:62909：周期 chip 统一带 down-small 箭头 */}
-              <SelectChip options={CYCLES} value={cycle} onChange={value => setCycle(value as Cycle)} width={120} dividerAfter={CYCLE_DIVIDERS} arrow />
-              {/* 「自定义」的「于」在单位 chip 之后（见 renderCondition），此处不再重复渲染 */}
-              {cycle !== "自定义" && (
-                <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">于</span>
-              )}
-              {renderCondition()}
+              <ScheduleEditor schedule={schedule} onChange={patchSchedule} />
             </div>
           </div>
 
@@ -480,83 +729,7 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
             </button>
           </div>
 
-          {advOpen && (
-            <>
-              {/* 结束时间：竖排单选（Figma 9904:38083 Radio-Group：Style=Vertical，行高 22、gap 8）。
-                  日期框 / 步进器在设计稿里都是「绝对定位」的子节点（x=89，y=25 / y=55，尺寸 136/120 × 32），
-                  不参与排版，所以切换选项时三行位置完全不动（无抖动），两者左边线严格同一条 x 轴。 */}
-              <div className="flex w-full flex-col gap-[8px] px-[12px]">
-                <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">结束时间</span>
-                <div className="relative flex w-fit flex-col gap-[8px] self-start">
-                  {END_MODES.map(mode => (
-                    <button
-                      key={mode}
-                      type="button"
-                      role="radio"
-                      aria-checked={endMode === mode}
-                      onClick={() => setEndMode(mode)}
-                      className="flex h-[22px] cursor-pointer items-center gap-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]"
-                    >
-                      <img
-                        src={endMode === mode ? "/assets/automation-radio-on.svg" : "/assets/automation-radio-off.svg"}
-                        alt=""
-                        className="size-[16px] shrink-0"
-                      />
-                      <span className="whitespace-nowrap">{mode}</span>
-                    </button>
-                  ))}
-
-                  {/* Figma 9904:38096：指定时间 → 136×32 日期框（#E6E6E6 描边，r4），绝对值 x=89 / y=25 */}
-                  {endMode === "指定时间" && (
-                    <label className="absolute left-[89px] top-[25px] flex h-[32px] w-[136px] cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#e6e6e6] px-[8px]">
-                      <img src="/assets/automation-date-range.svg" alt="" className="size-[16px] shrink-0" />
-                      <input
-                        type="date"
-                        value={endDate}
-                        onChange={event => setEndDate(event.target.value)}
-                        className="w-full min-w-0 bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none [&::-webkit-calendar-picker-indicator]:hidden [&::-webkit-date-and-time-value]:text-left [&::-webkit-datetime-edit]:p-0"
-                      />
-                    </label>
-                  )}
-
-                  {/* Figma 9904:38428：重复 → 120 宽步进器 + 「次后」后缀，绝对值 x=89 / y=55 */}
-                  {endMode === "重复" && (
-                    <div className="absolute left-[89px] top-[55px]">
-                      <NumberStepper value={repeatTimes} onChange={setRepeatTimes} width={120} suffix="次后" min={1} max={99} />
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 执行方式：复选框「每次执行都开启新会话」 */}
-              <div className="flex w-full flex-col gap-[8px] px-[12px]">
-                <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">执行方式</span>
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={newSession}
-                  onClick={() => setNewSession(current => !current)}
-                  className="flex w-fit cursor-pointer items-center gap-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]"
-                >
-                  {newSession ? (
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="size-[16px] shrink-0" aria-hidden>
-                      <rect x="2" y="2" width="12" height="12" rx="3" fill="#1E63F5" />
-                      <path d="M5 8.2L7.1 10.3L11 6.4" stroke="#FFFFFF" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  ) : (
-                    <img src="/assets/automation-checkbox-off.svg" alt="" className="size-[16px] shrink-0" />
-                  )}
-                  <span className="whitespace-nowrap">每次执行都开启新会话</span>
-                </button>
-              </div>
-
-              {/* 时区：256×32 下拉（#E6E6E6 描边，r4） */}
-              <div className="flex w-full flex-col gap-[8px] px-[12px]">
-                <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">时区</span>
-                <TimezoneSelect value={timezone} onChange={setTimezone} />
-              </div>
-            </>
-          )}
+          {advOpen && <AdvancedSettings />}
         </div>
 
         {/* 操作区：padding 24px, flex-end, gap 24px, 上边框 */}
@@ -572,7 +745,7 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
           <button
             type="button"
             disabled={!prompt.trim()}
-            onClick={() => onOpenChange(false)}
+            onClick={() => { onCreate(schedule, prompt.trim()); onOpenChange(false); }}
             className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1] disabled:cursor-not-allowed disabled:bg-[#99c3ff] disabled:text-[rgba(255,255,255,0.55)] disabled:hover:bg-[#99c3ff]"
           >
             创建
@@ -634,20 +807,34 @@ function YearDateChip({ month, day, onMonthChange, onDayChange }: {
 // h≈48，圆角 8px，32px 文档图标 + 标题 Medium/T2 + 副标题 Regular/T2(0.6)。
 // hover：行背景 #F2F2F2，右侧浮现两个 32×32 图标按钮（暂停 / 更多）。
 // 点「更多」：弹出 192px DropdownMenu（编辑 / 立即执行 / 执行记录 / 删除）。
+// 点卡片本身：展开右侧自动化详情栏（Figma 9787:71282）。
 // ============================================================================
-function AutomationTaskCard({ task, onOperate }: {
+function AutomationTaskCard({ task, onOperate, onOpen, active }: {
   task: AutomationTask;
   onOperate: (label: string, task: AutomationTask) => void;
+  onOpen: (task: AutomationTask) => void;
+  active: boolean;
 }) {
   const [moreAnchor, setMoreAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(moreAnchor, setMoreAnchor);
 
   return (
     <div
-      className="group flex w-full items-center gap-[8px] rounded-[8px] p-[8px] transition-colors hover:bg-[#f2f2f2] data-[menu-open=true]:bg-[#f2f2f2]"
+      role="button"
+      tabIndex={0}
+      aria-pressed={active}
+      onClick={() => onOpen(task)}
+      onKeyDown={event => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onOpen(task);
+      }}
+      className="group flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] p-[8px] text-left transition-colors hover:bg-[#f2f2f2] data-[menu-open=true]:bg-[#f2f2f2] data-[active=true]:bg-[#f2f2f2]"
       data-menu-open={moreAnchor ? "true" : undefined}
+      data-active={active ? "true" : undefined}
     >
-      <img src="/assets/automation-card-icon.svg" alt="" className="size-[32px] shrink-0" />
+      {/* 图标按任务语义匹配（icons.kubai.design 分词检索），不再固定用文档图标 */}
+      <img src={automationIconSrc(task.icon)} alt="" className="size-[32px] shrink-0" />
       <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
         <span className="truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
           {task.title}
@@ -665,7 +852,10 @@ function AutomationTaskCard({ task, onOperate }: {
           type="button"
           aria-label={task.status === "已暂停" ? `启用 ${task.title}` : `暂停 ${task.title}`}
           title={task.status === "已暂停" ? "启用" : "暂停"}
-          onClick={() => onOperate(task.status === "已暂停" ? "启用" : "暂停", task)}
+          onClick={event => {
+            event.stopPropagation();
+            onOperate(task.status === "已暂停" ? "启用" : "暂停", task);
+          }}
           className="flex size-[32px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#e6e6e6]"
         >
           <img
@@ -678,7 +868,10 @@ function AutomationTaskCard({ task, onOperate }: {
           type="button"
           aria-label={`更多操作 ${task.title}`}
           title="更多"
-          onClick={event => setMoreAnchor(current => current ? null : event.currentTarget)}
+          onClick={event => {
+            event.stopPropagation();
+            setMoreAnchor(current => current ? null : event.currentTarget);
+          }}
           className="flex size-[32px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#e6e6e6]"
         >
           <img src="/assets/automation-more.svg" alt="" className="size-[20px]" />
@@ -699,7 +892,11 @@ function AutomationTaskCard({ task, onOperate }: {
               <button
                 key={operation.label}
                 type="button"
-                onClick={() => { setMoreAnchor(null); onOperate(operation.label, task); }}
+                onClick={event => {
+                  event.stopPropagation();
+                  setMoreAnchor(null);
+                  onOperate(operation.label, task);
+                }}
                 className="flex h-[40px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#f2f2f2]"
               >
                 <img src={`/assets/${operation.icon}`} alt="" className="size-[16px] shrink-0" />
@@ -726,13 +923,218 @@ function AutomationEmpty() {
 }
 
 // ============================================================================
+// 右侧自动化详情栏（Figma 9787:71282）
+// 宽 320，左侧 1px #F2F2F2 描边；header 48px（标题 + 暂停 + 更多 + 关闭）。
+// 内容：详情/运行记录 Tabs → 自动化任务名称 → 当（条件 chip 组）→ 就（Chat Input）→ 高级设置
+// ============================================================================
+const DETAIL_TABS = ["详情", "运行记录"] as const;
+type DetailTab = (typeof DETAIL_TABS)[number];
+
+export function AutomationDetailPanel({ task, onClose, onOperate, onChange }: {
+  task: AutomationTask;
+  onClose: () => void;
+  onOperate: (label: string, task: AutomationTask) => void;
+  onChange: (patch: Partial<AutomationTask>) => void;
+}) {
+  const [tab, setTab] = useState<DetailTab>("详情");
+  const [advOpen, setAdvOpen] = useState(false);
+  const [moreAnchor, setMoreAnchor] = useState<HTMLButtonElement | null>(null);
+  useDismissOnOutside(moreAnchor, setMoreAnchor);
+
+  const label = "font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]";
+
+  return (
+    <aside
+      aria-label="自动化任务详情"
+      // 宽屏 320 常驻在右；<1024px 改为浮层（覆盖内容区、带投影），不挤压主列表
+      className="flex w-[320px] shrink-0 flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[1023px]:absolute max-[1023px]:inset-y-0 max-[1023px]:right-0 max-[1023px]:z-20 max-[1023px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"
+    >
+      {/* header：标题 + 暂停/运行中 + 更多 + 关闭（Figma 9897:2990） */}
+      <header className="flex h-[48px] shrink-0 items-center gap-[10px] border-b border-[#f2f2f2] px-[16px] py-[8px]">
+        <span className="min-w-0 flex-1 truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+          自动化任务
+        </span>
+        <button
+          type="button"
+          aria-label={task.status === "已暂停" ? "启用任务" : "暂停任务"}
+          title={task.status === "已暂停" ? "启用" : "暂停"}
+          onClick={() => onOperate(task.status === "已暂停" ? "启用" : "暂停", task)}
+          className="flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+        >
+          <img
+            src={task.status === "已暂停" ? "/assets/automation-start.svg" : "/assets/automation-pause.svg"}
+            alt=""
+            className="size-[20px]"
+          />
+        </button>
+        <button
+          type="button"
+          aria-label="更多操作"
+          title="更多"
+          onClick={event => setMoreAnchor(current => current ? null : event.currentTarget)}
+          className="flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+        >
+          <img src="/assets/automation-more.svg" alt="" className="size-[20px]" />
+        </button>
+        <button
+          type="button"
+          aria-label="关闭详情"
+          title="关闭"
+          onClick={onClose}
+          className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+        >
+          <img src="/assets/f802d.svg" alt="" className="size-[16px]" />
+        </button>
+
+        {moreAnchor && (
+          <OperationMenu
+            anchor={moreAnchor}
+            gap={8}
+            align="end"
+            className="flex w-[192px] flex-col rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+            onClick={event => event.stopPropagation()}
+            onPointerDown={event => event.stopPropagation()}
+          >
+            <div className="flex flex-col gap-[2px] py-[4px]">
+              {TASK_OPERATIONS.map(operation => (
+                <button
+                  key={operation.label}
+                  type="button"
+                  onClick={() => { setMoreAnchor(null); onOperate(operation.label, task); }}
+                  className="flex h-[40px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#f2f2f2]"
+                >
+                  <img src={`/assets/${operation.icon}`} alt="" className="size-[16px] shrink-0" />
+                  <span className="whitespace-nowrap">{operation.label}</span>
+                </button>
+              ))}
+            </div>
+          </OperationMenu>
+        )}
+      </header>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-[24px] overflow-y-auto px-[4px] pb-[24px] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[rgba(0,0,0,0.2)] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-[8px]">
+        {/* 详情 / 运行记录（Figma 9904:43410 Tag-2 Size=M） */}
+        <div className="flex shrink-0 items-center gap-[16px] px-[12px]">
+          {DETAIL_TABS.map(item => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setTab(item)}
+              aria-pressed={tab === item}
+              className={`flex h-[32px] shrink-0 cursor-pointer items-center gap-[10px] rounded-[4px] px-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] ${tab === item ? "bg-[#f7f7f7] text-[rgba(0,0,0,0.88)]" : "bg-transparent text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"}`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+
+        {tab === "运行记录" ? (
+          <div className="flex flex-1 flex-col items-center pt-[64px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.38)]">
+            暂无运行记录
+          </div>
+        ) : (
+          <>
+            {/* 自动化任务名称（Figma 9899:37780 FormCell）：32 高描边框 + 右下字数 2/30 */}
+            <div className="flex flex-col gap-[8px]">
+              <div className="flex items-center gap-[8px] pl-[12px]">
+                <span className="font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+                  自动化任务名称
+                </span>
+              </div>
+              <div className="px-[12px]">
+                <div className="flex h-[32px] items-center gap-[8px] rounded-[4px] border border-[#e6e6e6] px-[8px] focus-within:border-[#1e63f5]">
+                  <input
+                    value={task.title}
+                    maxLength={30}
+                    onChange={event => onChange({ title: event.target.value })}
+                    placeholder="名称"
+                    aria-label="自动化任务名称"
+                    className="min-w-0 flex-1 bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.38)]"
+                  />
+                  <span className="shrink-0 font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">
+                    {task.title.length}/30
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 当：条件 chip 组（窄栏里自然折行，与设计稿两行一致） */}
+            <div className="flex flex-col gap-[12px] px-[12px]">
+              <span className={label}>当</span>
+              <div className="flex flex-wrap items-center gap-[8px] rounded-[8px] border border-[#e6e6e6] bg-white px-[12px] py-[8px]">
+                <img src="/assets/automation-time-range.svg" alt="" className="size-[16px] shrink-0" />
+                <ScheduleEditor
+                  schedule={task.schedule}
+                  onChange={patch => onChange({ schedule: { ...task.schedule, ...patch } })}
+                />
+              </div>
+            </div>
+
+            {/* 就：Chat Input（Figma 9897:37323） */}
+            <div className="flex flex-col gap-[12px] px-[12px]">
+              <span className={label}>就</span>
+              <div className="flex flex-col overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
+                <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
+                  <textarea
+                    rows={1}
+                    value={task.prompt}
+                    onChange={event => onChange({ prompt: event.target.value })}
+                    placeholder="希望我干什么？"
+                    className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
+                  />
+                </div>
+                <div className="flex items-center gap-[8px] p-[8px]">
+                  <button
+                    type="button"
+                    aria-label="添加内容"
+                    className="flex size-[30px] shrink-0 cursor-pointer items-center justify-center rounded-full hover:bg-[#f2f2f2]"
+                  >
+                    <img src="/assets/automation-add-dark.svg" alt="" className="size-[16px]" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 高级设置（折叠） */}
+            <div className="flex flex-col gap-[10px] px-[12px]">
+              <button
+                type="button"
+                aria-expanded={advOpen}
+                onClick={() => setAdvOpen(current => !current)}
+                className="flex w-fit cursor-pointer items-center gap-[8px] rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f7f7f7]"
+              >
+                <span>高级设置</span>
+                <img
+                  src={advOpen ? "/assets/automation-up-small.svg" : "/assets/automation-down-small.svg"}
+                  alt=""
+                  className="size-[16px] shrink-0"
+                />
+              </button>
+              {advOpen && <AdvancedSettings />}
+            </div>
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+// ============================================================================
 // 自动化任务列表页（Figma 9665:49113）
 // ============================================================================
-export function AutomationView() {
+export function AutomationView({ tasks, onTasksChange, onLaunchChat }: {
+  // 任务数据由 App 持有：点「创建」会跳到会话页，本组件随即卸载，
+  // 任务必须活在上一层，AI 创建完成后回到这里才看得到。
+  tasks: AutomationTask[];
+  onTasksChange: (updater: (current: AutomationTask[]) => AutomationTask[]) => void;
+  onLaunchChat: (payload: { schedule: ScheduleState; prompt: string }) => void;
+}) {
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<AutomationTab>("已启用");
   const [createOpen, setCreateOpen] = useState(false);
-  const [tasks, setTasks] = useState<AutomationTask[]>(INITIAL_TASKS);
+  // 右侧详情栏（Figma 9787:71282）：点卡片展开，关闭或删除后自动收起
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const detailTask = detailId ? tasks.find(item => item.id === detailId) ?? null : null;
 
   // 搜索 + Tab 过滤：命中则展示任务卡片列表，否则展示空态
   const visibleTasks = tasks.filter(task =>
@@ -741,70 +1143,95 @@ export function AutomationView() {
 
   const handleOperate = (label: string, task: AutomationTask) => {
     if (label === "删除") {
-      setTasks(current => current.filter(item => item.id !== task.id));
+      onTasksChange(current => current.filter(item => item.id !== task.id));
+      if (detailId === task.id) setDetailId(null);
       return;
     }
     if (label === "暂停") {
-      setTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已暂停" } : item));
+      onTasksChange(current => current.map(item => item.id === task.id ? { ...item, status: "已暂停" } : item));
       // 同一 id 覆盖前一条提示，避免连续切换时 toast 堆叠
       toast.success("任务已暂停", { id: "automation-task-status" });
       return;
     }
     if (label === "启用") {
-      setTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已启用" } : item));
+      onTasksChange(current => current.map(item => item.id === task.id ? { ...item, status: "已启用" } : item));
       toast.success("任务已开启", { id: "automation-task-status" });
       return;
     }
-    // 「编辑 / 立即执行 / 执行记录」为交互占位，保持列表稳定
+    // 「编辑」在右侧详情栏里改；「立即执行 / 执行记录」为交互占位
+    if (label === "编辑" || label === "执行记录") setDetailId(task.id);
+  };
+
+  // 点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
+  // 由 AI 承接并完成创建 —— 排期与「就」的内容一起带进会话。
+  const handleCreate = (schedule: ScheduleState, prompt: string) => {
+    onLaunchChat({ schedule, prompt });
   };
 
   return (
     <>
-      <main className="relative min-h-0 flex-1 overflow-y-auto bg-white px-[16px] min-[800px]:px-[24px]">
-        <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col">
-          <ListPageHeader
-            title="自动化任务"
-            query={query}
-            onQueryChange={setQuery}
-            searchPlaceholder="搜索自动化任务名称"
-            searchAriaLabel="搜索自动化任务"
-          >
-              {/* ≥560px：Figma 9665:49118 Filled Primary Button / r4 / #1E63F5 / 左加号 +「新建」+ 右下箭头（Right Icon=true） */}
-            <button
-              type="button"
-              onClick={() => setCreateOpen(true)}
-              className="hidden shrink-0 cursor-pointer items-center justify-center gap-[8px] overflow-hidden rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] hover:bg-[#1554d1] min-[560px]:flex"
+      <div className="relative flex min-h-0 flex-1">
+        <main className="relative min-h-0 flex-1 overflow-y-auto bg-white px-[16px] min-[800px]:px-[24px]">
+          <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col">
+            <ListPageHeader
+              title="自动化任务"
+              query={query}
+              onQueryChange={setQuery}
+              searchPlaceholder="搜索自动化任务名称"
+              searchAriaLabel="搜索自动化任务"
             >
-              <img src="/assets/automation-create-add.svg" alt="" className="size-[16px] shrink-0" />
-              <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)]">新建</span>
-              <img src="/assets/automation-down-small-white.svg" alt="" className="size-[16px] shrink-0" />
-            </button>
-            {/* <560px：收起为 32x32 蓝色图标按钮 */}
-            <button
-              type="button"
-              aria-label="新建"
-              onClick={() => setCreateOpen(true)}
-              className="hidden size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#1e63f5] hover:bg-[#1554d1] max-[559px]:flex"
-            >
-              <img src="/assets/automation-create-add.svg" alt="" className="size-[16px]" />
-            </button>
-          </ListPageHeader>
+              {/* ≥560px：Figma 9625:49728 Filled Primary Button / r4 / #1E63F5 / 左加号 +「新建」
+                  （Right Icon=false：设计稿此处没有下拉箭头） */}
+              <button
+                type="button"
+                onClick={() => setCreateOpen(true)}
+                className="hidden shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] hover:bg-[#1554d1] min-[560px]:flex"
+              >
+                <img src="/assets/automation-create-add.svg" alt="" className="size-[16px] shrink-0" />
+                <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)]">新建</span>
+              </button>
+              {/* <560px：收起为 32x32 蓝色图标按钮 */}
+              <button
+                type="button"
+                aria-label="新建"
+                onClick={() => setCreateOpen(true)}
+                className="hidden size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#1e63f5] hover:bg-[#1554d1] max-[559px]:flex"
+              >
+                <img src="/assets/automation-create-add.svg" alt="" className="size-[16px]" />
+              </button>
+            </ListPageHeader>
 
-          <TagTabs items={AUTOMATION_TABS} active={tab} onChange={setTab} />
+            <TagTabs items={AUTOMATION_TABS} active={tab} onChange={setTab} />
 
-          {/* 内容区：有数据显示任务卡片列表（含 hover 操作项），无数据显示空态 */}
-          {visibleTasks.length > 0 ? (
-            <div className="flex w-full flex-col gap-[8px] pb-[24px]">
-              {visibleTasks.map(task => (
-                <AutomationTaskCard key={task.id} task={task} onOperate={handleOperate} />
-              ))}
-            </div>
-          ) : (
-            <AutomationEmpty />
-          )}
-        </div>
-      </main>
-      <CreateAutomationDialog open={createOpen} onOpenChange={setCreateOpen} />
+            {/* 内容区：有数据显示任务卡片列表（含 hover 操作项），无数据显示空态 */}
+            {visibleTasks.length > 0 ? (
+              <div className="flex w-full flex-col gap-[8px] pb-[24px]">
+                {visibleTasks.map(task => (
+                  <AutomationTaskCard
+                    key={task.id}
+                    task={task}
+                    onOperate={handleOperate}
+                    onOpen={item => setDetailId(current => current === item.id ? null : item.id)}
+                    active={detailId === task.id}
+                  />
+                ))}
+              </div>
+            ) : (
+              <AutomationEmpty />
+            )}
+          </div>
+        </main>
+
+        {detailTask && (
+          <AutomationDetailPanel
+            task={detailTask}
+            onClose={() => setDetailId(null)}
+            onOperate={handleOperate}
+            onChange={patch => onTasksChange(current => current.map(item => item.id === detailTask.id ? { ...item, ...patch } : item))}
+          />
+        )}
+      </div>
+      <CreateAutomationDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
     </>
   );
 }

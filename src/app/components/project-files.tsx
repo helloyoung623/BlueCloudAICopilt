@@ -161,6 +161,20 @@ export function pickSourceFiles(fileList: FileList): { additions: ProjectFile[];
   return { additions, errors };
 }
 
+// 云来源（OneDrive / Outlook / SharePoint / 产物）选择文件后加入「来源」：
+// 与本地文件一致，按当前用户「我」上传、默认已启用
+export function createCloudSourceFiles(files: { name: string; size: number }[]): ProjectFile[] {
+  return files.map(file => ({
+    id: crypto.randomUUID(),
+    name: file.name,
+    url: DEMO_FILE_URL,
+    size: file.size,
+    owner: "我",
+    createdAt: Date.now(),
+    status: "enabled",
+  }));
+}
+
 export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onChange }: {
   kind: "sources" | "artifacts";
   files: ProjectFiles;

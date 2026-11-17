@@ -13,6 +13,9 @@ export type ChatAttachment = {
   image: boolean;
   previewUrl?: string;
   status: AttachmentStatus;
+  // 云盘站点/文件夹等虚拟条目：用自定义图标与副标题，不参与真实文件校验
+  icon?: string;
+  subtitle?: string;
 };
 
 export const MAX_ATTACHMENTS = 10;
@@ -40,6 +43,24 @@ export function getAttachmentExtension(fileName: string) {
   return fileName.split(".").pop()?.toLowerCase() ?? "";
 }
 
+// 云盘站点/文件夹等虚拟条目：用 File 上的自定义标记传递图标/副标题，跳过格式校验直接 ready。
+const VIRTUAL_MARK = "__virtual_attachment__";
+export function makeVirtualFile(name: string, icon: string, subtitle: string) {
+  const file = new File([new Uint8Array(1)], name, { type: "application/octet-stream" });
+  Object.defineProperties(file, {
+    [VIRTUAL_MARK]: { value: true },
+    virtualIcon: { value: icon },
+    virtualSubtitle: { value: subtitle },
+  });
+  return file;
+}
+export function readVirtualFile(file: File) {
+  const marked = file as File & { virtualIcon?: string; virtualSubtitle?: string };
+  return (file as Record<string, unknown>)[VIRTUAL_MARK]
+    ? { icon: marked.virtualIcon, subtitle: marked.virtualSubtitle }
+    : null;
+}
+
 export function getAttachmentValidationError(file: File): "format" | "size" | "empty" | null {
   if (!file.size) return "empty";
   const extension = getAttachmentExtension(file.name);
@@ -56,12 +77,14 @@ export function formatFileSize(size: number) {
 }
 
 export function getAttachmentIcon(extension: string) {
+  // 与附件选择器的 cloudIcon 共用同一套彩色图标，保证选中前后图标一致。
+  if (["xls", "xlsx", "csv"].includes(extension)) return "/assets/select-file-excel.svg";
+  if (["ppt", "pptx"].includes(extension)) return "/assets/select-file-ppt.svg";
   if (extension === "pdf") return "/assets/attachment-pdf.svg";
   if (["doc", "docx"].includes(extension)) return "/assets/attachment-word.svg";
-  if (["xls", "xlsx", "csv"].includes(extension)) return "/assets/attachment-excel.svg";
   if (["eml", "msg"].includes(extension)) return "/assets/attachment-email.svg";
   if (extension === "html") return "/assets/79f75.svg";
-  return "/assets/attachment-file.svg";
+  return "/assets/select-file-other.svg";
 }
 
 function statusLabel(status: AttachmentStatus) {
@@ -129,12 +152,11 @@ function AttachmentTile({
       style={compact ? undefined : { width: fileWidth }}
       title={`${attachment.name}${label ? ` · ${label}` : ""}`}
     >
-      {isPending ? (
-        <img src="/assets/attachment-loading-file.svg" alt="" width="32" height="32" className="shrink-0" />
-      ) : attachment.image ? (
-        <img src={attachment.previewUrl} alt="" className={`shrink-0 rounded-[4px] object-cover ${compact ? "size-[40px]" : "size-[40px]"}`} />
+      {/* 从选中第一刻就显示正确的类型图标，上传进度只由副标题文案表达，避免“先线框后变对”的闪烁 */}
+      {attachment.image ? (
+        <img src={attachment.previewUrl} alt="" className="shrink-0 rounded-[4px] object-cover size-[40px]" />
       ) : (
-        <img src={getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
+        <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
       )}
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">{attachment.name}</span>
@@ -145,7 +167,7 @@ function AttachmentTile({
           </span>
         ) : (
           <span className={`truncate text-[12px] leading-[20px] tracking-[0.012px] ${hasError ? "text-[#fc5926]" : "text-[rgba(0,0,0,0.38)]"}`}>
-            {label ?? `${attachment.extension.toUpperCase()} · ${formatFileSize(attachment.size)}`}
+            {label ?? attachment.subtitle ?? `${attachment.extension.toUpperCase()} · ${formatFileSize(attachment.size)}`}
           </span>
         )}
       </div>

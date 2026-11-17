@@ -22,12 +22,14 @@ import { OperationMenu } from "./components/operation-menu";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
-import { AttachmentTray, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError } from "./components/attachment-tray";
+import { AttachmentTray, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, readVirtualFile } from "./components/attachment-tray";
 import type { ChatAttachment } from "./components/attachment-tray";
 import { AttachmentPicker } from "./components/attachment-picker";
 import type { AttachmentSource } from "./components/attachment-picker";
-import { DEMO_PROJECT_FILES, ProjectFilesPanel, pickSourceFiles } from "./components/project-files";
+import { DEMO_PROJECT_FILES, ProjectFilesPanel, createCloudSourceFiles, pickSourceFiles } from "./components/project-files";
 import type { ProjectFiles } from "./components/project-files";
+import { SelectFileDialog } from "./components/select-file-dialog";
+import type { CloudSourceTab } from "./components/select-file-dialog";
 import { FileFilterButton } from "./components/file-filter";
 import type { FileFormat, TimeFilter } from "./components/file-filter";
 import { Popover, PopoverAnchor } from "./components/ui/popover";
@@ -35,7 +37,7 @@ import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
-import { AutomationView } from "./components/automation-view";
+import { AutomationView, AutomationDetailPanel, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, resolveAutomationIcon, automationIconSrc, type AutomationIcon, type AutomationTask, type ScheduleState } from "./components/automation-view";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -49,6 +51,8 @@ type Message = {
   variant?: ProcessVariant;
   preset?: ProcessPreset;
   artifacts?: TaskArtifact[];
+  // AI 回复里附带的自动化卡片（Figma 9925:54896）：点卡片打开右侧详情栏
+  automation?: { taskId: string; title: string; cycle: string; description: string; icon: AutomationIcon };
 };
 type PptStage = "idle" | "requirement" | "outline_generating" | "outline" | "ppt_generating" | "preview";
 type PptMode = "标准" | "PowerPoint";
@@ -3454,6 +3458,15 @@ function ProjectConfigurationSections({ project, onEditInstruction, onAddMember 
   );
 }
 
+// 「上传文件」下拉（Figma 9484:51165）：本地文件 + 各云来源；云来源进入「选择文件」弹窗
+const UPLOAD_MENU_ITEMS: { label: string; icon: string; tab?: CloudSourceTab }[] = [
+  { label: "上传本地文件", icon: "/assets/upload-menu-attachment.svg" },
+  { label: "从 OneDrive 中添加", icon: "/assets/upload-menu-onedrive.svg", tab: "OneDrive" },
+  { label: "从 Outlook 中添加", icon: "/assets/upload-menu-outlook.svg", tab: "Outlook" },
+  { label: "从 SharePoint 中添加", icon: "/assets/upload-menu-sharepoint.svg", tab: "SharePoint" },
+  { label: "从产物中添加", icon: "/assets/upload-menu-artifact.svg", tab: "产物" },
+];
+
 function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask, onDeleteTask, onCreateProject, inputProps, onUpdateProject, configurationOpen, compact }: {
   project: ProjectItem;
   configurationOpen: boolean;
@@ -3488,6 +3501,10 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
   const filesUploadRef = useRef<HTMLButtonElement>(null);
   const collapsedSearchInputRef = useRef<HTMLInputElement>(null);
   const [taskMenu, setTaskMenu] = useState<{ id: number; anchor: HTMLButtonElement } | null>(null);
+  // 「上传文件」下拉与「选择文件」弹窗
+  const [uploadMenuAnchor, setUploadMenuAnchor] = useState<HTMLButtonElement | null>(null);
+  const uploadMenuRef = useRef<HTMLDivElement>(null);
+  const [selectFileTab, setSelectFileTab] = useState<CloudSourceTab | null>(null);
   const [renamingTask, setRenamingTask] = useState<{ id: number; title: string } | null>(null);
   const [pendingTaskMoveId, setPendingTaskMoveId] = useState<number | null>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
@@ -3502,6 +3519,24 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
   }, [taskMenu]);
+
+  useEffect(() => {
+    if (!uploadMenuAnchor) return;
+    const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && !uploadMenuAnchor.contains(event.target) && !uploadMenuRef.current?.contains(event.target)) setUploadMenuAnchor(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      uploadMenuAnchor.focus();
+      setUploadMenuAnchor(null);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [uploadMenuAnchor]);
 
   // 测量工具栏可用宽度，判断搜索框是否需要收起：
   // 基准取「来源」页签（含上传按钮，最挤的情况），保证两个页签的搜索收起时机一致。
@@ -3564,7 +3599,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
           <div ref={filesToolbarRef} className="mt-[16px] flex h-[36px] shrink-0 items-center justify-between gap-[16px]">
             <div ref={filesTabsRef} role="tablist" aria-label="项目内容" className="flex shrink-0 items-center gap-[16px]">
               {(compact ? (["任务", "来源", "产物", "配置"] as const) : (["任务", "来源", "产物"] as const)).map(item => (
-                <button key={item} type="button" role="tab" aria-selected={tab === item} onClick={() => { setTab(item); setTaskMenu(null); }} className={`flex h-[36px] shrink-0 cursor-pointer items-center px-[16px] font-normal text-[16px] leading-[24px] tracking-[0.016px] transition-colors ${tab === item ? "rounded-[8px] bg-[#f7f7f7] text-[rgba(0,0,0,0.88)]" : "rounded-[8px] bg-transparent text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"}`}>{item}</button>
+                <button key={item} type="button" role="tab" aria-selected={tab === item} onClick={() => { setTab(item); setTaskMenu(null); setUploadMenuAnchor(null); }} className={`flex h-[36px] shrink-0 cursor-pointer items-center px-[16px] font-normal text-[16px] leading-[24px] tracking-[0.016px] transition-colors ${tab === item ? "rounded-[8px] bg-[#f7f7f7] text-[rgba(0,0,0,0.88)]" : "rounded-[8px] bg-transparent text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"}`}>{item}</button>
               ))}
             </div>
             {(tab === "来源" || tab === "产物") && (
@@ -3611,7 +3646,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
                   onTimeFilterChange={tab === "来源" ? setSourceTimeFilter : setArtifactTimeFilter}
                 />
                 {tab === "来源" && (
-                  <button ref={filesUploadRef} type="button" onClick={() => uploadInputRef.current?.click()} className="flex h-[32px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#1e63f5] px-[16px] text-[14px] font-normal leading-[22px] text-[#1e63f5] hover:bg-[#ebf4ff]">
+                  <button ref={filesUploadRef} type="button" aria-haspopup="menu" aria-expanded={Boolean(uploadMenuAnchor)} onClick={event => setUploadMenuAnchor(current => current ? null : event.currentTarget)} className="flex h-[32px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#1e63f5] px-[16px] text-[14px] font-normal leading-[22px] text-[#1e63f5] hover:bg-[#ebf4ff]">
                     <img src="/assets/project-add-blue.svg" alt="" className="size-[16px] shrink-0" />
                     上传文件
                     <img src="/assets/project-direction-down-blue.svg" alt="" className="size-[16px] shrink-0" />
@@ -3629,6 +3664,34 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
             }
             event.target.value = "";
           }} />
+          {/* Figma 9484:51165：240 宽下拉，右上角对按钮右下角，逐项 44 高 */}
+          {uploadMenuAnchor && (
+            <OperationMenu ref={uploadMenuRef} anchor={uploadMenuAnchor} gap={8} align="end" role="menu" aria-label="上传文件方式" className="w-[240px] rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]">
+              <div className="flex flex-col py-[4px]">
+                {UPLOAD_MENU_ITEMS.map(item => (
+                  <button key={item.label} type="button" role="menuitem" onClick={() => {
+                    setUploadMenuAnchor(null);
+                    if (item.tab) setSelectFileTab(item.tab);
+                    else uploadInputRef.current?.click();
+                  }} className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#f7f7f7]">
+                    <img src={item.icon} alt="" className="size-[16px] shrink-0" />
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </OperationMenu>
+          )}
+          {selectFileTab && (
+            <SelectFileDialog
+              initialTab={selectFileTab}
+              onClose={() => setSelectFileTab(null)}
+              onConfirm={files => {
+                const base = project.files ?? DEMO_PROJECT_FILES;
+                onUpdateProject({ files: { ...base, sources: [...base.sources, ...createCloudSourceFiles(files)] } });
+                toast.success(`已添加 ${files.length} 个文件到来源`);
+              }}
+            />
+          )}
           <div role="tabpanel" aria-label={tab} className={`min-h-0 flex-1 ${tab === "任务" ? "-mx-[8px] overflow-y-auto pt-[12px]" : "flex flex-col"}`}>
             {tab === "配置" ? (
               // Figma 8819:63414：窄屏把指令 / 成员收进「配置」页签，卡片满宽、圆角 12、边框 #E6E6E6
@@ -3746,13 +3809,80 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
   );
 }
 
-function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact }: {
+/* 自动化卡片入场动效：底色 → 图标 → 标题 → 副标题 → 扫光 */
+const AUTOMATION_CARD_CSS = `
+@keyframes ac-bg{from{opacity:0}to{opacity:1}}
+@keyframes ac-icon{from{opacity:0;transform:scale(.6)}60%{opacity:1}to{opacity:1;transform:none}}
+@keyframes ac-title{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes ac-sub{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes ac-sweep{0%{opacity:0;transform:translateX(-90%) skewX(-14deg)}22%{opacity:1}80%{opacity:.9}100%{opacity:0;transform:translateX(340%) skewX(-14deg)}}
+@keyframes ac-actions{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
+.ac-bg{animation:ac-bg .24s cubic-bezier(.33,1,.68,1) both}
+.ac-icon{animation:ac-icon .30s cubic-bezier(.22,1.25,.42,1) .16s both;transform-origin:left center}
+.ac-title{animation:ac-title .24s cubic-bezier(.33,1,.68,1) .30s both}
+.ac-sub{animation:ac-sub .24s cubic-bezier(.33,1,.68,1) .40s both}
+.ac-sweep{animation:ac-sweep .78s cubic-bezier(.4,0,.2,1) .60s both}
+.ac-actions{animation:ac-actions .22s cubic-bezier(.33,1,.68,1) both}
+@media (prefers-reduced-motion: reduce){
+  .ac-bg,.ac-icon,.ac-title,.ac-sub,.ac-actions{animation:none;opacity:1;transform:none}
+  .ac-sweep{animation:none;opacity:0}
+}
+`;
+
+function AutomationCard({ automation, onOpen }: {
+  automation: NonNullable<Message["automation"]>;
+  onOpen?: (taskId: string) => void;
+}) {
+  return (
+    <>
+      <style>{AUTOMATION_CARD_CSS}</style>
+      <button
+        type="button"
+        data-automation-card={automation.taskId}
+        onClick={() => onOpen?.(automation.taskId)}
+        className="ac-bg relative flex w-full shrink-0 cursor-pointer items-center gap-[8px] overflow-hidden rounded-[8px] bg-[#f7f7f7] p-[8px] text-left transition-colors hover:bg-[#f2f2f2]"
+      >
+        <img src={automationIconSrc(automation.icon)} alt="" className="ac-icon size-[32px] shrink-0" />
+        <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
+          <span className="ac-title truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+            {automation.title}
+          </span>
+          <span className="ac-sub truncate font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)]">
+            {automation.cycle} · {automation.description}
+          </span>
+        </div>
+        {/* 最后扫过一道高光 */}
+        <span
+          aria-hidden
+          className="ac-sweep pointer-events-none absolute inset-y-[-20%] left-0 w-[42%]"
+          style={{ backgroundImage: "linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.55) 34%, rgba(255,255,255,1) 52%, rgba(255,255,255,0.5) 70%, rgba(255,255,255,0) 100%)" }}
+        />
+      </button>
+    </>
+  );
+}
+
+function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation }: {
   msg: Message; index: number; advance: (i: number) => void;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   onDownloadArtifact: (artifact: TaskArtifact) => void;
+  onOpenAutomation?: (taskId: string) => void;
 }) {
   // messages without a running typewriter advance the reveal pointer on mount;
   // process messages advance via onGoalDone once their goal finishes typing
+  // 重新生成：重挂 Typewriter 重新打字；复制：短暂提示已复制
+  const [regenKey, setRegenKey] = useState(0);
+  const [copied, setCopied] = useState(false);
+  // 正文打完字后再让自动化卡片入场，保证「先文字、后卡片」的阅读顺序
+  const [textDone, setTextDone] = useState(!msg.text);
+  useEffect(() => { setTextDone(!msg.text); }, [msg.text]);
+  // 卡片内容（底色/图标/标题/副标题/扫光）全部演完，才出现下方操作项
+  const [actionsShown, setActionsShown] = useState(false);
+  useEffect(() => {
+    if (!msg.automation || !textDone) { setActionsShown(false); return; }
+    const id = window.setTimeout(() => setActionsShown(true), 1400);
+    return () => window.clearTimeout(id);
+  }, [msg.automation?.taskId, textDone]);
   const autoAdvance = msg.role === "user" || msg.role === "result" || (msg.role === "ai" && Boolean(msg.thinking));
   useEffect(() => { if (autoAdvance) advance(index); }, [autoAdvance, advance, index]);
 
@@ -3773,10 +3903,10 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
                 />
               ) : (
                 <div key={attachment.id} className="flex h-[56px] w-[200px] min-w-0 items-center gap-[8px] rounded-[8px] bg-white px-[8px]">
-                  <img src={getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
+                  <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
                   <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate text-[14px] leading-[22px]">{attachment.name}</span>
-                    <span className="text-[12px] leading-[20px] text-[rgba(0,0,0,0.38)]">{attachment.extension.toUpperCase()} · {formatFileSize(attachment.size)}</span>
+                    <span className="text-[12px] leading-[20px] text-[rgba(0,0,0,0.38)]">{attachment.subtitle ?? `${attachment.extension.toUpperCase()} · ${formatFileSize(attachment.size)}`}</span>
                   </div>
                 </div>
               )
@@ -3800,10 +3930,47 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
         </div>
       ) : (
         <div className="flex w-full flex-col gap-[12px]">
-          <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter text={msg.text ?? ""} onDone={() => advance(index)} /></p>
+          <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter key={regenKey} text={msg.text ?? ""} onDone={() => { setTextDone(true); advance(index); }} /></p>
+          {/* 自动化卡片（Figma 9925:54896）：#F7F7F7 底、r8、p8、g8，32 图标 + 标题/副标题 */}
+          {msg.automation && textDone && (
+            <AutomationCard automation={msg.automation} onOpen={onOpenAutomation} />
+          )}
           {msg.artifacts && msg.artifacts.length > 0 && (
             <div className="artifact-grid grid w-full gap-[12px]">
               {msg.artifacts.map(artifact => <ArtifactFileCard key={artifact.id} artifact={artifact} onDownload={onDownloadArtifact} />)}
+            </div>
+          )}
+          {/* 卡片下方的操作项（Figma 9925:54837 MessageActions）：重新生成 / 复制 / 来源 */}
+          {msg.automation && actionsShown && (
+            <div className="ac-actions flex items-center gap-[8px]">
+              <button
+                type="button"
+                aria-label="重新生成"
+                title="重新生成"
+                onClick={() => { setTextDone(false); setRegenKey(key => key + 1); }}
+                className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
+              >
+                <img src="/assets/msg-refresh.svg" alt="" className="size-[16px]" />
+              </button>
+              <button
+                type="button"
+                aria-label="复制"
+                title={copied ? "已复制" : "复制"}
+                onClick={() => {
+                  navigator.clipboard?.writeText(msg.text ?? "").then(() => {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 1500);
+                  }).catch(() => undefined);
+                }}
+                className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
+              >
+                <img src="/assets/msg-copy.svg" alt="" className="size-[24px]" />
+              </button>
+              {/* 来源：3 个 20px 圆形来源徽标（重叠 -4）+「N个来源」 */}
+              <div className="flex items-center gap-[4px] px-[4px]">
+                <img src="/assets/msg-sources.svg" alt="" className="h-[20px] w-[52px] shrink-0" />
+                <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)]">9个来源</span>
+              </div>
             </div>
           )}
         </div>
@@ -3812,7 +3979,7 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop }: {
+function ChatView({ conversationId, messages, input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation }: {
   conversationId: number | null;
   messages: Message[];
   input: string;
@@ -3829,6 +3996,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
   pptMode: PptMode; onPptModeChange: (mode: PptMode) => void;
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
   agentRunning: boolean; onStop: () => void;
+  onOpenAutomation?: (taskId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages]);
@@ -3861,7 +4029,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
                 }
                 return (
                   <div key={i} data-message-index={i} className="flex w-full flex-col">
-                    <ChatMessageRow msg={msg} index={i} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} />
+                    <ChatMessageRow msg={msg} index={i} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} />
                   </div>
                 );
               })}
@@ -4132,6 +4300,10 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  // 自动化任务由 App 持有：点「创建」会进入新会话，自动化页会卸载，任务不能跟着丢
+  const [automationTasks, setAutomationTasks] = useState<AutomationTask[]>(INITIAL_AUTOMATION_TASKS);
+  // 会话里点自动化卡片 → 打开右侧 320 详情栏（Figma 9787:71282 / 9925:54837）
+  const [chatAutomationId, setChatAutomationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const nextHistoryId = useRef(1);
   const activeRunId = useRef(0);
@@ -4188,6 +4360,11 @@ export default function App() {
     let overLimitCount = 0;
 
     files.forEach(file => {
+      const virtual = readVirtualFile(file);
+      if (virtual) {
+        // 云盘站点/文件夹等虚拟条目：无真实内容，跳过格式/大小校验，单独构造 ready 附件
+        return;
+      }
       const validationError = getAttachmentValidationError(file);
       if (validationError === "format") {
         unsupportedCount += 1;
@@ -4222,8 +4399,30 @@ export default function App() {
       };
     });
 
-    if (!added.length) return;
-    replaceAttachments([...attachmentsRef.current, ...added]);
+    // 虚拟条目（站点/文件夹）：直接 ready，带自定义图标与副标题
+    const virtuals = files.flatMap((file, index): ChatAttachment[] => {
+      const virtual = readVirtualFile(file);
+      if (!virtual) return [];
+      // 去重：同名已存在则不再添加
+      if (attachmentsRef.current.some(item => item.name === file.name)) return [];
+      if (attachmentsRef.current.length + added.length >= MAX_ATTACHMENTS) return [];
+      const extension = getAttachmentExtension(file.name);
+      return [{
+        id: `virtual-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+        file,
+        name: file.name,
+        size: file.size,
+        extension,
+        image: false,
+        status: "ready",
+        icon: virtual.icon,
+        subtitle: virtual.subtitle,
+      }];
+    });
+
+    const next = [...added, ...virtuals];
+    if (!next.length) return;
+    replaceAttachments([...attachmentsRef.current, ...next]);
 
     added.forEach(attachment => {
       const markProcessing = window.setTimeout(() => {
@@ -4458,6 +4657,83 @@ export default function App() {
     setActiveProjectId(null);
     setSelectedProjectId(null);
   };
+  // 新建自动化任务弹窗点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
+  // 由 AI 承接并完成创建。排期条件转成自然语言写进 AI 的过程与回复里。
+  const handleLaunchAutomationChat = ({ schedule, prompt }: { schedule: ScheduleState; prompt: string }) => {
+    const summary = summarizeSchedule(schedule);
+    const when = describeSchedule(schedule);
+    const title = prompt.split("\n")[0].trim() || "未命名自动化任务";
+    const runId = ++activeRunId.current;
+    const taskId = `automation-${Date.now()}`;
+    // 图标不写死：按标题 + 「就」的内容去图标词表里分词匹配（icons.kubai.design）
+    const icon = resolveAutomationIcon(`${title} ${prompt}`);
+
+    // 离开自动化页 → 新会话
+    setMobileNavigationOpen(false);
+    setAutomationOpen(false);
+    setProjectListOpen(false);
+    setArchiveOpen(false);
+    setLibraryOpen(false);
+    setSelectedProjectId(null);
+    setActiveProjectId(null);
+    clearDraftAttachments(true);
+    setInput("");
+    setPptGeneration(false);
+    setStage("idle");
+
+    const id = nextHistoryId.current++;
+    setHistory(h => [{ id, title: title.slice(0, 20), createdAt: Date.now(), messages: [] }, ...h]);
+    setActiveHistoryId(id);
+    setMessages([
+      { role: "user", text: prompt },
+      {
+        role: "process",
+        text: "",
+        thinking: true,
+        variant: "requirement",
+        preset: {
+          goal: "好的，我来帮你创建这个自动化任务",
+          running: "正在创建自动化任务",
+          actions: [
+            { label: `读取；识别执行时间「${when}」`, icon: "read" },
+            { label: "生成；创建自动化任务", icon: "generate" },
+            { label: "校验；校验配置并启用任务", icon: "check" },
+          ],
+        },
+      },
+    ]);
+
+    // AI「创建完成」：任务才真正落到「自动化任务」列表（本地模拟，后续可换真实 Agent）
+    window.setTimeout(() => {
+      if (activeRunId.current !== runId) return;
+      setMessages(prev => {
+        const next = [...prev];
+        const index = next.findLastIndex(message => message.role === "process" && message.thinking);
+        if (index !== -1) next[index] = { ...next[index], thinking: false };
+        next.push({
+          role: "ai",
+          text: `已创建自动化任务「${title}」，${when} 自动执行。\n任务已启用，你可以在「自动化任务」里暂停、修改或查看执行记录。`,
+          // 卡片就展示在回复下方，点它打开右侧详情（Figma 9925:54837）
+          automation: { taskId, title, cycle: summary.cycle, description: summary.description, icon },
+        });
+        return next;
+      });
+      setAutomationTasks(current => [
+        {
+          id: taskId,
+          title,
+          cycle: summary.cycle,
+          description: summary.description,
+          status: "已启用",
+          schedule,
+          prompt,
+          icon,
+        },
+        ...current,
+      ]);
+    }, 6200);
+  };
+
   // Figma 9625:49728：左侧导航「自动化任务」→ 自动化任务页（与项目页互斥，复用同一套组件/响应式）
   const handleOpenAutomation = () => {
     setMobileNavigationOpen(false);
@@ -4506,6 +4782,33 @@ export default function App() {
     : undefined;
   const activeProject = projects.find(project => project.id === activeProjectId) ?? null;
   const activeTask = history.find(item => item.id === activeHistoryId) ?? null;
+
+  // 会话页右侧自动化详情栏：只在会话视图里生效（切走/新建会话自动收起）
+  const chatAutomationTask = chatAutomationId && messages.length > 0 && !automationOpen && !libraryOpen && !archiveOpen && !projectListOpen
+    ? automationTasks.find(task => task.id === chatAutomationId) ?? null
+    : null;
+
+  useEffect(() => { setChatAutomationId(null); }, [activeHistoryId]);
+
+  const handleChatAutomationOperate = (label: string, task: AutomationTask) => {
+    if (label === "删除") {
+      setAutomationTasks(current => current.filter(item => item.id !== task.id));
+      setChatAutomationId(null);
+      // 任务删掉后，会话里的卡片一并移除，避免点开是空的
+      setMessages(prev => prev.map(message => message.automation?.taskId === task.id ? { ...message, automation: undefined } : message));
+      toast.success("自动化任务已删除", { id: "automation-task-status" });
+      return;
+    }
+    if (label === "暂停") {
+      setAutomationTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已暂停" } : item));
+      toast.success("任务已暂停", { id: "automation-task-status" });
+      return;
+    }
+    if (label === "启用") {
+      setAutomationTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已启用" } : item));
+      toast.success("任务已开启", { id: "automation-task-status" });
+    }
+  };
   const activeTaskProject = projects.find(project => project.id === activeTask?.projectId);
   const activeTaskArtifacts: LocatedTaskArtifact[] = messages.flatMap((message, messageIndex) => (
     (message.artifacts ?? []).map(artifact => ({ ...artifact, messageIndex }))
@@ -4637,7 +4940,7 @@ export default function App() {
           <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} />
         </div>
         {libraryOpen ? null : automationOpen
-          ? <AutomationView />
+          ? <AutomationView tasks={automationTasks} onTasksChange={setAutomationTasks} onLaunchChat={handleLaunchAutomationChat} />
           : archiveOpen
           ? <ArchiveView
               projects={projects}
@@ -4718,6 +5021,7 @@ export default function App() {
               onPptPagesChange={setPptPages}
               agentRunning={messages.some(message => message.role === "process" && Boolean(message.thinking))}
               onStop={handleStop}
+              onOpenAutomation={setChatAutomationId}
             />
           : activeProject
             ? <ProjectHomeView
@@ -4786,6 +5090,32 @@ export default function App() {
           </div>
         )}
       </div>
+      {/* 会话里点自动化卡片 → 右侧 320 详情栏（Figma 9787:71282 / 9925:54837） */}
+      {chatAutomationTask && (
+        <AutomationDetailPanel
+          task={chatAutomationTask}
+          onClose={() => setChatAutomationId(null)}
+          onOperate={handleChatAutomationOperate}
+          onChange={patch => {
+            const targetId = chatAutomationTask.id;
+            setAutomationTasks(current => current.map(item => item.id === targetId ? { ...item, ...patch } : item));
+            // 卡片上的标题/周期跟着详情栏的修改同步，避免两处不一致
+            if (patch.title || patch.cycle || patch.description) {
+              setMessages(prev => prev.map(message => message.automation?.taskId === targetId
+                ? {
+                  ...message,
+                  automation: {
+                    ...message.automation,
+                    title: patch.title ?? message.automation.title,
+                    cycle: patch.cycle ?? message.automation.cycle,
+                    description: patch.description ?? message.automation.description,
+                  },
+                }
+                : message));
+            }
+          }}
+        />
+      )}
       {/* right-hand PPT viewer, shares the row with the chat column */}
       {stage === "preview" && <PptPanel onClose={() => setStage("idle")} />}
       {/* panels / preview (z-50, fixed) */}
