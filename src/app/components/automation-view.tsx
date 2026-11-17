@@ -34,11 +34,30 @@ const TASK_OPERATIONS = [
   { label: "删除", icon: "automation-menu-delete.svg" },
 ] as const;
 
-const CYCLES = ["每天", "每周", "每月", "每年", "仅一次"] as const;
+// 周期下拉（Figma 9773:69719 DropdownMenu 更新版）：
+// 仅一次 → 分隔线 → 每天/每周/每月/每年 → 分隔线 → 自定义
+const CYCLES = ["仅一次", "每天", "每周", "每月", "每年", "自定义"] as const;
 type Cycle = (typeof CYCLES)[number];
+// 需要在选项「后面」渲染 #F2F2F2 分隔线的周期项（左右缩进 8px）
+const CYCLE_DIVIDERS: readonly string[] = ["仅一次", "每年"];
+
+// 「自定义」周期的间隔单位下拉（Figma 9895:2849，宽 88px）：分/天/周/月
+const CUSTOM_UNITS = ["分", "天", "周", "月"] as const;
+type CustomUnit = (typeof CUSTOM_UNITS)[number];
 
 const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"] as const;
-const HOURS = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"] as const;
+
+// 高级设置（Figma 9783:70644 / 9904:38056 / 9904:38242）
+// 结束时间：三个竖排单选（永不 / 指定时间 / 重复），后两项选中时行内追加日期框、步进器
+const END_MODES = ["永不", "指定时间", "重复"] as const;
+type EndMode = (typeof END_MODES)[number];
+// 时区下拉（宽 256）
+const TIMEZONES = [
+  "UTC+08:00•中国标准时间（系统）",
+  "UTC+09:00•日本标准时间",
+  "UTC+00:00•协调世界时",
+  "UTC-08:00•太平洋时间",
+] as const;const HOURS = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"] as const;
 const DAYS = Array.from({ length: 31 }, (_, index) => `${index + 1}号`);
 
 // Tag-2 组件 Size=L（与项目页/自动化页共用同一套 Figma 组件 9625:52202）
@@ -106,13 +125,17 @@ function useDismissOnOutside(anchor: HTMLElement | null, setAnchor: (value: null
 }
 
 // 通用下拉 chip：点击弹出 OperationMenu，选中项带蓝色对勾
-function SelectChip({ options, value, onChange, width = 120, forceBelow = false, maxHeight }: {
+function SelectChip({ options, value, onChange, width = 120, forceBelow = false, maxHeight, dividerAfter, arrow = true }: {
   options: readonly string[];
   value: string;
   onChange: (value: string) => void;
   width?: number;
   forceBelow?: boolean;
   maxHeight?: number;
+  // 在这些选项后面渲染分隔线（如周期菜单：仅一次、每年之后）
+  dividerAfter?: readonly string[];
+  // chip 右侧显示 down-small 箭头（Figma 9698:62714：所有周期 chip 均带箭头）
+  arrow?: boolean;
 }) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(anchor, setAnchor);
@@ -122,9 +145,10 @@ function SelectChip({ options, value, onChange, width = 120, forceBelow = false,
       <button
         type="button"
         onClick={event => setAnchor(current => current ? null : event.currentTarget)}
-        className="flex shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] px-[8px] py-[4px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
+        className="flex h-[32px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[4px] bg-[#f7f7f7] px-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
       >
         <span className="whitespace-nowrap">{value}</span>
+        {arrow && <img src="/assets/automation-down-small.svg" alt="" className="size-[16px] shrink-0" />}
       </button>
       {anchor && <OperationMenu
         anchor={anchor}
@@ -144,8 +168,6 @@ function SelectChip({ options, value, onChange, width = 120, forceBelow = false,
         >
           {options.map(option => (
             <Fragment key={option}>
-              {/* Figma 9773:69719：「每年」与「仅一次」之间有一条 #F2F2F2、左右缩进 8px 的分隔线 */}
-              {option === "仅一次" && <div className="mx-[8px] my-[4px] h-px shrink-0 bg-[#f2f2f2]" />}
               <button
                 type="button"
                 onClick={() => { onChange(option); setAnchor(null); }}
@@ -155,6 +177,8 @@ function SelectChip({ options, value, onChange, width = 120, forceBelow = false,
                 <span className="min-w-0 flex-1 truncate">{option}</span>
                 {option === value && <img src="/assets/automation-check.svg" alt="" className="size-[16px] shrink-0" />}
               </button>
+              {/* Figma 9773:69719：指定选项后的 #F2F2F2 分隔线（左右缩进 8px） */}
+              {dividerAfter?.includes(option) && <div className="mx-[8px] my-[4px] h-px shrink-0 bg-[#f2f2f2]" />}
             </Fragment>
           ))}
         </div>
@@ -173,7 +197,7 @@ function TimeChip({ value, onChange }: { value: string; onChange: (value: string
       <button
         type="button"
         onClick={event => setAnchor(current => current ? null : event.currentTarget)}
-        className="flex shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] px-[8px] py-[4px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
+        className="flex h-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] px-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
       >
         <span className="whitespace-nowrap">{value}</span>
       </button>
@@ -183,6 +207,101 @@ function TimeChip({ value, onChange }: { value: string; onChange: (value: string
             <button key={hour} type="button" onClick={() => { onChange(hour); setAnchor(null); }}
               className={`flex h-[36px] shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-[14px] hover:bg-[#f2f2f2] ${hour === value ? "bg-white font-medium text-[rgba(0,0,0,0.88)]" : "text-[rgba(0,0,0,0.88)]"}`}>
               {hour}
+            </button>
+          ))}
+        </div>
+      </OperationMenu>}
+    </Fragment>
+  );
+}
+
+// 数字步进器（Figma 9891:71449 「常规」组件 9528:43362）：
+// 宽 80、高 32、#F7F7F7 底 r4；左侧输入区与右侧 24px 步进按钮之间 1px #E6E6E6
+// 竖直分割线（像素采样 x482-484），上下按钮间的横分割线已 baked 在图标里。
+function NumberStepper({ value, onChange, min = 1, max = 999, width = 80, suffix }: {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  width?: number;
+  // Figma 9904:38428：「重复 N 次后」——输入区右侧的后缀文案（Black 0.6）
+  suffix?: string;
+}) {
+  const clamp = (next: number) => Math.min(max, Math.max(min, next));
+  return (
+    <div className="flex h-[32px] shrink-0 items-stretch overflow-hidden rounded-[4px] bg-[#f7f7f7]" style={{ width }}>
+      <div className="flex min-w-0 flex-1 items-center gap-[4px] border-r border-[#e6e6e6] px-[8px]">
+        <input
+          type="text"
+          inputMode="numeric"
+          value={value}
+          onChange={event => {
+            const parsed = parseInt(event.target.value, 10);
+            onChange(Number.isNaN(parsed) ? min : clamp(parsed));
+          }}
+          className="min-w-0 flex-1 bg-transparent text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none"
+        />
+        {suffix && (
+          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[20px] tracking-[0.014px] text-[rgba(0,0,0,0.6)]">
+            {suffix}
+          </span>
+        )}
+      </div>
+      <div className="flex w-[24px] shrink-0 flex-col">
+        <button
+          type="button"
+          aria-label="增加"
+          onClick={() => onChange(clamp(value + 1))}
+          className="flex h-[16px] cursor-pointer items-center justify-center hover:bg-[#e6e6e6]"
+        >
+          <img src="/assets/automation-step-up.svg" alt="" className="h-[16px] w-[24px]" />
+        </button>
+        <button
+          type="button"
+          aria-label="减少"
+          onClick={() => onChange(clamp(value - 1))}
+          className="flex h-[16px] cursor-pointer items-center justify-center hover:bg-[#e6e6e6]"
+        >
+          <img src="/assets/automation-step-down.svg" alt="" className="h-[16px] w-[24px]" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// 时区下拉（Figma 9783:70668）：256×32、#E6E6E6 描边、r4、右侧 down-small
+function TimezoneSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  useDismissOnOutside(anchor, setAnchor);
+  return (
+    <Fragment>
+      <button
+        type="button"
+        onClick={event => setAnchor(current => current ? null : event.currentTarget)}
+        className="flex h-[32px] w-auto min-w-[256px] shrink-0 cursor-pointer items-center justify-between gap-[8px] self-start rounded-[8px] border border-[#e6e6e6] px-[8px] py-[5px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:border-[#1e63f5]"
+      >
+        <span className="min-w-0 flex-1 whitespace-nowrap text-left">{value}</span>
+        <img src="/assets/automation-down-small.svg" alt="" className="size-[16px] shrink-0" />
+      </button>
+      {anchor && <OperationMenu
+        anchor={anchor}
+        gap={8}
+        className="flex flex-col rounded-[12px] border border-[#f2f2f2] bg-white p-[4px] px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+        style={{ width: 256 }}
+        onClick={event => event.stopPropagation()}
+        onPointerDown={event => event.stopPropagation()}
+      >
+        <div className="flex flex-col gap-[2px] py-[4px]">
+          {TIMEZONES.map(option => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => { onChange(option); setAnchor(null); }}
+              className={`flex h-[44px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#f2f2f2]`}
+              style={{ fontWeight: option === value ? 500 : 400 }}
+            >
+              <span className="min-w-0 flex-1 truncate">{option}</span>
+              {option === value && <img src="/assets/automation-check.svg" alt="" className="size-[16px] shrink-0" />}
             </button>
           ))}
         </div>
@@ -201,11 +320,27 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
   const [yearMonth, setYearMonth] = useState<number>(11);
   const [yearDay, setYearDay] = useState<string>("5号");
   const [time, setTime] = useState<string>("18:00");
+  // 自定义周期：隔 N 个单位（分/天/周/月）于某时间
+  // Figma 9891:72000（单位=周）→ 隔 1 周 于 周六 的 18:00
+  // Figma 9891:72961（单位=月）→ 隔 1 月 于 1号 的 18:00
+  // Figma 9891:71448（单位=天）→ 隔 1 天 于 18:00
+  const [customInterval, setCustomInterval] = useState<number>(1);
+  const [customUnit, setCustomUnit] = useState<CustomUnit>("天");
+  // 自定义「月」用的日期（设计稿默认 1号；与「每月」周期的 15号 互不影响）
+  const [customMonthDay, setCustomMonthDay] = useState<string>("1号");
   const [prompt, setPrompt] = useState("");
+  // 高级设置（Figma 9783:70644）：默认收起，展开后为 结束时间 / 执行方式 / 时区
+  const [advOpen, setAdvOpen] = useState(false);
+  const [endMode, setEndMode] = useState<EndMode>("永不");
+  const [endDate, setEndDate] = useState("2025-07-08");
+  const [repeatTimes, setRepeatTimes] = useState<number>(10);
+  const [newSession, setNewSession] = useState(false);
+  const [timezone, setTimezone] = useState<string>(TIMEZONES[0]);
 
   useEffect(() => {
     if (open) {
       setPrompt("");
+      setAdvOpen(false);
     }
   }, [open]);
 
@@ -239,14 +374,34 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
           <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">的</span>
           <TimeChip value={time} onChange={setTime} />
         </>;
+      case "自定义":
+        // 设计稿三种单位态：
+        //   分 / 天 → 自定义 隔 1 天 于 18:00（9891:71448）
+        //   周     → 自定义 隔 1 周 于 [周六] 的 18:00（9891:72000）
+        //   月     → 自定义 隔 1 月 于 [1号]  的 18:00（9891:72961）
+        return <div className="flex items-center gap-[8px]">
+          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">隔</span>
+          <NumberStepper value={customInterval} onChange={setCustomInterval} />
+          <SelectChip options={CUSTOM_UNITS} value={customUnit} onChange={value => setCustomUnit(value as CustomUnit)} width={88} arrow />
+          <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">于</span>
+          {/* 周：追加班星期 chip；月：追加日期 chip（31 天列表固定下方、最高 320 可滚动） */}
+          {customUnit === "周" && <SelectChip options={WEEKDAYS} value={weekday} onChange={setWeekday} width={120} />}
+          {customUnit === "月" && <SelectChip options={DAYS} value={customMonthDay} onChange={setCustomMonthDay} width={120} forceBelow maxHeight={320} />}
+          {(customUnit === "周" || customUnit === "月") && (
+            <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">的</span>
+          )}
+          <TimeChip value={time} onChange={setTime} />
+        </div>;
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {/* 弹窗距视口上下各至少 32px：max-h = 100vh - 64px；内容超出时只有中间「内容区」滚动，
+          标题栏与底部操作区固定不动（grid: auto / minmax(0,1fr) / auto） */}
       <DialogContent
         aria-describedby={undefined}
-        className="w-[720px] max-w-[calc(100%-32px)] gap-0 overflow-hidden rounded-[12px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[720px] [&>button]:hidden"
+        className="grid max-h-[calc(100vh-64px)] w-[720px] max-w-[calc(100%-32px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[12px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[720px] [&>button]:hidden"
       >
         {/* 标题栏：padding 16px 24px */}
         <div className="flex w-full flex-col gap-[4px] px-[24px] py-[16px]">
@@ -266,15 +421,19 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
           </div>
         </div>
 
-        {/* 内容区：padding 16px 12px, gap 24px */}
-        <div className="flex w-full flex-col gap-[24px] px-[12px] py-[16px]">
+        {/* 内容区：padding 16px 12px, gap 24px。高度受限时自身滚动（标题/操作区固定） */}
+        <div className="flex min-h-0 w-full flex-col gap-[24px] overflow-y-auto px-[12px] py-[16px] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[rgba(0,0,0,0.2)] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-[8px]">
           {/* 当 行 */}
           <div className="flex w-full flex-col gap-[12px] px-[12px]">
             <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">当</span>
             <div className="flex min-h-[40px] w-full flex-wrap items-center gap-[8px] rounded-[8px] border border-[#e6e6e6] bg-white px-[12px] py-[8px]">
               <img src="/assets/automation-time-range.svg" alt="" className="size-[16px] shrink-0" />
-              <SelectChip options={CYCLES} value={cycle} onChange={value => setCycle(value as Cycle)} width={120} />
-              <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">于</span>
+              {/* Figma 9665:49114 9704:62909：周期 chip 统一带 down-small 箭头 */}
+              <SelectChip options={CYCLES} value={cycle} onChange={value => setCycle(value as Cycle)} width={120} dividerAfter={CYCLE_DIVIDERS} arrow />
+              {/* 「自定义」的「于」在单位 chip 之后（见 renderCondition），此处不再重复渲染 */}
+              {cycle !== "自定义" && (
+                <span className="shrink-0 whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">于</span>
+              )}
               {renderCondition()}
             </div>
           </div>
@@ -285,10 +444,11 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
             <div className="relative w-full overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
               <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
                 <textarea
+                  rows={1}
                   value={prompt}
                   onChange={event => setPrompt(event.target.value)}
                   placeholder="希望我干什么？"
-                  className="block min-h-[22px] w-full resize-none bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
+                  className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
                 />
               </div>
               <div className="flex items-center gap-[8px] p-[8px]">
@@ -303,16 +463,100 @@ function CreateAutomationDialog({ open, onOpenChange }: { open: boolean; onOpenC
             </div>
           </div>
 
-          {/* 高级设置 */}
-          <div className="flex w-full flex-col gap-[10px] px-[12px]">
+          {/* 高级设置：Figma 9783:70663（容器 padding 0 8px），展开后箭头翻转为 up-small */}
+          <div className="flex w-full flex-col gap-[10px] px-[8px]">
             <button
               type="button"
+              aria-expanded={advOpen}
+              onClick={() => setAdvOpen(current => !current)}
               className="flex w-fit cursor-pointer items-center gap-[8px] rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f7f7f7]"
             >
               <span>高级设置</span>
-              <img src="/assets/automation-down.svg" alt="" className="size-[12px]" />
+              <img
+                src={advOpen ? "/assets/automation-up-small.svg" : "/assets/automation-down-small.svg"}
+                alt=""
+                className="size-[16px] shrink-0"
+              />
             </button>
           </div>
+
+          {advOpen && (
+            <>
+              {/* 结束时间：竖排单选（Figma 9904:38083 Radio-Group：Style=Vertical，行高 22、gap 8）。
+                  日期框 / 步进器在设计稿里都是「绝对定位」的子节点（x=89，y=25 / y=55，尺寸 136/120 × 32），
+                  不参与排版，所以切换选项时三行位置完全不动（无抖动），两者左边线严格同一条 x 轴。 */}
+              <div className="flex w-full flex-col gap-[8px] px-[12px]">
+                <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">结束时间</span>
+                <div className="relative flex w-fit flex-col gap-[8px] self-start">
+                  {END_MODES.map(mode => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="radio"
+                      aria-checked={endMode === mode}
+                      onClick={() => setEndMode(mode)}
+                      className="flex h-[22px] cursor-pointer items-center gap-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]"
+                    >
+                      <img
+                        src={endMode === mode ? "/assets/automation-radio-on.svg" : "/assets/automation-radio-off.svg"}
+                        alt=""
+                        className="size-[16px] shrink-0"
+                      />
+                      <span className="whitespace-nowrap">{mode}</span>
+                    </button>
+                  ))}
+
+                  {/* Figma 9904:38096：指定时间 → 136×32 日期框（#E6E6E6 描边，r4），绝对值 x=89 / y=25 */}
+                  {endMode === "指定时间" && (
+                    <label className="absolute left-[89px] top-[25px] flex h-[32px] w-[136px] cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#e6e6e6] px-[8px]">
+                      <img src="/assets/automation-date-range.svg" alt="" className="size-[16px] shrink-0" />
+                      <input
+                        type="date"
+                        value={endDate}
+                        onChange={event => setEndDate(event.target.value)}
+                        className="w-full min-w-0 bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none [&::-webkit-calendar-picker-indicator]:hidden [&::-webkit-date-and-time-value]:text-left [&::-webkit-datetime-edit]:p-0"
+                      />
+                    </label>
+                  )}
+
+                  {/* Figma 9904:38428：重复 → 120 宽步进器 + 「次后」后缀，绝对值 x=89 / y=55 */}
+                  {endMode === "重复" && (
+                    <div className="absolute left-[89px] top-[55px]">
+                      <NumberStepper value={repeatTimes} onChange={setRepeatTimes} width={120} suffix="次后" min={1} max={99} />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 执行方式：复选框「每次执行都开启新会话」 */}
+              <div className="flex w-full flex-col gap-[8px] px-[12px]">
+                <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">执行方式</span>
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={newSession}
+                  onClick={() => setNewSession(current => !current)}
+                  className="flex w-fit cursor-pointer items-center gap-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]"
+                >
+                  {newSession ? (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="size-[16px] shrink-0" aria-hidden>
+                      <rect x="2" y="2" width="12" height="12" rx="3" fill="#1E63F5" />
+                      <path d="M5 8.2L7.1 10.3L11 6.4" stroke="#FFFFFF" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : (
+                    <img src="/assets/automation-checkbox-off.svg" alt="" className="size-[16px] shrink-0" />
+                  )}
+                  <span className="whitespace-nowrap">每次执行都开启新会话</span>
+                </button>
+              </div>
+
+              {/* 时区：256×32 下拉（#E6E6E6 描边，r4） */}
+              <div className="flex w-full flex-col gap-[8px] px-[12px]">
+                <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">时区</span>
+                <TimezoneSelect value={timezone} onChange={setTimezone} />
+              </div>
+            </>
+          )}
         </div>
 
         {/* 操作区：padding 24px, flex-end, gap 24px, 上边框 */}
@@ -355,9 +599,11 @@ function YearDateChip({ month, day, onMonthChange, onDayChange }: {
       <button
         type="button"
         onClick={event => setAnchor(current => current ? null : event.currentTarget)}
-        className="flex shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] px-[8px] py-[4px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
+        className="flex h-[32px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[4px] bg-[#f7f7f7] px-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
       >
         <span className="whitespace-nowrap">{month}月{day}</span>
+        {/* Figma 9785:71155：月日 chip 同样带 down-small 箭头（16×16） */}
+        <img src="/assets/automation-down-small.svg" alt="" className="size-[16px] shrink-0" />
       </button>
       {anchor && <OperationMenu anchor={anchor} gap={8} className="flex flex-col gap-[8px] rounded-[12px] border border-[#f2f2f2] bg-white p-[12px] shadow-[0_0_12px_rgba(0,0,0,0.08)]" style={{ width: 240 }} onPointerDown={event => event.stopPropagation()}>
         <div className="font-['PingFang_SC:Regular'] text-[12px] text-[rgba(0,0,0,0.38)]">月份</div>
@@ -523,7 +769,7 @@ export function AutomationView() {
             searchPlaceholder="搜索自动化任务名称"
             searchAriaLabel="搜索自动化任务"
           >
-            {/* ≥560px：Figma 9625:52211 Filled Primary Button / r4 / #1E63F5 / 左加号 +「新建」（Right Icon=false，无下拉箭头） */}
+              {/* ≥560px：Figma 9665:49118 Filled Primary Button / r4 / #1E63F5 / 左加号 +「新建」+ 右下箭头（Right Icon=true） */}
             <button
               type="button"
               onClick={() => setCreateOpen(true)}
@@ -531,6 +777,7 @@ export function AutomationView() {
             >
               <img src="/assets/automation-create-add.svg" alt="" className="size-[16px] shrink-0" />
               <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)]">新建</span>
+              <img src="/assets/automation-down-small-white.svg" alt="" className="size-[16px] shrink-0" />
             </button>
             {/* <560px：收起为 32x32 蓝色图标按钮 */}
             <button

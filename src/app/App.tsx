@@ -1,4 +1,4 @@
-import { Fragment, forwardRef, useState, useRef, useEffect, useCallback } from "react";
+import { Fragment, forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { motion } from "motion/react";
 import svgPaths from "@/imports/默认首页-1/svg-4ly00k0kqz";
 import svgPanel from "@/imports/需求确认-1/svg-1yxmq1shfb";
@@ -2979,22 +2979,23 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
   );
 }
 
-function ProjectHeaderActions({ project, onEdit, onTransfer, onArchive, onDelete, panelOpen, onTogglePanel }: {
+function ProjectHeaderActions({ project, onEdit, onTransfer, onArchive, onDelete, panelOpen, showPanelToggle, onTogglePanel }: {
   project: ProjectItem;
   onEdit: (updates: { name: string; description: string }) => void;
   onTransfer: (member: string) => void;
   onArchive: () => void;
   onDelete: () => void;
   panelOpen: boolean;
+  showPanelToggle: boolean;
   onTogglePanel: () => void;
 }) {
   const [editOpen, setEditOpen] = useState(false);
   return (
     <div className="relative flex shrink-0 items-center gap-[8px]">
       <ProjectCard project={project} menuOnly onOpen={() => {}} onRename={() => setEditOpen(true)} onTransfer={onTransfer} onArchive={onArchive} onDelete={onDelete} />
-      <button type="button" aria-label={panelOpen ? "收起右侧边栏" : "展开右侧边栏"} aria-expanded={panelOpen} aria-controls="project-configuration" onClick={onTogglePanel} className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
+      {showPanelToggle && <button type="button" aria-label={panelOpen ? "收起右侧边栏" : "展开右侧边栏"} aria-expanded={panelOpen} aria-controls="project-configuration" onClick={onTogglePanel} className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
         <img src="/assets/a8ef3.svg" alt="" />
-      </button>
+      </button>}
       <CreateProjectDialog
         open={editOpen}
         onOpenChange={setEditOpen}
@@ -3418,9 +3419,46 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
   );
 }
 
-function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask, onDeleteTask, onCreateProject, inputProps, onUpdateProject, configurationOpen }: {
+// 项目配置（指令 / 成员）：宽屏右侧边栏与窄屏「配置」页签共用同一份内容
+function ProjectConfigurationSections({ project, onEditInstruction, onAddMember }: {
+  project: ProjectItem;
+  onEditInstruction: () => void;
+  onAddMember: () => void;
+}) {
+  return (
+    <>
+      <div className="relative flex flex-col gap-[8px] border-b border-[#e6e6e6] p-[16px]">
+        <p className="text-[14px] font-bold leading-[24px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">指令</p>
+        <button type="button" aria-label="编辑指令" onClick={onEditInstruction} className="absolute right-[16px] top-[16px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
+          <img src="/assets/49891.svg" alt="" />
+        </button>
+        <p className={`break-words whitespace-pre-wrap text-[12px] font-normal leading-[20px] tracking-[0.012px] ${project.instruction ? "text-[rgba(0,0,0,0.88)]" : "text-[rgba(0,0,0,0.38)]"}`}>
+          {project.instruction || "设定项目背景与规范，让 AI 与你高效协作"}
+        </p>
+      </div>
+      <div className="relative flex flex-col gap-[8px] p-[16px]">
+        <p className="text-[14px] font-bold leading-[24px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">成员</p>
+        <button type="button" aria-label="添加成员" onClick={onAddMember} className="absolute right-[16px] top-[16px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
+          <img src="/assets/49891.svg" alt="" />
+        </button>
+        {project.members?.length ? (
+          <div className="flex items-center py-[4px]">
+            {project.members.slice(0, 8).map(member => (
+              <span key={member.id} title={member.name} className="-mr-[8px] flex size-[24px] shrink-0 items-center justify-center rounded-full border border-white text-[12px] font-normal text-white" style={{ backgroundColor: member.color }}>{getAvatarInitial(member.name)}</span>
+            ))}
+            {project.members.length > 8 && <span className="ml-[8px] rounded-full border border-[#ebf4ff] px-[4px] text-[12px] text-[#1e63f5]">+{project.members.length - 8}</span>}
+          </div>
+        ) : <p className="font-['PingFang_SC:Regular'] text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.38)]">协作者</p>}
+      </div>
+    </>
+  );
+}
+
+function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask, onDeleteTask, onCreateProject, inputProps, onUpdateProject, configurationOpen, compact }: {
   project: ProjectItem;
   configurationOpen: boolean;
+  // 详情页宽度 < 800px：右侧配置边栏收起，指令 / 成员并入「配置」页签
+  compact: boolean;
   projects: ProjectItem[];
   tasks: HistoryItem[];
   onSelectTask: (id: number) => void;
@@ -3432,15 +3470,23 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
 }) {
   const [instructionOpen, setInstructionOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
-  const [tab, setTab] = useState<"任务" | "来源" | "产物">("任务");
+  const [tab, setTab] = useState<"任务" | "来源" | "产物" | "配置">("任务");
   const [filesQuery, setFilesQuery] = useState("");
   const [filesSearchFocused, setFilesSearchFocused] = useState(false);
+  // 来源 / 产物 页签的搜索框响应式：搜索框左边缘距左侧 tab 群的间距 < 32px 时收起为图标按钮
+  // （以「来源」布局为基准：tab + 16 + 搜索 256 + 16 + 筛选 32 + 16 + 上传按钮 + 最小间距 32）
+  const [filesSearchCollapsed, setFilesSearchCollapsed] = useState(false);
+  const [filesSearchOpen, setFilesSearchOpen] = useState(false);
   // 来源 / 产物两页签各自独立的筛选条件，字段与交互和资料库一致（格式 + 更新时间）
   const [sourceFormats, setSourceFormats] = useState<FileFormat[]>([]);
   const [sourceTimeFilter, setSourceTimeFilter] = useState<TimeFilter>(null);
   const [artifactFormats, setArtifactFormats] = useState<FileFormat[]>([]);
   const [artifactTimeFilter, setArtifactTimeFilter] = useState<TimeFilter>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const filesToolbarRef = useRef<HTMLDivElement>(null);
+  const filesTabsRef = useRef<HTMLDivElement>(null);
+  const filesUploadRef = useRef<HTMLButtonElement>(null);
+  const collapsedSearchInputRef = useRef<HTMLInputElement>(null);
   const [taskMenu, setTaskMenu] = useState<{ id: number; anchor: HTMLButtonElement } | null>(null);
   const [renamingTask, setRenamingTask] = useState<{ id: number; title: string } | null>(null);
   const [pendingTaskMoveId, setPendingTaskMoveId] = useState<number | null>(null);
@@ -3457,6 +3503,49 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
     return () => document.removeEventListener("pointerdown", close);
   }, [taskMenu]);
 
+  // 测量工具栏可用宽度，判断搜索框是否需要收起：
+  // 基准取「来源」页签（含上传按钮，最挤的情况），保证两个页签的搜索收起时机一致。
+  useLayoutEffect(() => {
+    const measure = () => {
+      const toolbar = filesToolbarRef.current;
+      if (!toolbar) return;
+      const tabsWidth = filesTabsRef.current?.offsetWidth ?? 0;
+      // 产物页签没有上传按钮时按来源的上传按钮宽度（实测值，兜底 141）计入
+      const uploadWidth = filesUploadRef.current?.offsetWidth ?? 141;
+      const needed = tabsWidth + 256 + 16 + 32 + 16 + uploadWidth + 32;
+      setFilesSearchCollapsed(toolbar.clientWidth < needed);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (filesToolbarRef.current) observer.observe(filesToolbarRef.current);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [tab]);
+
+  // 切页签时收起已展开的搜索，回到图标态
+  useEffect(() => {
+    setFilesSearchOpen(false);
+  }, [tab]);
+
+  // 展开态下内容被清空且输入框已失焦 → 自动收起（与列表页搜索一致）；
+  // 空间变宽、搜索框恢复常驻时同步复位展开态
+  useEffect(() => {
+    if (!filesSearchCollapsed) {
+      setFilesSearchOpen(false);
+      return;
+    }
+    if (!filesSearchOpen) return;
+    if (!filesQuery && document.activeElement !== collapsedSearchInputRef.current) setFilesSearchOpen(false);
+  }, [filesSearchCollapsed, filesSearchOpen, filesQuery]);
+
+  // 变宽脱离紧凑布局后「配置」页签不再存在，自动回到「任务」
+  useEffect(() => {
+    if (!compact && tab === "配置") setTab("任务");
+  }, [compact, tab]);
+
   return (
     <div className="flex min-h-0 flex-1 items-start gap-[16px] bg-white px-[16px]">
       <div className="flex h-full min-w-0 flex-1 flex-col items-center">
@@ -3472,35 +3561,47 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
           </div>
           {/* Figma 9234:27120 / 9393:81788：Tag-2 胶囊 Tab（65x36 选中 r8 文字 0.88 / 默认 r4 文字 0.6，
               hover 参照 Tag 变体 r8 #F2F2F2），右侧同行放 Search Input 256x32 + 筛选 32x32 +（来源）上传 141x32 */}
-          <div className="mt-[16px] flex h-[36px] shrink-0 items-center justify-between gap-[16px]">
-            <div role="tablist" aria-label="项目内容" className="flex shrink-0 items-center gap-[16px]">
-              {(["任务", "来源", "产物"] as const).map(item => (
+          <div ref={filesToolbarRef} className="mt-[16px] flex h-[36px] shrink-0 items-center justify-between gap-[16px]">
+            <div ref={filesTabsRef} role="tablist" aria-label="项目内容" className="flex shrink-0 items-center gap-[16px]">
+              {(compact ? (["任务", "来源", "产物", "配置"] as const) : (["任务", "来源", "产物"] as const)).map(item => (
                 <button key={item} type="button" role="tab" aria-selected={tab === item} onClick={() => { setTab(item); setTaskMenu(null); }} className={`flex h-[36px] shrink-0 cursor-pointer items-center px-[16px] font-normal text-[16px] leading-[24px] tracking-[0.016px] transition-colors ${tab === item ? "rounded-[8px] bg-[#f7f7f7] text-[rgba(0,0,0,0.88)]" : "rounded-[8px] bg-transparent text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"}`}>{item}</button>
               ))}
             </div>
-            {tab !== "任务" && (
-              <div className="flex min-w-0 items-center gap-[16px]">
-                <label className={`flex h-[32px] w-[256px] min-w-0 flex-1 items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[8px] ${filesSearchFocused ? "" : "pr-[16px]"}`}>
-                  <img
-                    src={filesSearchFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"}
-                    alt=""
-                    className="size-[16px] shrink-0"
-                  />
-                  <input
-                    aria-label="搜索文件名称"
-                    placeholder="搜索文件名称"
-                    value={filesQuery}
-                    onChange={event => setFilesQuery(event.target.value)}
-                    onFocus={() => setFilesSearchFocused(true)}
-                    onBlur={() => setFilesSearchFocused(false)}
-                    className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] outline-none placeholder:text-[rgba(0,0,0,0.38)]"
-                  />
-                  {filesQuery && (
-                    <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setFilesQuery("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
-                      <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
-                    </button>
-                  )}
-                </label>
+            {(tab === "来源" || tab === "产物") && (
+              <div className={`flex min-w-0 items-center gap-[16px] ${filesSearchCollapsed && filesSearchOpen ? "flex-1" : "shrink-0"}`}>
+                {filesSearchCollapsed && !filesSearchOpen ? (
+                  // 收起态：32x32 搜索图标按钮，点击展开输入框（与列表页搜索交互一致）
+                  <button type="button" aria-label="搜索文件名称" aria-expanded={false} onClick={() => setFilesSearchOpen(true)} className="flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2] active:bg-[#dcdcdc]">
+                    <img src="/assets/project-search-btn.svg" alt="" className="size-[20px]" />
+                  </button>
+                ) : (
+                  <label className={`flex h-[32px] min-w-0 items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[8px] ${filesSearchCollapsed ? "flex-1" : "w-[256px] shrink-0"} ${filesSearchFocused ? "" : "pr-[16px]"}`}>
+                    <img
+                      src={filesSearchFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"}
+                      alt=""
+                      className="size-[16px] shrink-0"
+                    />
+                    <input
+                      ref={filesSearchCollapsed ? collapsedSearchInputRef : undefined}
+                      autoFocus={filesSearchCollapsed}
+                      aria-label="搜索文件名称"
+                      placeholder="搜索文件名称"
+                      value={filesQuery}
+                      onChange={event => setFilesQuery(event.target.value)}
+                      onFocus={() => setFilesSearchFocused(true)}
+                      onBlur={() => {
+                        setFilesSearchFocused(false);
+                        if (filesSearchCollapsed && !filesQuery) setFilesSearchOpen(false);
+                      }}
+                      className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] outline-none placeholder:text-[rgba(0,0,0,0.38)]"
+                    />
+                    {filesQuery && (
+                      <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setFilesQuery("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+                        <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
+                      </button>
+                    )}
+                  </label>
+                )}
                 <FileFilterButton
                   key={tab}
                   ariaLabel="筛选"
@@ -3510,7 +3611,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
                   onTimeFilterChange={tab === "来源" ? setSourceTimeFilter : setArtifactTimeFilter}
                 />
                 {tab === "来源" && (
-                  <button type="button" onClick={() => uploadInputRef.current?.click()} className="flex h-[32px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#1e63f5] px-[16px] text-[14px] font-normal leading-[22px] text-[#1e63f5] hover:bg-[#ebf4ff]">
+                  <button ref={filesUploadRef} type="button" onClick={() => uploadInputRef.current?.click()} className="flex h-[32px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#1e63f5] px-[16px] text-[14px] font-normal leading-[22px] text-[#1e63f5] hover:bg-[#ebf4ff]">
                     <img src="/assets/project-add-blue.svg" alt="" className="size-[16px] shrink-0" />
                     上传文件
                     <img src="/assets/project-direction-down-blue.svg" alt="" className="size-[16px] shrink-0" />
@@ -3529,7 +3630,14 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
             event.target.value = "";
           }} />
           <div role="tabpanel" aria-label={tab} className={`min-h-0 flex-1 ${tab === "任务" ? "-mx-[8px] overflow-y-auto pt-[12px]" : "flex flex-col"}`}>
-            {tab !== "任务" ? (
+            {tab === "配置" ? (
+              // Figma 8819:63414：窄屏把指令 / 成员收进「配置」页签，卡片满宽、圆角 12、边框 #E6E6E6
+              <div className="min-h-0 flex-1 overflow-y-auto pt-[16px]">
+                <div id="project-configuration" className="overflow-hidden rounded-[12px] border border-[#e6e6e6]">
+                  <ProjectConfigurationSections project={project} onEditInstruction={() => setInstructionOpen(true)} onAddMember={() => setMembersOpen(true)} />
+                </div>
+              </div>
+            ) : tab !== "任务" ? (
               <ProjectFilesPanel key={tab} kind={tab === "来源" ? "sources" : "artifacts"} files={project.files ?? DEMO_PROJECT_FILES} query={filesQuery} formats={tab === "来源" ? sourceFormats : artifactFormats} timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter} onChange={files => onUpdateProject({ files })} />
             ) : orderedTasks.length > 0 ? (
               <div className="flex flex-col gap-[8px]">
@@ -3567,30 +3675,9 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
         </div>
       </div>
 
-      {configurationOpen && <div id="project-configuration" className="w-[320px] shrink-0 overflow-hidden rounded-[12px] border border-[#e6e6e6] max-[1000px]:hidden">
-        <div className="relative flex flex-col gap-[8px] border-b border-[#e6e6e6] p-[16px]">
-          <p className="text-[14px] font-bold leading-[24px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">指令</p>
-          <button type="button" aria-label="编辑指令" onClick={() => setInstructionOpen(true)} className="absolute right-[16px] top-[16px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
-            <img src="/assets/49891.svg" alt="" />
-          </button>
-          <p className={`break-words whitespace-pre-wrap text-[12px] font-normal leading-[20px] tracking-[0.012px] ${project.instruction ? "text-[rgba(0,0,0,0.88)]" : "text-[rgba(0,0,0,0.38)]"}`}>
-            {project.instruction || "设定项目背景与规范，让 AI 与你高效协作"}
-          </p>
-        </div>
-        <div className="relative flex flex-col gap-[8px] p-[16px]">
-          <p className="text-[14px] font-bold leading-[24px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">成员</p>
-          <button type="button" aria-label="添加成员" onClick={() => setMembersOpen(true)} className="absolute right-[16px] top-[16px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
-            <img src="/assets/49891.svg" alt="" />
-          </button>
-          {project.members?.length ? (
-            <div className="flex items-center py-[4px]">
-              {project.members.slice(0, 8).map(member => (
-                <span key={member.id} title={member.name} className="-mr-[8px] flex size-[24px] shrink-0 items-center justify-center rounded-full border border-white text-[12px] font-normal text-white" style={{ backgroundColor: member.color }}>{getAvatarInitial(member.name)}</span>
-              ))}
-              {project.members.length > 8 && <span className="ml-[8px] rounded-full border border-[#ebf4ff] px-[4px] text-[12px] text-[#1e63f5]">+{project.members.length - 8}</span>}
-            </div>
-          ) : <p className="font-['PingFang_SC:Regular'] text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.38)]">协作者</p>}
-        </div>
+      {/* 宽屏：右侧常驻配置边栏（< 800px 时改为「配置」页签，见上方 tabpanel） */}
+      {configurationOpen && !compact && <div id="project-configuration" className="w-[320px] shrink-0 overflow-hidden rounded-[12px] border border-[#e6e6e6]">
+        <ProjectConfigurationSections project={project} onEditInstruction={() => setInstructionOpen(true)} onAddMember={() => setMembersOpen(true)} />
       </div>}
         {menuTask && taskMenu && (
           <OperationMenu ref={taskMenuRef} anchor={taskMenu.anchor} gap={4} role="menu" aria-label="项目任务操作" onKeyDown={event => {
@@ -4034,6 +4121,9 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const [projectConfigurationOpen, setProjectConfigurationOpen] = useState(true);
+  // 项目详情页宽度 < 800px 时进入紧凑布局：右侧「指令 / 成员」边栏收起，内容并入「配置」页签
+  const [detailCompact, setDetailCompact] = useState(false);
+  const detailContentRef = useRef<HTMLDivElement>(null);
   const [projectListOpen, setProjectListOpen] = useState(false);
   const [automationOpen, setAutomationOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -4050,6 +4140,20 @@ export default function App() {
   const uploadTimers = useRef(new Map<string, number>());
   const [dragActive, setDragActive] = useState(false);
   const dragDepth = useRef(0);
+
+  // 详情页基准取「左侧主内容区」宽度（不含右侧配置边栏）：
+  // 主内容区 = 页面宽 − 左右内边距 32 − 与边栏的间距 16 − 边栏 320；
+  // 主内容区 < 800px 时右侧边栏不再常驻，「指令 / 成员」并入「配置」页签。
+  // 用固定基准（始终按边栏常驻计算）而非实测主列，避免收起边栏后宽度反增导致反复切换。
+  useLayoutEffect(() => {
+    const element = detailContentRef.current;
+    if (!element) return;
+    const update = () => setDetailCompact(element.clientWidth - 368 < 800);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const replaceAttachments = useCallback((next: ChatAttachment[]) => {
     attachmentsRef.current = next;
@@ -4461,6 +4565,7 @@ export default function App() {
       )}
       {/* main content: header always at App level so sidebar can never affect it */}
       <div
+        ref={detailContentRef}
         className="chat-layout relative z-20 flex min-h-0 min-w-[320px] flex-1 flex-col bg-white p-0"
         onDragEnter={event => {
           if (!isFileDrag(event)) return;
@@ -4488,6 +4593,7 @@ export default function App() {
               key={activeProject.id}
               project={activeProject}
               panelOpen={projectConfigurationOpen}
+              showPanelToggle={!detailCompact}
               onTogglePanel={() => setProjectConfigurationOpen(open => !open)}
               onEdit={updates => setProjects(current => current.map(project => project.id === activeProject.id ? { ...project, name: updates.name, description: updates.description } : project))}
               onTransfer={owner => {
@@ -4618,6 +4724,7 @@ export default function App() {
                 key={activeProject.id}
                 project={activeProject}
                 configurationOpen={projectConfigurationOpen}
+                compact={detailCompact}
                 projects={projects}
                 onCreateProject={project => {
                   const id = Date.now();

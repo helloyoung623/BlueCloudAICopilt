@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { OperationMenu } from "./operation-menu";
 import { EXAMPLE_FILES } from "./attachment-picker";
@@ -230,42 +231,98 @@ export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onC
   };
 
   const actions = selected ? source ? getSourceActions(selected.status) : ["上传到项目资料", "下载", "删除"] : [];
-  const tailColumns = source ? 4 : 3;
+
+  // 响应式列规则（Figma 9906:45129）：
+  // - 非文件列每列宽度 = 容器总宽 / 6，并限制在 128 ~ 320px；文件名占剩余全部宽度
+  // - 文件名实时宽度 < 320px 时按优先级依次隐藏：大小 → 时间 → 上传人(来源) → 状态
+  const hideOrder = source ? ["size", "time", "owner", "status"] : ["size", "time", "source"];
+  const [columnLayout, setColumnLayout] = useState<{ width: number; hidden: string[] }>({ width: 128, hidden: [] });
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const hideOrderKey = hideOrder.join(",");
+
+  useLayoutEffect(() => {
+    const element = bodyRef.current;
+    if (!element) return;
+    const update = () => {
+      const total = element.clientWidth;
+      if (!total) return;
+      const width = Math.min(320, Math.max(128, total / 6));
+      const hidden: string[] = [];
+      while (hidden.length < hideOrder.length && total - (hideOrder.length - hidden.length) * width < 320) {
+        hidden.push(hideOrder[hidden.length]);
+      }
+      setColumnLayout({ width, hidden });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [hideOrderKey]);
+
+  const showOwner = !columnLayout.hidden.includes(source ? "owner" : "source");
+  const showTime = !columnLayout.hidden.includes("time");
+  const showStatus = source && !columnLayout.hidden.includes("status");
+  const showSize = !columnLayout.hidden.includes("size");
+  // 列展示顺序（Figma 9234:27120）：文件名 → 状态（仅来源）→ 上传人/来源 → 时间 → 大小
+  const columns = [
+    { key: "name", label: "文件名", visible: true },
+    { key: "status", label: "状态", visible: showStatus },
+    { key: "owner", label: source ? "上传人" : "来源", visible: showOwner },
+    { key: "time", label: source ? "上传时间" : "生成时间", visible: showTime },
+    { key: "size", label: "大小", visible: showSize },
+  ].filter(column => column.visible);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-project-files={kind}>
       {visible.length > 0 ? (
-        <div className="min-h-0 flex-1 overflow-auto">
-          <table className={`w-full table-fixed border-collapse text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${source ? "min-w-[720px]" : "min-w-[600px]"}`}>
+        <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto">
+          <table className="w-full table-fixed border-collapse text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
             <colgroup>
-              <col />
-              {Array.from({ length: tailColumns }, (_, index) => <col key={index} className="w-[120px]" />)}
+              {columns.map(column => column.key === "name"
+                ? <col key={column.key} />
+                : <col key={column.key} style={{ width: columnLayout.width }} />)}
             </colgroup>
             <thead>
               <tr className="h-[40px] text-[rgba(0,0,0,0.6)]">
-                {["文件名", source ? "上传人" : "来源", source ? "上传时间" : "生成时间", ...(source ? ["状态"] : []), "大小"].map(label => <th key={label} className="sticky top-0 z-[2] bg-white px-[8px] text-left align-middle font-normal">{label}</th>)}
+                {columns.map(column => <th key={column.key} className="sticky top-0 z-[2] bg-white px-[8px] text-left align-middle font-normal">{column.label}</th>)}
               </tr>
             </thead>
             <tbody>
-              {visible.map(file => (
-                <tr key={file.id} data-project-file={file.id} data-file-status={file.status} className={`group relative border-t border-[#f2f2f2] hover:z-[1] hover:bg-white hover:shadow-[0_0_8px_rgba(0,0,0,0.08)] focus-within:z-[1] focus-within:shadow-[0_0_8px_rgba(0,0,0,0.08)] ${menu?.id === file.id ? "z-[1] shadow-[0_0_8px_rgba(0,0,0,0.08)]" : ""}`}>
-                  <td className="h-[48px] px-[8px]">
+              {visible.map(file => {
+                const content: Record<string, ReactNode> = {
+                  name: (
                     <div className="flex min-w-0 items-center gap-[8px]">
                       <span className="size-[16px] shrink-0"><span className={`inline-flex origin-top-left ${fileIcon(file.name) === "18532" ? "size-[24px] scale-[0.666667]" : ""}`}><img src={`/assets/${fileIcon(file.name)}.svg`} alt="" className="max-w-none" /></span></span>
                       <span className="truncate" title={file.name}>{file.name}</span>
                     </div>
-                  </td>
-                  <td className="h-[48px] truncate px-[8px]" title={file.owner}>{file.owner}</td>
-                  <td className="h-[48px] px-[8px]">{new Date(file.createdAt).toLocaleDateString("sv-SE").replace(/-/g, "/")}</td>
-                  {source && <td className="h-[48px] px-[8px]"><div className="flex items-center gap-[8px]"><img src={`/assets/${STATUS_ICONS[file.status]}.svg`} alt="" />{STATUS_LABELS[file.status]}</div></td>}
-                  <td className="relative h-[48px] px-[8px] pr-[32px]">
-                    {formatFileSize(file.blob ? file.blob.size : file.size)}
-                    <button type="button" aria-label={`文件操作 ${file.name}`} aria-haspopup="menu" aria-expanded={menu?.id === file.id} onClick={event => setMenu(menu?.id === file.id ? null : { id: file.id, anchor: event.currentTarget })} className={`absolute top-1/2 right-[8px] flex size-[24px] -translate-y-1/2 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] group-hover:visible group-focus-within:visible [@media(hover:none)]:visible ${menu?.id === file.id ? "visible" : "invisible"}`}>
-                      <img src="/assets/64110.svg" alt="" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                  ),
+                  status: <div className="flex items-center gap-[8px]"><img src={`/assets/${STATUS_ICONS[file.status]}.svg`} alt="" />{STATUS_LABELS[file.status]}</div>,
+                  owner: <span className="block truncate" title={file.owner}>{file.owner}</span>,
+                  time: new Date(file.createdAt).toLocaleDateString("sv-SE").replace(/-/g, "/"),
+                  size: formatFileSize(file.blob ? file.blob.size : file.size),
+                };
+                const cells = columns.map(column => ({ key: column.key, node: content[column.key] }));
+                // 操作按钮挂在最后一个可见单元格内绝对定位，悬浮覆盖在最后一列之上、不占列宽
+                const lastKey = cells[cells.length - 1].key;
+                return (
+                  <tr key={file.id} data-project-file={file.id} data-file-status={file.status} className={`group border-t border-[#f2f2f2] hover:z-[1] hover:bg-white hover:shadow-[0_0_8px_rgba(0,0,0,0.08)] focus-within:z-[1] focus-within:shadow-[0_0_8px_rgba(0,0,0,0.08)] ${menu?.id === file.id ? "z-[1] shadow-[0_0_8px_rgba(0,0,0,0.08)]" : ""}`}>
+                    {cells.map(cell => (
+                      <td key={cell.key} className={`h-[48px] px-[8px] ${cell.key === lastKey ? "relative pr-[32px]" : ""}`}>
+                        {cell.node}
+                        {cell.key === lastKey && (
+                          <button type="button" aria-label={`文件操作 ${file.name}`} aria-haspopup="menu" aria-expanded={menu?.id === file.id} onClick={event => setMenu(menu?.id === file.id ? null : { id: file.id, anchor: event.currentTarget })} className={`absolute top-1/2 right-[8px] flex size-[24px] -translate-y-1/2 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] group-hover:visible group-focus-within:visible [@media(hover:none)]:visible ${menu?.id === file.id ? "visible" : "invisible"}`}>
+                            <img src="/assets/64110.svg" alt="" />
+                          </button>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
