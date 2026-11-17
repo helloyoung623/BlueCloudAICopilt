@@ -6,7 +6,9 @@ type OperationMenuProps = HTMLAttributes<HTMLDivElement> & {
   anchor: HTMLElement | null;
   submenu?: boolean;
   gap?: number;
-  align?: "start" | "end";
+  // "start"：面板左上角对锚点左下角；"end"：面板右上角对锚点右下角；
+  // "auto"：优先 start，右侧视口放不下时自动退为 end（Figma 9883:63692 筛选面板定位规则）
+  align?: "start" | "end" | "auto";
   // 强制在锚点下方展开（不自动翻到上方），用于长列表日期面板等场景
   forceBelow?: boolean;
   // 面板最大高度，超出则滚动（设计稿 DropdownMenu 最长 480px）
@@ -65,9 +67,11 @@ export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
         const cappedAvailable = maxHeight != null ? Math.min(available, maxHeight) : available;
         const renderedHeight = Math.min(height, cappedAvailable);
         const top = placement?.top ?? (opensAbove ? rect.top - gap - renderedHeight : rect.bottom + gap);
+        // auto：面板左上角优先对锚点左下角；右侧视口空间不足时退为右上角对右下角
+        const resolvedAlign = align === "auto" ? (rect.left + width <= window.innerWidth - padding ? "start" : "end") : align;
         setPosition({
           position: "fixed",
-          left: Math.max(padding, Math.min(placement?.left ?? (align === "end" ? rect.right - width : rect.left), window.innerWidth - width - padding)),
+          left: Math.max(padding, Math.min(placement?.left ?? (resolvedAlign === "end" ? rect.right - width : rect.left), window.innerWidth - width - padding)),
           top: Math.max(padding, Math.min(top, viewportHeight - renderedHeight - padding)),
           maxWidth: window.innerWidth - padding * 2,
           maxHeight: cappedAvailable,

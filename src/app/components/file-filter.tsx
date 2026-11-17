@@ -280,7 +280,7 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
     }} className={`library-filter-trigger ${hasFilters ? "library-filter-active" : ""}`}>
       <img src={hasFilters ? "/assets/88901.svg" : "/assets/filter-btn.svg"} alt="" />
     </button>
-    {open && <OperationMenu ref={menuRef} anchor={buttonRef.current} align="end" gap={4} role="dialog" aria-label={ariaLabel} className="library-surface library-filter-menu">
+    {open && <OperationMenu ref={menuRef} anchor={buttonRef.current} align="auto" gap={4} role="dialog" aria-label={ariaLabel} className="library-surface library-filter-menu">
       <div className="library-filter-heading">格式</div>
       {FILE_FORMATS.map(item => <button key={item} type="button" role="checkbox" aria-checked={selectedFormats.includes(item)} onClick={() => onFormatsChange(selectedFormats.includes(item) ? selectedFormats.filter(value => value !== item) : [...selectedFormats, item])} className="library-filter-item">
         {item}{selectedFormats.includes(item) && <img src="/assets/ecd73.svg" alt="" />}
