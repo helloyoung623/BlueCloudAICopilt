@@ -28,10 +28,14 @@ import { AttachmentPicker } from "./components/attachment-picker";
 import type { AttachmentSource } from "./components/attachment-picker";
 import { DEMO_PROJECT_FILES, ProjectFilesPanel, pickSourceFiles } from "./components/project-files";
 import type { ProjectFiles } from "./components/project-files";
+import { FileFilterButton } from "./components/file-filter";
+import type { FileFormat, TimeFilter } from "./components/file-filter";
 import { Popover, PopoverAnchor } from "./components/ui/popover";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { LibraryView } from "./components/library-view";
+import { ListPageHeader } from "./components/list-page-header";
+import { AutomationView } from "./components/automation-view";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -1529,7 +1533,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
               onClick={() => setCreateProjectOpen(true)}
               className="absolute bottom-[7px] left-[188px] right-[4px] top-[3px] flex cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]"
             >
-              <img src="/assets/4fe43.svg" alt="" className="shrink-0" />
+              <img src="/assets/project-add.svg" alt="" className="shrink-0" />
             </button>
           )}
         </div>
@@ -2718,6 +2722,52 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
 
 const TRANSFER_MEMBERS = ["吴易奚", "吴易奚", "吴易奚", "吴易奚", "孙雨薇"];
 
+// Figma 9244:31238「移交项目」确认弹窗：选择人员后先确认，点确定才真正移交
+function TransferConfirmDialog({ member, onCancel, onConfirm }: {
+  member: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={member !== null} onOpenChange={open => { if (!open) onCancel(); }}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="w-[480px] max-w-[calc(100%-32px)] gap-0 rounded-[8px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[480px] [&>button]:hidden"
+      >
+        <div className="flex w-full flex-col gap-[16px] px-[16px] pt-[24px]">
+          {/* 标题：警告图标 + 标题 + 关闭 */}
+          <div className="flex w-full items-center gap-[8px]">
+            <img src="/assets/transfer-warning.svg" alt="" className="size-[24px] shrink-0" />
+            <DialogTitle className="min-w-0 flex-1 font-['PingFang_SC:Medium'] text-[20px] font-medium leading-[28px] tracking-[0.001em] text-[rgba(0,0,0,0.88)]">
+              确定移交要移交此项目吗？
+            </DialogTitle>
+            <DialogClose asChild>
+              <button type="button" aria-label="关闭移交确认弹窗" className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
+                <img src="/assets/f802d.svg" alt="" />
+              </button>
+            </DialogClose>
+          </div>
+          {/* 正文：与标题文字左对齐（16 + 24 + 8 = 48） */}
+          <p className="pl-[32px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.001em] text-[rgba(0,0,0,0.88)]">
+            确定要将此项目及其关联资源移交给 {member} 吗？移交后您将失去管理权限
+          </p>
+          {/* 按钮：取消 / 确定 */}
+          <div className="flex w-full items-center justify-end gap-[24px] py-[16px]">
+            <DialogClose asChild>
+              <button type="button" className="cursor-pointer rounded-[4px] px-[4px] py-[3px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f7f7f7]">
+                取消
+              </button>
+            </DialogClose>
+            <button type="button" onClick={onConfirm} className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1]">
+              确定
+            </button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfer, menuOnly = false }: {
   project: ProjectItem;
   onOpen: () => void;
@@ -2732,6 +2782,7 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
   const [transferOpen, setTransferOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
+  const [confirmMember, setConfirmMember] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const closeTransferTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transferTriggerRef = useRef<HTMLButtonElement>(null);
@@ -2866,11 +2917,11 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
                   role="menu"
                   onMouseEnter={openTransfer}
                   onMouseLeave={deferCloseTransfer}
-                  className="w-[224px] overflow-hidden rounded-[8px] bg-white shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+                  className="w-[208px] overflow-hidden rounded-[8px] bg-white shadow-[0_0_12px_rgba(0,0,0,0.08)]"
                 >
                   <div className="bg-white px-[16px] py-[4px]">
                     <label className="flex h-[32px] items-center gap-[8px] border-b border-[#1e63f5]">
-                      <img src="/assets/16710.svg" alt="" className="shrink-0" />
+                      <img src="/assets/member-search-blue.svg" alt="" className="shrink-0" />
                       <input
                         autoFocus
                         value={memberSearch}
@@ -2880,13 +2931,13 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
                       />
                     </label>
                   </div>
-                  <div className="max-h-[240px] overflow-y-auto px-[8px]">
+                  <div className="max-h-[480px] overflow-y-auto px-[8px]">
                     {members.map((member, index) => (
                       <button
                         key={`${member}-${index}`}
                         type="button"
                         role="menuitem"
-                        onClick={() => { onTransfer?.(member); closeMenus(); }}
+                        onClick={() => { setConfirmMember(member); closeMenus(); }}
                         className="flex w-[192px] cursor-pointer items-center rounded-[8px] px-[8px] py-[10px] hover:bg-[#f7f7f7]"
                       >
                         <span className="flex h-[24px] max-w-[144px] items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px]">
@@ -2919,6 +2970,11 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
           </div>
         </OperationMenu>
       )}
+      <TransferConfirmDialog
+        member={confirmMember}
+        onCancel={() => setConfirmMember(null)}
+        onConfirm={() => { if (confirmMember) onTransfer?.(confirmMember); setConfirmMember(null); }}
+      />
     </div>
   );
 }
@@ -2956,97 +3012,6 @@ function ProjectHeaderActions({ project, onEdit, onTransfer, onArchive, onDelete
 // Figma 9446:46779 / 9625:52202「Tag-2」Size=L
 // ============================================================================
 
-// 响应式搜索组件：
-// ≥800px：256x32 搜索框常驻（放大镜 black 0.26 → #1C61F1 激活态，输入后出清空按钮）
-// <800px：收起为 32x32 搜索按钮（hover #F2F2F2 / pressed #DCDCDC），点击展开输入框；
-//         清空且失焦自动收起，点击 ✕ 清空时阻止 blur 误收起
-function ListPageSearch({ value, onValueChange, placeholder, ariaLabel, narrowPlaceholder = "搜索" }: {
-  value: string;
-  onValueChange: (value: string) => void;
-  placeholder: string;
-  ariaLabel: string;
-  narrowPlaceholder?: string;
-}) {
-  const [focused, setFocused] = useState(false);
-  const [open, setOpen] = useState(false);
-  // 兜底：展开状态下内容被清空且输入框已失焦（如失焦后点击 ✕ 清空，onBlur 已错过）→ 自动收起。
-  // 用 document.activeElement 实时判断，避免 autoFocus 与 focused 状态不同步时误收起
-  const narrowSearchInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (open && !value && document.activeElement !== narrowSearchInputRef.current) {
-      setOpen(false);
-    }
-  }, [open, value]);
-  const searchIcon = focused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg";
-  return (
-    <>
-      <div className="ml-auto hidden h-[32px] w-[256px] shrink-0 items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[16px] min-[800px]:flex">
-        <img src={searchIcon} alt="" className="size-[16px] shrink-0" />
-        <input
-          value={value}
-          onChange={event => onValueChange(event.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          placeholder={placeholder}
-          aria-label={ariaLabel}
-          className="min-w-0 flex-1 bg-transparent font-normal text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
-        />
-        {value && (
-          <button
-            type="button"
-            aria-label="清空搜索"
-            onClick={() => onValueChange("")}
-            className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center"
-          >
-            <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
-          </button>
-        )}
-      </div>
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-[12px] min-[800px]:hidden">
-        {open ? (
-          <div className="flex h-[32px] min-w-0 flex-1 items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[8px]">
-            <img src={searchIcon} alt="" className="size-[16px] shrink-0" />
-            <input
-              ref={narrowSearchInputRef}
-              autoFocus
-              value={value}
-              onChange={event => onValueChange(event.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => {
-                setFocused(false);
-                if (!value) setOpen(false);
-              }}
-              placeholder={narrowPlaceholder}
-              aria-label={ariaLabel}
-              className="min-w-0 flex-1 bg-transparent font-normal text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
-            />
-            {value && (
-              <button
-                type="button"
-                aria-label="清空搜索"
-                onMouseDown={event => event.preventDefault()}
-                onClick={() => onValueChange("")}
-                className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center"
-              >
-                <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
-              </button>
-            )}
-          </div>
-        ) : (
-          <button
-            type="button"
-            aria-label={ariaLabel}
-            onClick={() => setOpen(true)}
-            className="flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2] active:bg-[#dcdcdc]"
-          >
-            <img src="/assets/project-search-btn.svg" alt="" className="size-[20px]" />
-          </button>
-        )}
-      </div>
-    </>
-  );
-}
-
 // Tag-2 组件 Size=L：Selected → #F7F7F7/r8 + 文字 0.88；Default → 透明/r4 + 文字 0.6；Hover → #F2F2F2/r8
 // Figma 9625:52202 文字填充变量：选中 11548:25 (opacity 0.88)、默认 11548:26 (opacity 0.6)，
 // 与项目详情页「任务/来源/产物」Tag-2 一致（历史已按设计稿校准）
@@ -3073,43 +3038,16 @@ function TagTabs<T extends string>({ items, active, onChange }: {
   );
 }
 
-// 列表页页头：标题 20px/28 Medium + 共享搜索 + 新建按钮插槽（响应式由插槽内按钮自行控制）
-function ListPageHeader({ title, query, onQueryChange, searchPlaceholder, searchAriaLabel, narrowSearchPlaceholder, children }: {
-  title: string;
-  query: string;
-  onQueryChange: (value: string) => void;
-  searchPlaceholder: string;
-  searchAriaLabel: string;
-  narrowSearchPlaceholder?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <header className="flex shrink-0 items-center gap-[12px] pb-[16px] pl-0 pr-0 pt-0">
-      <h1 className="min-w-fit shrink-0 font-['PingFang_SC:Medium'] text-[20px] font-medium leading-[28px] tracking-[0.02px] text-[rgba(0,0,0,0.88)]">
-        {title}
-      </h1>
-      <ListPageSearch
-        value={query}
-        onValueChange={onQueryChange}
-        placeholder={searchPlaceholder}
-        ariaLabel={searchAriaLabel}
-        narrowPlaceholder={narrowSearchPlaceholder}
-      />
-      {children}
-    </header>
-  );
-}
-
 const PROJECT_TABS = ["全部", "我创建的", "我参与的"] as const;
-const AUTOMATION_TABS = ["已启用", "已暂停", "已结束"] as const;
 
-function ProjectListView({ projects, onCreateProject, onSelectProject, onEditProject, onArchiveProject, onDeleteProject }: {
+function ProjectListView({ projects, onCreateProject, onSelectProject, onEditProject, onArchiveProject, onDeleteProject, onTransferProject }: {
   projects: ProjectItem[];
   onCreateProject: (project: Omit<ProjectItem, "id">) => void;
   onSelectProject: (id: number) => void;
   onEditProject: (id: number, updates: { name: string; description: string }) => void;
   onArchiveProject: (id: number) => void;
   onDeleteProject: (id: number) => void;
+  onTransferProject: (id: number, member: string) => void;
 }) {
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<ProjectItem | null>(null);
@@ -3163,7 +3101,7 @@ function ProjectListView({ projects, onCreateProject, onSelectProject, onEditPro
             <div className="flex flex-1 items-center justify-center pb-[260px]">
               <div className="flex w-[320px] flex-col items-center justify-end">
                 <div className="mb-[-80px] size-[320px] shrink-0 overflow-hidden">
-                  <img src="/assets/8dc56.png" alt="" className="size-[320px] max-w-none object-cover" />
+                  <img src="/assets/projects-empty-design.png" alt="暂无项目" className="size-[320px] max-w-none object-cover" />
                 </div>
                 <div className="flex w-full flex-col items-center justify-center gap-[4px] pb-[32px]">
                   <p className="whitespace-nowrap font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">
@@ -3182,6 +3120,7 @@ function ProjectListView({ projects, onCreateProject, onSelectProject, onEditPro
                   onRename={() => setEditingProject(project)}
                   onArchive={() => onArchiveProject(project.id)}
                   onDelete={() => onDeleteProject(project.id)}
+                  onTransfer={member => onTransferProject(project.id, member)}
                 />
               ))}
             </div>
@@ -3196,54 +3135,6 @@ function ProjectListView({ projects, onCreateProject, onSelectProject, onEditPro
         onEdit={updates => { if (editingProject) onEditProject(editingProject.id, updates); setEditingProject(null); }}
       />
     </>
-  );
-}
-
-// Figma 9625:49728「自动化任务」：
-// 标题「自动化任务」(360,50 20px/28 Medium) / Search Input (943,48 256x32，占位「搜索自动化任务名称」)
-// / Filled Primary Button (1211,48 109x32，#1E63F5 r4，左加号 +「新建」+ 右下拉箭头)
-// / Tag-2 (360,96 275x36，已启用/已暂停/已结束，itemSpacing 16) / 内容区留白
-// 响应式规则、搜索组件、tabs 组件、交互与项目页完全一致（复用 ListPageHeader / ListPageSearch / TagTabs）
-function AutomationListView() {
-  const [query, setQuery] = useState("");
-  const [tab, setTab] = useState<(typeof AUTOMATION_TABS)[number]>("已启用");
-  return (
-    <main className="relative min-h-0 flex-1 overflow-y-auto bg-white px-[16px] min-[800px]:px-[24px]">
-      <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col">
-        <ListPageHeader
-          title="自动化任务"
-          query={query}
-          onQueryChange={setQuery}
-          searchPlaceholder="搜索自动化任务名称"
-          searchAriaLabel="搜索自动化任务"
-        >
-          {/* ≥560px：Filled Primary Button 9625:52211，109x32 / r4 / #1E63F5 / px16 gap8 */}
-          <button
-            type="button"
-            className="hidden shrink-0 cursor-pointer items-center justify-center gap-[8px] overflow-hidden rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] hover:bg-[#1554d1] min-[560px]:flex"
-          >
-            <img src="/assets/automation-create-add.svg" alt="" className="size-[16px] shrink-0" />
-            <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)]">
-              新建
-            </span>
-            <img src="/assets/automation-create-chevron.svg" alt="" className="size-[16px] shrink-0" />
-          </button>
-          {/* <560px：与项目页同一响应式规则，收起为 32x32 蓝色图标按钮 */}
-          <button
-            type="button"
-            aria-label="新建"
-            className="hidden size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#1e63f5] hover:bg-[#1554d1] max-[559px]:flex"
-          >
-            <img src="/assets/automation-create-add.svg" alt="" className="size-[16px]" />
-          </button>
-        </ListPageHeader>
-
-        <TagTabs items={AUTOMATION_TABS} active={tab} onChange={setTab} />
-
-        {/* 内容区：Figma 9625:49728 为空态留白，不放列表/插图 */}
-        <div className="flex-1" />
-      </div>
-    </main>
   );
 }
 
@@ -3292,6 +3183,7 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
   const [hoveredCard, setHoveredCard] = useState<number | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
   const [transferSubmenuOpen, setTransferSubmenuOpen] = useState(false);
+  const [confirmTransfer, setConfirmTransfer] = useState<{ id: number; member: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const transferTriggerRef = useRef<HTMLButtonElement>(null);
   const closeTransferTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3443,11 +3335,11 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
                   role="menu"
                   onMouseEnter={openTransfer}
                   onMouseLeave={deferCloseTransfer}
-                  className="w-[224px] overflow-hidden rounded-[8px] bg-white shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+                  className="w-[208px] overflow-hidden rounded-[8px] bg-white shadow-[0_0_12px_rgba(0,0,0,0.08)]"
                 >
                   <div className="bg-white px-[16px] py-[4px]">
                     <label className="flex h-[32px] items-center gap-[8px] border-b border-[#1e63f5]">
-                      <img src="/assets/16710.svg" alt="" className="shrink-0" />
+                      <img src="/assets/member-search-blue.svg" alt="" className="shrink-0" />
                       <input
                         autoFocus
                         value={memberSearch}
@@ -3457,13 +3349,26 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
                       />
                     </label>
                   </div>
-                  <div className="max-h-[240px] overflow-y-auto px-[8px]">
+                  <div className="max-h-[480px] overflow-y-auto px-[8px]">
                     {members.map((member, index) => (
-                      <button key={`${member}-${index}`} type="button" onClick={() => { onTransferProject(menuProject.id, member); closeMenus(); }} className="flex h-[40px] w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left hover:bg-[#f7f7f7]">
-                        <span className="font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">{member}</span>
+                      <button
+                        key={`${member}-${index}`}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { setConfirmTransfer({ id: menuProject.id, member }); closeMenus(); }}
+                        className="flex w-[192px] cursor-pointer items-center rounded-[8px] px-[8px] py-[10px] hover:bg-[#f7f7f7]"
+                      >
+                        <span className="flex h-[24px] max-w-[144px] items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px]">
+                          <span className="flex size-[20px] shrink-0 items-center justify-center rounded-full bg-[#1e63f5] font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(255,255,255,0.98)]">
+                            {getAvatarInitial(member)}
+                          </span>
+                          <span className="truncate font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.6)]">
+                            {member}
+                          </span>
+                        </span>
                       </button>
                     ))}
-                    {members.length === 0 && <p className="px-[8px] py-[12px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)]">没有匹配的成员</p>}
+                    {members.length === 0 && <p className="px-[8px] py-[10px] text-[14px] text-[rgba(0,0,0,0.38)]">没有匹配的成员</p>}
                   </div>
                 </OperationMenu>
               )}
@@ -3504,6 +3409,11 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
         editProject={editingProject}
         onEdit={updates => { if (editingProject) onEditProject(editingProject.id, updates); setEditingProject(null); }}
       />
+      <TransferConfirmDialog
+        member={confirmTransfer?.member ?? null}
+        onCancel={() => setConfirmTransfer(null)}
+        onConfirm={() => { if (confirmTransfer) onTransferProject(confirmTransfer.id, confirmTransfer.member); setConfirmTransfer(null); }}
+      />
     </main>
   );
 }
@@ -3525,6 +3435,11 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
   const [tab, setTab] = useState<"任务" | "来源" | "产物">("任务");
   const [filesQuery, setFilesQuery] = useState("");
   const [filesSearchFocused, setFilesSearchFocused] = useState(false);
+  // 来源 / 产物两页签各自独立的筛选条件，字段与交互和资料库一致（格式 + 更新时间）
+  const [sourceFormats, setSourceFormats] = useState<FileFormat[]>([]);
+  const [sourceTimeFilter, setSourceTimeFilter] = useState<TimeFilter>(null);
+  const [artifactFormats, setArtifactFormats] = useState<FileFormat[]>([]);
+  const [artifactTimeFilter, setArtifactTimeFilter] = useState<TimeFilter>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [taskMenu, setTaskMenu] = useState<{ id: number; anchor: HTMLButtonElement } | null>(null);
   const [renamingTask, setRenamingTask] = useState<{ id: number; title: string } | null>(null);
@@ -3552,7 +3467,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-[16px] font-bold leading-[24px] tracking-[0.016px] text-[rgba(0,0,0,0.88)]">{project.name}</p>
-              <p className="truncate text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.38)]">{project.description || "描述"}</p>
+              <p className="truncate text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.38)]">{project.description || "暂无简介"}</p>
             </div>
           </div>
           {/* Figma 9234:27120 / 9393:81788：Tag-2 胶囊 Tab（65x36 选中 r8 文字 0.88 / 默认 r4 文字 0.6，
@@ -3586,9 +3501,14 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
                     </button>
                   )}
                 </label>
-                <button type="button" aria-label="筛选" onClick={() => toast.info("筛选功能暂未接入")} className="flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2] active:bg-[#dcdcdc]">
-                  <img src="/assets/project-filter.svg" alt="" className="size-[20px]" />
-                </button>
+                <FileFilterButton
+                  key={tab}
+                  ariaLabel="筛选"
+                  selectedFormats={tab === "来源" ? sourceFormats : artifactFormats}
+                  onFormatsChange={tab === "来源" ? setSourceFormats : setArtifactFormats}
+                  timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter}
+                  onTimeFilterChange={tab === "来源" ? setSourceTimeFilter : setArtifactTimeFilter}
+                />
                 {tab === "来源" && (
                   <button type="button" onClick={() => uploadInputRef.current?.click()} className="flex h-[32px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#1e63f5] px-[16px] text-[14px] font-normal leading-[22px] text-[#1e63f5] hover:bg-[#ebf4ff]">
                     <img src="/assets/project-add-blue.svg" alt="" className="size-[16px] shrink-0" />
@@ -3610,7 +3530,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
           }} />
           <div role="tabpanel" aria-label={tab} className={`min-h-0 flex-1 ${tab === "任务" ? "-mx-[8px] overflow-y-auto pt-[12px]" : "flex flex-col"}`}>
             {tab !== "任务" ? (
-              <ProjectFilesPanel key={tab} kind={tab === "来源" ? "sources" : "artifacts"} files={project.files ?? DEMO_PROJECT_FILES} query={filesQuery} onChange={files => onUpdateProject({ files })} />
+              <ProjectFilesPanel key={tab} kind={tab === "来源" ? "sources" : "artifacts"} files={project.files ?? DEMO_PROJECT_FILES} query={filesQuery} formats={tab === "来源" ? sourceFormats : artifactFormats} timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter} onChange={files => onUpdateProject({ files })} />
             ) : orderedTasks.length > 0 ? (
               <div className="flex flex-col gap-[8px]">
                 {orderedTasks.map(task => (
@@ -3653,7 +3573,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
           <button type="button" aria-label="编辑指令" onClick={() => setInstructionOpen(true)} className="absolute right-[16px] top-[16px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
             <img src="/assets/49891.svg" alt="" />
           </button>
-          <p className="break-words whitespace-pre-wrap text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.88)]">
+          <p className={`break-words whitespace-pre-wrap text-[12px] font-normal leading-[20px] tracking-[0.012px] ${project.instruction ? "text-[rgba(0,0,0,0.88)]" : "text-[rgba(0,0,0,0.38)]"}`}>
             {project.instruction || "设定项目背景与规范，让 AI 与你高效协作"}
           </p>
         </div>
@@ -4397,6 +4317,27 @@ export default function App() {
     setActiveProjectId(null);
     setSelectedProjectId(null);
   };
+  const handleAddLibraryFileToTask = (file: { id: string; name: string; size: string; extension?: string }) => {
+    handleNewChat();
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const sizeMatch = /^([\d.]+)\s*(B|KB|MB|GB)$/i.exec(file.size.trim());
+    const size = sizeMatch
+      ? Math.max(1, Math.round(Number.parseFloat(sizeMatch[1]) * ({ B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 }[sizeMatch[2].toUpperCase() as "B" | "KB" | "MB" | "GB"] ?? 1024 ** 2)))
+      : 2 * 1024 * 1024;
+    const image = ["png", "jpg", "jpeg"].includes(extension);
+    const fakeFile = new File([new Uint8Array(Math.min(size, 1024))], file.name, { type: image ? `image/${extension}` : "application/octet-stream" });
+    Object.defineProperty(fakeFile, "size", { value: size });
+    const attachment: ChatAttachment = {
+      id: `library-${Date.now()}-${file.id}`,
+      file: fakeFile,
+      name: file.name,
+      size,
+      extension,
+      image,
+      status: "ready",
+    };
+    replaceAttachments([attachment]);
+  };
   const handleOpenProjects = () => {
     setMobileNavigationOpen(false);
     activeRunId.current += 1;
@@ -4587,10 +4528,10 @@ export default function App() {
           onNewChat={messages.length > 0 || activeProject !== null ? handleNewChat : undefined}
         />
         <div className={libraryOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-          <LibraryView active={libraryOpen} />
+          <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} />
         </div>
         {libraryOpen ? null : automationOpen
-          ? <AutomationListView />
+          ? <AutomationView />
           : archiveOpen
           ? <ArchiveView
               projects={projects}
@@ -4642,6 +4583,10 @@ export default function App() {
               onDeleteProject={id => {
                 setProjects(current => current.filter(project => project.id !== id));
                 setHistory(current => current.filter(item => item.projectId !== id));
+              }}
+              onTransferProject={(id, member) => {
+                setProjects(current => current.map(project => project.id === id ? { ...project, owner: member } : project));
+                toast.success(`本地示例：项目已移交给${member}`);
               }}
             />
           : messages.length > 0

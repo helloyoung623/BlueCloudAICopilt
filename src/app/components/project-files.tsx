@@ -3,8 +3,10 @@ import { toast } from "sonner";
 import { OperationMenu } from "./operation-menu";
 import { EXAMPLE_FILES } from "./attachment-picker";
 import { formatFileSize, getAttachmentExtension, getAttachmentValidationError } from "./attachment-tray";
+import { formatByExtension, matchFileFilters } from "./file-filter";
+import type { FileFormat, TimeFilter } from "./file-filter";
 
-export type SourceStatus = "enabled" | "disabled" | "failed" | "processing";
+export type SourceStatus = "enabled" | "disabled";
 export type ProjectFile = {
   id: string;
   name: string;
@@ -14,24 +16,122 @@ export type ProjectFile = {
 } & ({ blob: Blob; url?: never; size?: never } | { url: string; size: number; blob?: never });
 export type ProjectFiles = { sources: ProjectFile[]; artifacts: ProjectFile[] };
 
-const statuses: SourceStatus[] = ["enabled", "processing", "disabled", "failed", "enabled"];
+const statuses: SourceStatus[] = ["enabled", "enabled", "disabled", "enabled", "enabled"];
+const DEMO_OWNERS = ["Aiden Chen", "Maya Lin", "Ethan Wu", "Sophie Zhang", "Liam Huang", "Noah Wang"];
+// 产物「来源」列展示任务（或「项目/任务」）名称，与资料库来源列口径一致
+const DEMO_ARTIFACT_SOURCES = [
+  "季度经营复盘", "星辰探索计划/方案评审", "数据看板搭建", "蓝海创新项目/市场调研",
+  "用户体验优化", "数据中台迁移/架构设计", "供应链协同/对账", "品牌焕新工程/视觉稿",
+];
+
+const kb = (value: number) => Math.round(value * 1024);
+const mb = (value: number) => Math.round(value * 1024 * 1024);
+const dayAgo = (days: number) => Date.now() - days * 86_400_000;
+
+// 来源补充样例：[文件名, 大小, 距今天数]，与上面 5 条合计 30 条，日期分散在近 100 天内，
+// 便于验证「近 7 天 / 近 30 天 / 自定义」筛选的真实响应。
+const EXTRA_SOURCE_SEEDS: Array<[string, number, number]> = [
+  ["需求确认纪要.docx", kb(128), 9],
+  ["立项评审材料.pptx", mb(4.6), 12],
+  ["预算明细表.xlsx", kb(320), 15],
+  ["供应商报价单.pdf", kb(880), 18],
+  ["竞品调研报告.pdf", mb(2.4), 21],
+  ["用户访谈记录.docx", kb(96), 24],
+  ["项目里程碑计划.xlsx", kb(210), 28],
+  ["视觉规范说明.pdf", mb(3.1), 31],
+  ["会议录音转写.md", kb(42), 34],
+  ["风险登记表.xlsx", kb(156), 38],
+  ["数据字典.csv", kb(64), 41],
+  ["接口联调说明.md", kb(28), 45],
+  ["测试用例清单.xlsx", kb(480), 49],
+  ["上线检查清单.docx", kb(88), 52],
+  ["项目周报第8期.pdf", kb(720), 56],
+  ["项目周报第9期.pdf", kb(760), 60],
+  ["合同扫描件.pdf", mb(1.8), 64],
+  ["采购清单.xlsx", kb(132), 68],
+  ["培训课件.pptx", mb(6.2), 72],
+  ["现场验收单.jpeg", mb(2.1), 76],
+  ["环境配置说明.md", kb(36), 80],
+  ["安全评估报告.pdf", mb(1.4), 84],
+  ["满意度问卷结果.csv", kb(96), 88],
+  ["结项申请.docx", kb(74), 92],
+  ["复盘会议纪要.docx", kb(110), 96],
+];
+
+// 产物补充样例：同样补到 30 条
+const EXTRA_ARTIFACT_SEEDS: Array<[string, number, number]> = [
+  ["项目方案初稿.docx", kb(320), 9],
+  ["需求拆解清单.xlsx", kb(180), 12],
+  ["竞品对比分析.pptx", mb(3.4), 15],
+  ["用户画像报告.pdf", mb(1.6), 18],
+  ["原型交互说明.md", kb(48), 21],
+  ["数据看板截图.png", mb(1.2), 24],
+  ["里程碑甘特图.xlsx", kb(260), 28],
+  ["风险评估表.xlsx", kb(150), 31],
+  ["技术选型对比.docx", kb(210), 34],
+  ["接口文档.pdf", kb(940), 38],
+  ["测试报告.docx", kb(380), 41],
+  ["性能压测结果.xlsx", kb(420), 45],
+  ["上线公告.md", kb(18), 49],
+  ["培训手册.pdf", mb(2.8), 52],
+  ["运营数据周报.xlsx", kb(300), 56],
+  ["用户反馈汇总.csv", kb(120), 60],
+  ["需求变更记录.docx", kb(140), 64],
+  ["架构设计图.png", kb(860), 68],
+  ["部署手册.md", kb(60), 72],
+  ["复盘报告.pptx", mb(2.2), 76],
+  ["成本核算表.xlsx", kb(240), 80],
+  ["供应商对比.pdf", mb(1.3), 84],
+  ["质量检查表.xlsx", kb(170), 88],
+  ["演示脚本.docx", kb(90), 92],
+  ["知识沉淀文档.md", kb(72), 96],
+];
+
+const DEMO_FILE_URL = "/assets/attachment-example.jpeg";
+
 export const DEMO_PROJECT_FILES: ProjectFiles = {
-  sources: EXAMPLE_FILES.map((file, index) => ({
-    ...file, id: `source-${index}`, owner: ["Aiden Chen", "Maya Lin", "Ethan Wu", "Sophie Zhang", "Liam Huang"][index],
-    createdAt: new Date(2021, 6, 8).getTime(), status: statuses[index],
-  })),
-  artifacts: EXAMPLE_FILES.map((file, index) => ({
-    ...file, id: `artifact-${index}`, owner: index < 3 ? ["Aiden Chen", "Maya Lin", "Ethan Wu"][index] : "任务名称",
-    createdAt: new Date(2021, 6, 8).getTime(), status: "enabled",
-  })),
+  sources: [
+    ...EXAMPLE_FILES.map((file, index) => ({
+      ...file,
+      id: `source-${index}`,
+      owner: DEMO_OWNERS[index],
+      createdAt: dayAgo([0, 1, 3, 5, 7][index] ?? index),
+      status: statuses[index],
+    })),
+    ...EXTRA_SOURCE_SEEDS.map(([name, size, days], index) => ({
+      id: `source-${index + EXAMPLE_FILES.length}`,
+      name,
+      url: DEMO_FILE_URL,
+      size,
+      owner: DEMO_OWNERS[(index + EXAMPLE_FILES.length) % DEMO_OWNERS.length],
+      createdAt: dayAgo(days),
+      status: (index % 7 === 0 ? "disabled" : "enabled") as SourceStatus,
+    })),
+  ],
+  artifacts: [
+    ...EXAMPLE_FILES.map((file, index) => ({
+      ...file,
+      id: `artifact-${index}`,
+      owner: DEMO_ARTIFACT_SOURCES[index % DEMO_ARTIFACT_SOURCES.length],
+      createdAt: dayAgo([0, 1, 3, 5, 7][index] ?? index),
+      status: "enabled" as SourceStatus,
+    })),
+    ...EXTRA_ARTIFACT_SEEDS.map(([name, size, days], index) => ({
+      id: `artifact-${index + EXAMPLE_FILES.length}`,
+      name,
+      url: DEMO_FILE_URL,
+      size,
+      owner: DEMO_ARTIFACT_SOURCES[(index + 1) % DEMO_ARTIFACT_SOURCES.length],
+      createdAt: dayAgo(days),
+      status: "enabled" as SourceStatus,
+    })),
+  ],
 };
 
-const STATUS_LABELS: Record<SourceStatus, string> = { enabled: "已启用", disabled: "停用", failed: "失败", processing: "处理中" };
-const STATUS_ICONS: Record<SourceStatus, string> = { enabled: "eb6f2", disabled: "6c389", failed: "7a72a", processing: "f798a" };
+const STATUS_LABELS: Record<SourceStatus, string> = { enabled: "已启用", disabled: "停用" };
+const STATUS_ICONS: Record<SourceStatus, string> = { enabled: "eb6f2", disabled: "6c389" };
 
 export function getSourceActions(status: SourceStatus) {
-  if (status === "processing") return ["删除"];
-  if (status === "failed") return ["重试", "删除"];
   return [status === "enabled" ? "停用" : "启用", "下载", "删除"];
 }
 
@@ -60,10 +160,12 @@ export function pickSourceFiles(fileList: FileList): { additions: ProjectFile[];
   return { additions, errors };
 }
 
-export function ProjectFilesPanel({ kind, files, query, onChange }: {
+export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onChange }: {
   kind: "sources" | "artifacts";
   files: ProjectFiles;
   query: string;
+  formats: FileFormat[];
+  timeFilter: TimeFilter;
   onChange: (files: ProjectFiles) => void;
 }) {
   const [menu, setMenu] = useState<{ id: string; anchor: HTMLButtonElement } | null>(null);
@@ -71,7 +173,11 @@ export function ProjectFilesPanel({ kind, files, query, onChange }: {
   const [downloading, setDownloading] = useState(false);
   const source = kind === "sources";
   const records = files[kind];
-  const visible = records.filter(file => file.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  // 与资料库同一套筛选判定：名称 / 格式 / 更新时间
+  const visible = records.filter(file => matchFileFilters(
+    { name: file.name, format: formatByExtension(file.name), modified: new Date(file.createdAt) },
+    { query, formats, timeFilter },
+  ));
   const selected = records.find(file => file.id === menu?.id);
 
   useEffect(() => {
@@ -118,35 +224,41 @@ export function ProjectFilesPanel({ kind, files, query, onChange }: {
         toast.success("已上传到项目资料");
       }
     } else {
-      onChange({ ...files, sources: records.map(item => item.id === file.id ? { ...item, status: action === "停用" ? "disabled" : action === "重试" ? "processing" : "enabled" } : item) });
+      onChange({ ...files, sources: records.map(item => item.id === file.id ? { ...item, status: action === "停用" ? "disabled" : "enabled" } : item) });
     }
     setMenu(null);
   };
 
   const actions = selected ? source ? getSourceActions(selected.status) : ["上传到项目资料", "下载", "删除"] : [];
-  const columns = source ? "minmax(240px,1fr) 120px 120px 120px 120px" : "minmax(240px,1fr) 120px 120px 120px";
+  const tailColumns = source ? 4 : 3;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-project-files={kind}>
       {visible.length > 0 ? (
         <div className="min-h-0 flex-1 overflow-auto">
           <table className={`w-full table-fixed border-collapse text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${source ? "min-w-[720px]" : "min-w-[600px]"}`}>
+            <colgroup>
+              <col />
+              {Array.from({ length: tailColumns }, (_, index) => <col key={index} className="w-[120px]" />)}
+            </colgroup>
             <thead>
-              <tr className="grid h-[40px] items-center text-[rgba(0,0,0,0.6)]" style={{ gridTemplateColumns: columns }}>
-                {["文件名", source ? "上传人" : "来源", source ? "上传时间" : "生成时间", ...(source ? ["状态"] : []), "大小"].map(label => <th key={label} className="px-[8px] font-normal">{label}</th>)}
+              <tr className="h-[40px] text-[rgba(0,0,0,0.6)]">
+                {["文件名", source ? "上传人" : "来源", source ? "上传时间" : "生成时间", ...(source ? ["状态"] : []), "大小"].map(label => <th key={label} className="sticky top-0 z-[2] bg-white px-[8px] text-left align-middle font-normal">{label}</th>)}
               </tr>
             </thead>
             <tbody>
               {visible.map(file => (
-                <tr key={file.id} data-project-file={file.id} data-file-status={file.status} className={`group relative grid h-[48px] items-center border-t border-[#f2f2f2] hover:z-[1] hover:bg-white hover:shadow-[0_0_8px_rgba(0,0,0,0.08)] focus-within:z-[1] focus-within:shadow-[0_0_8px_rgba(0,0,0,0.08)] ${menu?.id === file.id ? "z-[1] shadow-[0_0_8px_rgba(0,0,0,0.08)]" : ""}`} style={{ gridTemplateColumns: columns }}>
-                  <td className="flex min-w-0 items-center gap-[8px] px-[8px]">
-                    <span className="size-[16px] shrink-0"><span className={`inline-flex origin-top-left ${fileIcon(file.name) === "18532" ? "size-[24px] scale-[0.666667]" : ""}`}><img src={`/assets/${fileIcon(file.name)}.svg`} alt="" className="max-w-none" /></span></span>
-                    <span className="truncate" title={file.name}>{file.name}</span>
+                <tr key={file.id} data-project-file={file.id} data-file-status={file.status} className={`group relative border-t border-[#f2f2f2] hover:z-[1] hover:bg-white hover:shadow-[0_0_8px_rgba(0,0,0,0.08)] focus-within:z-[1] focus-within:shadow-[0_0_8px_rgba(0,0,0,0.08)] ${menu?.id === file.id ? "z-[1] shadow-[0_0_8px_rgba(0,0,0,0.08)]" : ""}`}>
+                  <td className="h-[48px] px-[8px]">
+                    <div className="flex min-w-0 items-center gap-[8px]">
+                      <span className="size-[16px] shrink-0"><span className={`inline-flex origin-top-left ${fileIcon(file.name) === "18532" ? "size-[24px] scale-[0.666667]" : ""}`}><img src={`/assets/${fileIcon(file.name)}.svg`} alt="" className="max-w-none" /></span></span>
+                      <span className="truncate" title={file.name}>{file.name}</span>
+                    </div>
                   </td>
-                  <td className="truncate px-[8px]" title={file.owner}>{file.owner}</td>
-                  <td className="px-[8px]">{new Date(file.createdAt).toLocaleDateString("sv-SE").replace(/-/g, "/")}</td>
-                  {source && <td className={`flex items-center gap-[8px] px-[8px] ${file.status === "processing" ? "text-[#1e63f5]" : ""}`}><img src={`/assets/${STATUS_ICONS[file.status]}.svg`} alt="" className={file.status === "processing" ? "animate-spin" : ""} />{STATUS_LABELS[file.status]}</td>}
-                  <td className="relative px-[8px] pr-[32px]">
+                  <td className="h-[48px] truncate px-[8px]" title={file.owner}>{file.owner}</td>
+                  <td className="h-[48px] px-[8px]">{new Date(file.createdAt).toLocaleDateString("sv-SE").replace(/-/g, "/")}</td>
+                  {source && <td className="h-[48px] px-[8px]"><div className="flex items-center gap-[8px]"><img src={`/assets/${STATUS_ICONS[file.status]}.svg`} alt="" />{STATUS_LABELS[file.status]}</div></td>}
+                  <td className="relative h-[48px] px-[8px] pr-[32px]">
                     {formatFileSize(file.blob ? file.blob.size : file.size)}
                     <button type="button" aria-label={`文件操作 ${file.name}`} aria-haspopup="menu" aria-expanded={menu?.id === file.id} onClick={event => setMenu(menu?.id === file.id ? null : { id: file.id, anchor: event.currentTarget })} className={`absolute top-1/2 right-[8px] flex size-[24px] -translate-y-1/2 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] group-hover:visible group-focus-within:visible [@media(hover:none)]:visible ${menu?.id === file.id ? "visible" : "invisible"}`}>
                       <img src="/assets/64110.svg" alt="" />
@@ -170,7 +282,7 @@ export function ProjectFilesPanel({ kind, files, query, onChange }: {
           <div className="flex flex-col py-[4px]">
             {actions.map(action => (
               <button key={action} type="button" role="menuitem" disabled={downloading && action === "下载"} onClick={() => operate(action, selected)} className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] hover:bg-[#f7f7f7] disabled:opacity-40">
-                <img src={`/assets/${action === "停用" ? "415d1" : action === "重试" ? "6863e" : action === "启用" ? "c7dee" : action === "下载" ? "1d2af" : action === "删除" ? "5ff6b" : "d6cab"}.svg`} alt="" />{action}
+                <img src={`/assets/${action === "停用" ? "415d1" : action === "启用" ? "c7dee" : action === "下载" ? "1d2af" : action === "删除" ? "5ff6b" : "d6cab"}.svg`} alt="" />{action}
               </button>
             ))}
           </div>

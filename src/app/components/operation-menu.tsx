@@ -7,6 +7,10 @@ type OperationMenuProps = HTMLAttributes<HTMLDivElement> & {
   submenu?: boolean;
   gap?: number;
   align?: "start" | "end";
+  // 强制在锚点下方展开（不自动翻到上方），用于长列表日期面板等场景
+  forceBelow?: boolean;
+  // 面板最大高度，超出则滚动（设计稿 DropdownMenu 最长 480px）
+  maxHeight?: number;
 };
 
 export function getSubmenuPlacement(
@@ -35,7 +39,7 @@ export function getSubmenuPlacement(
 }
 
 export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
-  ({ anchor, submenu = false, gap = 0, align = "start", children, style, onMouseDown, ...props }, forwardedRef) => {
+  ({ anchor, submenu = false, gap = 0, align = "start", forceBelow = false, maxHeight, children, style, onMouseDown, ...props }, forwardedRef) => {
     const menuRef = useRef<HTMLDivElement | null>(null);
     const [position, setPosition] = useState<CSSProperties>({ visibility: "hidden" });
 
@@ -49,22 +53,25 @@ export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
         const below = Math.max(0, viewportHeight - rect.bottom - padding - gap);
         const above = Math.max(0, rect.top - padding - gap);
         const height = menu.scrollHeight + menu.offsetHeight - menu.clientHeight;
-        const opensAbove = height > below;
+        // forceBelow 时始终向下展开，即使空间不足也保持下方并通过 maxHeight 滚动
+        const opensAbove = !forceBelow && height > below;
         const width = Math.min(menu.offsetWidth, window.innerWidth - padding * 2);
         const parent = anchor.closest("[data-operation-menu]");
         const placement = submenu
           ? getSubmenuPlacement(rect, parent?.getBoundingClientRect() ?? rect, width, height, window.innerWidth, viewportHeight)
           : null;
         const available = placement?.availableHeight ?? (opensAbove ? above : below);
-        const renderedHeight = Math.min(height, available);
+        // 应用 maxHeight 上限：取可用空间与指定上限的较小值
+        const cappedAvailable = maxHeight != null ? Math.min(available, maxHeight) : available;
+        const renderedHeight = Math.min(height, cappedAvailable);
         const top = placement?.top ?? (opensAbove ? rect.top - gap - renderedHeight : rect.bottom + gap);
         setPosition({
           position: "fixed",
           left: Math.max(padding, Math.min(placement?.left ?? (align === "end" ? rect.right - width : rect.left), window.innerWidth - width - padding)),
           top: Math.max(padding, Math.min(top, viewportHeight - renderedHeight - padding)),
           maxWidth: window.innerWidth - padding * 2,
-          maxHeight: available,
-          overflowY: height > available ? "auto" : undefined,
+          maxHeight: cappedAvailable,
+          overflowY: height > cappedAvailable ? "auto" : undefined,
           pointerEvents: "auto",
           visibility: "visible",
         });
@@ -80,7 +87,7 @@ export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
         window.removeEventListener("resize", update);
         window.removeEventListener("scroll", update, true);
       };
-    }, [anchor, submenu, gap, align]);
+    }, [anchor, submenu, gap, align, forceBelow, maxHeight]);
 
     return createPortal(
       <div
