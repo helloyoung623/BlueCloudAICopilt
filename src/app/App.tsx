@@ -2786,6 +2786,7 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
   const [transferOpen, setTransferOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
+  const [memberSearchFocused, setMemberSearchFocused] = useState(false);
   const [confirmMember, setConfirmMember] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const closeTransferTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2925,14 +2926,21 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
                 >
                   <div className="bg-white px-[16px] py-[4px]">
                     <label className="flex h-[32px] items-center gap-[8px] border-b border-[#1e63f5]">
-                      <img src="/assets/member-search-blue.svg" alt="" className="shrink-0" />
+                      <img src={memberSearchFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"} alt="" className="size-[16px] shrink-0" />
                       <input
                         autoFocus
                         value={memberSearch}
                         onChange={event => setMemberSearch(event.target.value)}
+                        onFocus={() => setMemberSearchFocused(true)}
+                        onBlur={() => setMemberSearchFocused(false)}
                         placeholder="搜索"
                         className="min-w-0 flex-1 bg-transparent font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
                       />
+                      {memberSearch && (
+                        <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setMemberSearch("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+                          <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
+                        </button>
+                      )}
                     </label>
                   </div>
                   <div className="max-h-[480px] overflow-y-auto px-[8px]">
@@ -3187,6 +3195,7 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
   const [taskMenu, setTaskMenu] = useState<{ id: number; anchor: HTMLElement } | null>(null);
   const [hoveredCard, setHoveredCard] = useState<number | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
+  const [memberSearchFocused, setMemberSearchFocused] = useState(false);
   const [transferSubmenuOpen, setTransferSubmenuOpen] = useState(false);
   const [confirmTransfer, setConfirmTransfer] = useState<{ id: number; member: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -3344,14 +3353,21 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
                 >
                   <div className="bg-white px-[16px] py-[4px]">
                     <label className="flex h-[32px] items-center gap-[8px] border-b border-[#1e63f5]">
-                      <img src="/assets/member-search-blue.svg" alt="" className="shrink-0" />
+                      <img src={memberSearchFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"} alt="" className="size-[16px] shrink-0" />
                       <input
                         autoFocus
                         value={memberSearch}
                         onChange={event => setMemberSearch(event.target.value)}
+                        onFocus={() => setMemberSearchFocused(true)}
+                        onBlur={() => setMemberSearchFocused(false)}
                         placeholder="搜索"
                         className="min-w-0 flex-1 bg-transparent font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
                       />
+                      {memberSearch && (
+                        <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setMemberSearch("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+                          <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
+                        </button>
+                      )}
                     </label>
                   </div>
                   <div className="max-h-[480px] overflow-y-auto px-[8px]">
@@ -3628,7 +3644,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
                         setFilesSearchFocused(false);
                         if (filesSearchCollapsed && !filesQuery) setFilesSearchOpen(false);
                       }}
-                      className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] outline-none placeholder:text-[rgba(0,0,0,0.38)]"
+                      className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
                     />
                     {filesQuery && (
                       <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setFilesQuery("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">

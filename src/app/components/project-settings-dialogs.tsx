@@ -89,6 +89,7 @@ export function ProjectMembersDialog({ members, onClose, onSave }: {
 }) {
   const [draft, setDraft] = useState(members);
   const [search, setSearch] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [roleMenu, setRoleMenu] = useState<{ id: string; anchor: HTMLButtonElement } | null>(null);
   const roleMenuRef = useRef<HTMLDivElement>(null);
   const matches = EXAMPLE_MEMBERS.filter(member => member.name.includes(search.trim()));
@@ -109,8 +110,16 @@ export function ProjectMembersDialog({ members, onClose, onSave }: {
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="shrink-0 border-b border-black/5 px-[16px] py-[8px]">
               <label className="flex h-[32px] items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[16px]">
-                <img src="/assets/11400.svg" alt="" className="shrink-0" />
-                <input aria-label="搜索成员" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索" className="min-w-0 flex-1 bg-transparent text-[14px] leading-[22px] outline-none placeholder:text-[rgba(0,0,0,0.38)]" />
+                <img src={searchFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"} alt="" className="size-[16px] shrink-0" />
+                <input
+                  aria-label="搜索成员"
+                  value={search}
+                  onChange={event => setSearch(event.target.value)}
+                  onFocus={() => setSearchFocused(true)}
+                  onBlur={() => setSearchFocused(false)}
+                  placeholder="搜索"
+                  className="min-w-0 flex-1 bg-transparent text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
+                />
               </label>
             </div>
             <div className="min-h-0 max-h-[264px] overflow-y-auto px-[8px]">

@@ -111,6 +111,7 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
 }) {
   const [tab, setTab] = useState<CloudSourceTab>(initialTab);
   const [query, setQuery] = useState("");
+  const [queryFocused, setQueryFocused] = useState(false);
   const [formats, setFormats] = useState<FileFormat[]>([]);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -200,8 +201,21 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
 
             <div className="flex shrink-0 items-center gap-[12px]">
               <label className="flex h-[32px] min-w-0 flex-1 items-center gap-[8px] rounded-[8px] bg-[#f7f7f7] pl-[8px] pr-[16px]">
-                <img src="/assets/search-dialog-search-default.svg" alt="" className="size-[16px] shrink-0" />
-                <input aria-label="搜索文件名称" placeholder="搜索" value={query} onChange={event => setQuery(event.target.value)} className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] outline-none placeholder:text-[rgba(0,0,0,0.38)]" />
+                <img src={queryFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"} alt="" className="size-[16px] shrink-0" />
+                <input
+                  aria-label="搜索文件名称"
+                  placeholder="搜索"
+                  value={query}
+                  onChange={event => setQuery(event.target.value)}
+                  onFocus={() => setQueryFocused(true)}
+                  onBlur={() => setQueryFocused(false)}
+                  className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
+                />
+                {query && (
+                  <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setQuery("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+                    <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
+                  </button>
+                )}
               </label>
               <button type="button" aria-label="筛选" aria-haspopup="menu" aria-expanded={Boolean(filterAnchor)} onClick={event => setFilterAnchor(current => current ? null : event.currentTarget)} className={`flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2] ${formats.length || timeFilter ? "bg-[#ebf4ff]" : ""}`}>
                 <img src="/assets/project-filter.svg" alt="" className="size-[20px]" />

@@ -194,6 +194,7 @@ export function AttachmentPicker({ source, hasProject, projectFiles, onSourceCha
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [queryFocused, setQueryFocused] = useState(false);
   const [kind, setKind] = useState<FileKind>("all");
   const [filterOpen, setFilterOpen] = useState(false);
   const [pendingName, setPendingName] = useState<string | null>(null);
@@ -406,8 +407,22 @@ export function AttachmentPicker({ source, hasProject, projectFiles, onSourceCha
       </div>
       <div className="flex shrink-0 items-center gap-[12px] pr-[16px]">
         <label className="flex h-[32px] min-w-0 flex-1 items-center gap-[8px] rounded-[8px] bg-[#f7f7f7] pl-[8px] pr-[16px]">
-          <img src="/assets/11400.svg" alt="" className="shrink-0" />
-          <input ref={searchRef} aria-label="搜索文件" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索" className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] outline-none placeholder:text-[rgba(0,0,0,0.38)]" />
+          <img src={queryFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"} alt="" className="size-[16px] shrink-0" />
+          <input
+            ref={searchRef}
+            aria-label="搜索文件"
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            onFocus={() => setQueryFocused(true)}
+            onBlur={() => setQueryFocused(false)}
+            placeholder="搜索"
+            className="min-w-0 flex-1 bg-transparent text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
+          />
+          {query && (
+            <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setQuery("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+              <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
+            </button>
+          )}
         </label>
         <button ref={filterRef} type="button" aria-label={`筛选文件：${FILTERS.find(filter => filter.value === kind)?.label}`} aria-haspopup="menu" aria-expanded={filterOpen} onClick={() => setFilterOpen(open => !open)} className={`flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] ${filterOpen || kind !== "all" ? "bg-[#ebf4ff]" : "hover:bg-[#f2f2f2]"}`}>
           <img src="/assets/6d02b.svg" alt="" />
