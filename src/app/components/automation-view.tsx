@@ -1174,13 +1174,15 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
               </div>
             </div>
 
-            {/* 高级设置（折叠） */}
-            <div className="flex flex-col gap-[10px] px-[12px]">
+            {/* 高级设置（折叠）。与弹窗同一套几何：AdvancedSettings 内部各区块自带 px-[12px]，
+                所以本容器不再加左右内边距，否则会与上面的「当/就」标签和标题文字错开；
+                标题按钮用 ml-[8px] + px-[4px] 让文字落在 12px 处，与下方「结束时间/执行方式/时区」同一左线。 */}
+            <div className="flex flex-col gap-[10px]">
               <button
                 type="button"
                 aria-expanded={advOpen}
                 onClick={() => setAdvOpen(current => !current)}
-                className="flex w-fit cursor-pointer items-center gap-[8px] rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f7f7f7]"
+                className="ml-[8px] flex w-fit cursor-pointer items-center gap-[8px] rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f7f7f7]"
               >
                 <span>高级设置</span>
                 <img

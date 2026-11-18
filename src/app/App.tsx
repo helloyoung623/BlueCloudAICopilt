@@ -1153,6 +1153,63 @@ function CreateProjectDialog({ open, onOpenChange, onCreate, editProject, onEdit
 }
 
 /* ------------------------------------------------------------------ *
+ * 删除项目确认弹窗 — Figma 9244:31443
+ * 480 宽 / 8 圆角；标题行（24 删除图标 + 20/28 中黑 + 右上关闭）、
+ * 说明文案左缩进 32（与标题文字对齐）、底部右对齐「取消 / 确定」。
+ * 确定后由上层真正删除项目并 toast「删除成功」。
+ * ------------------------------------------------------------------ */
+function DeleteProjectDialog({ open, onOpenChange, onConfirm }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="w-[480px] max-w-[calc(100%-32px)] gap-0 overflow-hidden rounded-[8px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[calc(100%-32px)] [&>button]:hidden"
+      >
+        <div className="flex items-center gap-[8px] px-[16px] pt-[24px]">
+          <img src="/assets/dialog-delete-icon.svg" alt="" className="size-[24px] shrink-0" />
+          <DialogTitle className="min-w-0 flex-1 text-[20px] font-medium leading-[28px] tracking-[0.001em] text-[rgba(0,0,0,0.88)]">
+            确定要删除此项目吗？
+          </DialogTitle>
+          <DialogClose asChild>
+            <button
+              type="button"
+              aria-label="关闭删除项目弹窗"
+              className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+            >
+              <img src="/assets/search-dialog-close.svg" alt="" className="size-[20px]" />
+            </button>
+          </DialogClose>
+        </div>
+        <p className="px-[16px] pb-0 pl-[48px] pt-[16px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+          删除后项目将被永久删除，项目内所有任务及产物，且不可恢复。
+        </p>
+        <div className="flex items-center justify-end gap-[24px] px-[16px] pb-[16px] pt-[16px]">
+          <DialogClose asChild>
+            <button
+              type="button"
+              className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"
+            >
+              取消
+            </button>
+          </DialogClose>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1]"
+          >
+            确定
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * 搜索弹窗 — Figma「AI Chat Component / - Search」(8844:40946)
  * 弹窗固定 560 高；搜索框激活仅放大镜 icon 变色；
  * 列表滚动到底部自动加载，每批 10 条，「没有更多了」仅在发生一次加载后出现
@@ -1334,13 +1391,14 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, mobile = false }: {
+function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, mobile = false }: {
   onSearch: () => void;
   mobile?: boolean;
   history: HistoryItem[];
   setHistory: React.Dispatch<React.SetStateAction<HistoryItem[]>>;
   projects: ProjectItem[];
   setProjects: React.Dispatch<React.SetStateAction<ProjectItem[]>>;
+  onRequestDeleteProject?: (id: number) => void;
   onClose: () => void;
   onNewChat: () => void;
   onOpenProjects: () => void;
@@ -1830,6 +1888,11 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
                 label: "删除",
                 icon: svgSidebar.p2ffde100,
                 action: () => {
+                  // 统一走确认弹窗：由 App 层弹「确定要删除此项目吗？」再执行删除
+                  if (onRequestDeleteProject) {
+                    onRequestDeleteProject(projectMenuId);
+                    return;
+                  }
                   setProjects(items => items.filter(item => item.id !== projectMenuId));
                   setHistory(items => items.filter(item => item.projectId !== projectMenuId));
                 },
@@ -2316,7 +2379,7 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
             if (files.length) onAddFiles(files);
           }}
           placeholder={placeholder} rows={1} style={{ minHeight: 22, maxHeight: 228 }}
-          className="relative z-10 block w-full min-h-[22px] shrink resize-none overflow-y-auto bg-transparent text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px] placeholder:text-[rgba(0,0,0,0.26)] outline-none"
+          className="relative z-10 block w-[calc(100%+12px)] min-h-[22px] shrink resize-none overflow-y-auto bg-transparent pr-[12px] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px] placeholder:text-[rgba(0,0,0,0.26)] outline-none"
         />
         <div className="h-[36px] shrink-0" />
       </div>
@@ -4436,6 +4499,18 @@ function ExecutionProcess({ running, instant = false, progress, onProgress, vari
   // becomes true once the goal typewriter has finished for the active run
   const [goalTyped, setGoalTyped] = useState(instant);
   const stepEndRef = useRef<HTMLDivElement>(null);
+  const onGoalDoneRef = useRef(onGoalDone);
+  onGoalDoneRef.current = onGoalDone;
+  // goal 里含完整提问，长提问逐字打要十几秒：按总时长约 2.2s 反推速度，
+  // 短文本仍是 30ms/字（原速），长文本加速，避免展开前干等。
+  const goalSpeed = Math.min(30, Math.max(5, Math.round(2200 / Math.max(1, preset.goal.length))));
+
+  // 兜底：思考结束切到折叠态时也必须推进消息揭示指针。
+  // 长提问的 goal 可能还没打完就被切成折叠（Typewriter 卸载后 onDone 不再触发），
+  // 若不推进，后续 AI 回复会被 revealed 机制（i > revealed）永久挡住 → 表现为「执行过程停住」。
+  useEffect(() => {
+    if (!running) onGoalDoneRef.current?.();
+  }, [running]);
 
   // reset / finalize state whenever the running flag flips
   useEffect(() => {
@@ -4480,13 +4555,14 @@ function ExecutionProcess({ running, instant = false, progress, onProgress, vari
     setExpanded(true);
     let shown = 0;
     let revealTimer: number | undefined;
+    // 每次只出现 1 个工具；批间隔 0.9~1.6s，逐个推进但保持节奏。
     const revealBatch = () => {
-      const batchSize = Math.random() > 0.58 ? 2 : 1;
+      const batchSize = 1;
       const start = shown;
       shown = Math.min(total, shown + batchSize);
       setBatchStart(start);
       setVisibleActions(shown);
-      if (shown < total) revealTimer = window.setTimeout(revealBatch, 2000 + Math.floor(Math.random() * 3001));
+      if (shown < total) revealTimer = window.setTimeout(revealBatch, 900 + Math.floor(Math.random() * 700));
     };
     revealTimer = window.setTimeout(revealBatch, 320);
     return () => { if (revealTimer) window.clearTimeout(revealTimer); };
@@ -4513,7 +4589,7 @@ function ExecutionProcess({ running, instant = false, progress, onProgress, vari
   );
   return (
     <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
-      <p className="text-[14px] leading-[22px] font-normal text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter instant={instant} text={preset.goal} onDone={() => { setGoalTyped(true); onGoalDone?.(); }} /></p>
+      <p className="text-[14px] leading-[22px] font-normal text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter instant={instant} text={preset.goal} speed={goalSpeed} onDone={() => { setGoalTyped(true); onGoalDone?.(); }} /></p>
       {goalTyped && (<>
         <button onClick={() => setExpanded(v => !v)} className="flex items-center gap-[8px] text-left">
           <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.running}</span>
@@ -4576,6 +4652,8 @@ export default function App() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   // 资料库「上传到项目 → 新建项目」唤起同一个创建项目弹窗
   const [libraryCreateProjectOpen, setLibraryCreateProjectOpen] = useState(false);
+  // 删除项目统一先弹确认窗（侧栏「···」、项目列表、项目详情、归档页共用）
+  const [deleteProjectId, setDeleteProjectId] = useState<number | null>(null);
   const [activeHistoryId, setActiveHistoryId] = useState<number | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -5212,6 +5290,20 @@ export default function App() {
   const activeProject = projects.find(project => project.id === activeProjectId) ?? null;
   const activeTask = history.find(item => item.id === activeHistoryId) ?? null;
 
+  // 删除项目：所有入口（侧栏「···」、项目列表卡片、项目详情、归档页）先弹确认窗，
+  // 点「确定」才真正删除项目与项目内任务，并 toast「删除成功」
+  const handleRequestDeleteProject = (id: number) => setDeleteProjectId(id);
+  const handleConfirmDeleteProject = () => {
+    if (deleteProjectId === null) return;
+    const id = deleteProjectId;
+    setDeleteProjectId(null);
+    setProjects(current => current.filter(project => project.id !== id));
+    setHistory(current => current.filter(task => task.projectId !== id));
+    // 删的是当前打开的项目 → 退回项目列表，避免停留在已删除的项目页
+    if (activeProjectId === id) handleOpenProjects();
+    toast.success("删除成功");
+  };
+
   // 会话页右侧自动化详情栏：只在会话视图里生效（切走/新建会话自动收起）
   const chatAutomationTask = chatAutomationId && messages.length > 0 && !automationOpen && !libraryOpen && !archiveOpen && !projectListOpen
     ? automationTasks.find(task => task.id === chatAutomationId) ?? null
@@ -5281,6 +5373,7 @@ export default function App() {
           activeProjectId={activeProjectId}
           onSelect={handleSelectHistory}
           onSelectProject={handleSelectProject}
+          onRequestDeleteProject={handleRequestDeleteProject}
           onSearch={() => setSearchOpen(true)}
         />
   );
@@ -5344,11 +5437,7 @@ export default function App() {
                 });
                 handleOpenProjects();
               }}
-              onDelete={() => {
-                setProjects(current => current.filter(project => project.id !== activeProject.id));
-                setHistory(current => current.filter(task => task.projectId !== activeProject.id));
-                handleOpenProjects();
-              }}
+              onDelete={() => handleRequestDeleteProject(activeProject.id)}
             />
           ) : activeTask && messages.length > 0 ? (
             <TaskHeaderActions
@@ -5390,10 +5479,7 @@ export default function App() {
                 setProjects(current => current.map(project => project.id === id ? { ...project, owner: member } : project));
                 toast.success(`本地示例：项目已移交给${member}`);
               }}
-              onDeleteProject={id => {
-                setProjects(current => current.filter(project => project.id !== id));
-                setHistory(current => current.filter(item => item.projectId !== id));
-              }}
+              onDeleteProject={handleRequestDeleteProject}
               onSelectTask={id => { setArchiveOpen(false); handleSelectHistory(id); }}
               onUnarchiveTask={id => {
                 setHistory(current => current.map(task => task.id === id ? { ...task, archived: false } : task));
@@ -5421,10 +5507,7 @@ export default function App() {
                   setHistory(current => current.map(item => item.projectId === id ? { ...item, archived: false } : item));
                 });
               }}
-              onDeleteProject={id => {
-                setProjects(current => current.filter(project => project.id !== id));
-                setHistory(current => current.filter(item => item.projectId !== id));
-              }}
+              onDeleteProject={handleRequestDeleteProject}
               onTransferProject={(id, member) => {
                 setProjects(current => current.map(project => project.id === id ? { ...project, owner: member } : project));
                 toast.success(`本地示例：项目已移交给${member}`);
@@ -5525,6 +5608,11 @@ export default function App() {
             setProjects(current => [...current, { ...project, id }]);
             handleSelectProject(id);
           }}
+        />
+        <DeleteProjectDialog
+          open={deleteProjectId !== null}
+          onOpenChange={open => { if (!open) setDeleteProjectId(null); }}
+          onConfirm={handleConfirmDeleteProject}
         />
         {dragActive && (
           <div className="pointer-events-none absolute inset-0 z-[100] flex items-center justify-center bg-white/80 backdrop-blur-[1px]">

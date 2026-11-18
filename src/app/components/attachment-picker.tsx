@@ -384,7 +384,9 @@ export function AttachmentPicker({ source, hasProject, projectFiles, onSourceCha
           </OperationMenu>
         )}
       </div>
-      <div id={`${id}-files`} role="tabpanel" aria-labelledby={`${id}-${source}`} className="outlook-scroll min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+      {/* 面板本体左内边距 16、右侧留给滚动条（pr-0），因此列表内容右侧再补 10px：
+          16px 减去 .outlook-scroll 的 6px 滚动条宽度，让行的底色左右同为 16px，滚动条仍贴最右。 */}
+      <div id={`${id}-files`} role="tabpanel" aria-labelledby={`${id}-${source}`} className="outlook-scroll min-h-0 flex-1 overflow-y-auto pr-[calc(16px-6px)] [scrollbar-gutter:stable]">
         {source === "Outlook" ? (
           <OutlookEmailList
             emails={visibleEmails}
