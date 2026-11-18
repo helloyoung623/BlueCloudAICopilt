@@ -326,8 +326,11 @@ export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onC
                     {cells.map(cell => (
                       <td key={cell.key} className={`h-[48px] px-[8px] ${cell.key === lastKey ? "relative pr-[32px]" : ""}`}>
                         {cell.node}
+                        {/* 与资料库表格的更多按钮（.library-row-action）保持同一套视觉：
+                            白底 + 左侧白色渐隐投影（不再生成灰色方块），hover 才变 #F2F2F2；
+                            默认隐藏，行 hover / 键盘聚焦 / 菜单打开时显现，触屏设备常显。 */}
                         {cell.key === lastKey && (
-                          <button type="button" aria-label={`文件操作 ${file.name}`} aria-haspopup="menu" aria-expanded={menu?.id === file.id} onClick={event => setMenu(menu?.id === file.id ? null : { id: file.id, anchor: event.currentTarget })} className={`absolute top-1/2 right-[8px] flex size-[24px] -translate-y-1/2 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] group-hover:visible group-focus-within:visible [@media(hover:none)]:visible ${menu?.id === file.id ? "visible" : "invisible"}`}>
+                          <button type="button" aria-label={`文件操作 ${file.name}`} aria-haspopup="menu" aria-expanded={menu?.id === file.id} onClick={event => setMenu(menu?.id === file.id ? null : { id: file.id, anchor: event.currentTarget })} className={`absolute top-1/2 right-[8px] flex size-[24px] -translate-y-1/2 cursor-pointer items-center justify-center rounded-[4px] bg-white shadow-[-8px_0_8px_#fff] hover:bg-[#f2f2f2] group-hover:visible group-focus-within:visible [@media(hover:none)]:visible ${menu?.id === file.id ? "visible" : "invisible"}`}>
                             <img src="/assets/64110.svg" alt="" />
                           </button>
                         )}

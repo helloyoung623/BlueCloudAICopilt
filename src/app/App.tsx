@@ -3719,7 +3719,9 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
               onConfirm={(files, source) => onStartImport(files, source, project.id)}
             />
           )}
-          <div role="tabpanel" aria-label={tab} className={`min-h-0 flex-1 ${tab === "任务" ? "-mx-[8px] overflow-y-auto pt-[12px]" : "flex flex-col"}`}>
+          {/* Figma 9234:27120：Tag-2 底边 y=100（y64 + 高36），Item List 顶边 y=116 → 页签行与列表间距 16px。
+              「任务」页签另有自己的 12px，「配置」页签内层已带 16px，都不能再叠这一层，否则间距翻倍。 */}
+          <div role="tabpanel" aria-label={tab} className={`min-h-0 flex-1 ${tab === "任务" ? "-mx-[8px] overflow-y-auto pt-[12px]" : tab === "配置" ? "flex flex-col" : "flex flex-col pt-[16px]"}`}>
             {tab === "配置" ? (
               // Figma 8819:63414：窄屏把指令 / 成员收进「配置」页签，卡片满宽、圆角 12、边框 #E6E6E6
               <div className="min-h-0 flex-1 overflow-y-auto pt-[16px]">
@@ -5078,7 +5080,7 @@ export default function App() {
           <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} />
         </div>
         {libraryOpen ? null : automationOpen
-          ? <AutomationView tasks={automationTasks} onTasksChange={setAutomationTasks} onLaunchChat={handleLaunchAutomationChat} />
+          ? <AutomationView tasks={automationTasks} onTasksChange={setAutomationTasks} onLaunchChat={handleLaunchAutomationChat} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
           : archiveOpen
           ? <ArchiveView
               projects={projects}

@@ -167,28 +167,8 @@ export type AutomationTask = {
   // 语义匹配出来的图标（icons.kubai.design），随任务一起存下来保证稳定
   icon: AutomationIcon;
 };
-export const INITIAL_TASKS: AutomationTask[] = [
-  {
-    id: "daily-report",
-    title: "工作日报推送",
-    cycle: "每天",
-    description: "每个工作日晚自动生成并推送日报",
-    status: "已启用",
-    schedule: { ...DEFAULT_SCHEDULE },
-    prompt: "每个工作日晚自动生成并推送日报",
-    icon: resolveAutomationIcon("工作日报推送 每个工作日晚自动生成并推送日报"),
-  },
-  {
-    id: "brand-monitor",
-    title: "品牌舆情监控",
-    cycle: "每天",
-    description: "每天理清品牌舆情并预警",
-    status: "已启用",
-    schedule: { ...DEFAULT_SCHEDULE },
-    prompt: "每天理清品牌舆情并预警",
-    icon: resolveAutomationIcon("品牌舆情监控 每天理清品牌舆情并预警"),
-  },
-];
+// 列表初始为空：不预置示例任务，用户新建后才出现卡片（空态见 AutomationEmpty）。
+export const INITIAL_TASKS: AutomationTask[] = [];
 
 // 「更多」下拉菜单项（Figma 9625:49728 DropdownMenu #9709:63275）
 const TASK_OPERATIONS = [
@@ -546,7 +526,9 @@ function ScheduleEditor({ schedule, onChange }: {
 // ============================================================================
 function AdvancedSettings() {
   const [endMode, setEndMode] = useState<EndMode>("永不");
-  const [endDate, setEndDate] = useState("2025-07-08");
+  const [endDate, setEndDate] = useState<CalendarDate>({ year: 2025, month: 7, day: 8 });
+  const [endDateAnchor, setEndDateAnchor] = useState<HTMLButtonElement | null>(null);
+  useDismissOnOutside(endDateAnchor, setEndDateAnchor);
   const [repeatTimes, setRepeatTimes] = useState<number>(10);
   const [newSession, setNewSession] = useState(false);
   const [timezone, setTimezone] = useState<string>(TIMEZONES[0]);
@@ -576,17 +558,28 @@ function AdvancedSettings() {
             </button>
           ))}
 
-          {/* Figma 9904:38096：指定时间 → 136×32 日期框（#E6E6E6 描边，r4），绝对值 x=89 / y=25 */}
+          {/* Figma 9904:38096：指定时间 → DatePicker 136×32（#E6E6E6 描边，r4），绝对值 x=89 / y=25。
+              点击弹出与「每年」月日 chip 同一个「选择日」面板（9849:42119），不再是浏览器原生日期控件。 */}
           {endMode === "指定时间" && (
-            <label className="absolute left-[89px] top-[25px] flex h-[32px] w-[136px] cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#e6e6e6] px-[8px]">
-              <img src="/assets/automation-date-range.svg" alt="" className="size-[16px] shrink-0" />
-              <input
-                type="date"
-                value={endDate}
-                onChange={event => setEndDate(event.target.value)}
-                className="w-full min-w-0 bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none [&::-webkit-calendar-picker-indicator]:hidden [&::-webkit-date-and-time-value]:text-left [&::-webkit-datetime-edit]:p-0"
-              />
-            </label>
+            <Fragment>
+              <button
+                type="button"
+                aria-label="选择结束日期"
+                onClick={event => setEndDateAnchor(current => current ? null : event.currentTarget)}
+                className="absolute left-[89px] top-[25px] flex h-[32px] w-[136px] cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#e6e6e6] bg-white px-[8px] text-left hover:border-[#1e63f5]"
+              >
+                <img src="/assets/automation-date-range.svg" alt="" className="size-[16px] shrink-0" />
+                <span className="min-w-0 flex-1 truncate font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+                  {`${endDate.year}/${String(endDate.month).padStart(2, "0")}/${String(endDate.day).padStart(2, "0")}`}
+                </span>
+              </button>
+              {endDateAnchor && <CalendarMenu
+                anchor={endDateAnchor}
+                onClose={() => setEndDateAnchor(null)}
+                selected={endDate}
+                onSelect={setEndDate}
+              />}
+            </Fragment>
           )}
 
           {/* Figma 9904:38428：重复 → 120 宽步进器 + 「次后」后缀，绝对值 x=89 / y=55 */}
@@ -758,7 +751,96 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
   );
 }
 
-// 月日 chip：Figma 每年/仅一次的「11月5号」，点击弹月/日两级选择
+// ============================================================================
+// 「选择日」日历面板（Figma 组件 9849:42119 / 实例 9867:62728，见节点 9783:70498）
+// 排期「每年」的月日 chip 与高级设置「指定时间」的 DatePicker 共用这一个组件。
+// 面板：288 宽 / padding 16 / 区块间距 16 / r8 / 无描边 / shadow 0 0 12 rgba(0,0,0,.08)
+// 头部 ‹ YYYY年MM月 ›：左右各一枚 16×16 单箭头（left-small / right-small，black .38），
+//   年月文案 Medium/T3（16/24，black .88）居中占满剩余宽度，逐月翻页并跨年进位
+// 分隔线 1px #F2F2F2
+// 星期表头 日 一 二 三 四 五 六（周日为一周首日）：12/18 black .26，7 等分列、列间距 4
+// 日期网格：每行 7 格等分、行间距 16，数字固定在 28×28 内居中（Regular/T2，14/22，black .88）
+// 今天（9421:108344）：数字变 #1E63F5；选中（9421:108343）：28px 胶囊 #1E63F5 / r32 / 文字 rgba(255,255,255,.9)
+// 设计稿里日期是 1~31 顺序占位，这里按真实年月排布，月初偏移与月末补位留空以保持网格对齐。
+// ============================================================================
+export type CalendarDate = { year: number; month: number; day: number };
+
+function CalendarMenu({ anchor, onClose, selected, onSelect }: {
+  anchor: HTMLElement;
+  onClose: () => void;
+  selected: CalendarDate;
+  onSelect: (value: CalendarDate) => void;
+}) {
+  const unlockScroll = useUnlockScrollInDialog();
+  // 打开时定位到已选年月；翻页只改面板视图，点中日期才回写并关闭
+  const [view, setView] = useState({ year: selected.year, month: selected.month });
+  const today = new Date();
+  const firstWeekday = new Date(view.year, view.month - 1, 1).getDay();
+  const daysInMonth = new Date(view.year, view.month, 0).getDate();
+  const cells: (number | null)[] = [
+    ...Array.from({ length: firstWeekday }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, index) => index + 1),
+  ];
+  while (cells.length % 7) cells.push(null);
+  const rows = Array.from({ length: cells.length / 7 }, (_, index) => cells.slice(index * 7, index * 7 + 7));
+  const shiftMonth = (delta: number) => {
+    const next = new Date(view.year, view.month - 1 + delta, 1);
+    setView({ year: next.getFullYear(), month: next.getMonth() + 1 });
+  };
+  const inSelectedMonth = view.year === selected.year && view.month === selected.month;
+  return (
+    <OperationMenu anchor={anchor} gap={8} forceBelow className="rounded-[8px] bg-white p-[16px] shadow-[0_0_12px_rgba(0,0,0,0.08)]" style={{ width: 288 }} onPointerDown={event => event.stopPropagation()}>
+      <div className="flex flex-col gap-[16px]">
+        <div className="flex items-center gap-[16px]">
+          <button type="button" aria-label="上一月" onClick={() => shiftMonth(-1)} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+            <img src="/assets/cal-left.svg" alt="" className="size-[16px]" />
+          </button>
+          <span className="flex-1 text-center font-['PingFang_SC:Medium'] text-[16px] font-medium leading-[24px] tracking-[0.016px] text-[rgba(0,0,0,0.88)]">
+            {view.year}年{view.month}月
+          </span>
+          <button type="button" aria-label="下一月" onClick={() => shiftMonth(1)} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+            <img src="/assets/cal-right.svg" alt="" className="size-[16px]" />
+          </button>
+        </div>
+        <div className="h-[1px] w-full bg-[#f2f2f2]" />
+        <div ref={unlockScroll} className="flex flex-col gap-[16px]">
+          <div className="flex gap-[4px]">
+            {["日", "一", "二", "三", "四", "五", "六"].map(label => (
+              <span key={label} className="flex-1 text-center font-['PingFang_SC:Regular'] text-[12px] leading-[18px] tracking-[0.012px] text-[rgba(0,0,0,0.26)]">
+                {label}
+              </span>
+            ))}
+          </div>
+          {rows.map((row, rowIndex) => (
+            <div key={rowIndex} className="flex">
+              {row.map((item, index) => {
+                if (item === null) return <span key={`pad-${index}`} className="h-[28px] flex-1" />;
+                const isSelected = inSelectedMonth && item === selected.day;
+                const isToday = view.year === today.getFullYear() && view.month === today.getMonth() + 1 && item === today.getDate();
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    aria-label={`${view.year}年${view.month}月${item}日`}
+                    onClick={() => { onSelect({ year: view.year, month: view.month, day: item }); onClose(); }}
+                    className="flex flex-1 cursor-pointer justify-center"
+                  >
+                    <span className={`flex h-[28px] w-[28px] items-center justify-center rounded-[32px] font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] ${isSelected ? "bg-[#1e63f5] text-[rgba(255,255,255,0.9)]" : `${isToday ? "text-[#1e63f5]" : "text-[rgba(0,0,0,0.88)]"} hover:bg-[#f2f2f2]`}`}>
+                      {item}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </OperationMenu>
+  );
+}
+
+// 月日 chip：Figma 9783:70498「每年」弹窗里的「11月5号」，点击弹出上面共用的「选择日」面板。
+// 排期只有月日、没有年份，年份取今年作为面板定位与翻页起点，选中后只回写月与日。
 function YearDateChip({ month, day, onMonthChange, onDayChange }: {
   month: number;
   day: string;
@@ -767,8 +849,6 @@ function YearDateChip({ month, day, onMonthChange, onDayChange }: {
 }) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(anchor, setAnchor);
-  const unlockScroll = useUnlockScrollInDialog();
-  const months = Array.from({ length: 12 }, (_, index) => index + 1);
   return (
     <Fragment>
       <button
@@ -780,26 +860,15 @@ function YearDateChip({ month, day, onMonthChange, onDayChange }: {
         {/* Figma 9785:71155：月日 chip 同样带 down-small 箭头（16×16） */}
         <img src="/assets/automation-down-small.svg" alt="" className="size-[16px] shrink-0" />
       </button>
-      {anchor && <OperationMenu anchor={anchor} gap={8} className="flex flex-col gap-[8px] rounded-[12px] border border-[#f2f2f2] bg-white p-[12px] shadow-[0_0_12px_rgba(0,0,0,0.08)]" style={{ width: 240 }} onPointerDown={event => event.stopPropagation()}>
-        <div className="font-['PingFang_SC:Regular'] text-[12px] text-[rgba(0,0,0,0.38)]">月份</div>
-        <div className="grid grid-cols-6 gap-[4px]">
-          {months.map(item => (
-            <button key={item} type="button" onClick={() => onMonthChange(item)}
-              className={`flex h-[28px] cursor-pointer items-center justify-center rounded-[4px] text-[12px] hover:bg-[#f2f2f2] ${item === month ? "bg-[#ebf4ff] text-[#1e63f5]" : "text-[rgba(0,0,0,0.88)]"}`}>
-              {item}
-            </button>
-          ))}
-        </div>
-        <div className="font-['PingFang_SC:Regular'] text-[12px] text-[rgba(0,0,0,0.38)]">日期</div>
-        <div ref={unlockScroll} className="grid max-h-[160px] grid-cols-6 gap-[4px] overflow-y-auto">
-          {DAYS.map(item => (
-            <button key={item} type="button" onClick={() => onDayChange(item)}
-              className={`flex h-[28px] cursor-pointer items-center justify-center rounded-[4px] text-[12px] hover:bg-[#f2f2f2] ${item === day ? "bg-[#ebf4ff] text-[#1e63f5]" : "text-[rgba(0,0,0,0.88)]"}`}>
-              {parseInt(item)}
-            </button>
-          ))}
-        </div>
-      </OperationMenu>}
+      {anchor && <CalendarMenu
+        anchor={anchor}
+        onClose={() => setAnchor(null)}
+        selected={{ year: new Date().getFullYear(), month, day: parseInt(day) || 1 }}
+        onSelect={({ month: nextMonth, day: nextDay }) => {
+          if (nextMonth !== month) onMonthChange(nextMonth);
+          onDayChange(`${nextDay}号`);
+        }}
+      />}
     </Fragment>
   );
 }
@@ -948,12 +1017,16 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
 
   const label = "font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]";
 
+  // 浮层断点分场景（类名必须写成完整字面量，Tailwind 才能扫描生成）：
+  // 任务页要同时容纳「列表 320 + 详情 320」，内容区不足 640（窗口 <880 = 240 导航 + 640）时
+  // 详情转右侧浮层，避免并排把列表挤到 320 以下；
+  // 会话页的详情是固定 320 侧栏，沿用原来的 <800 转浮层，行为不变。
   return (
     <aside
       aria-label="自动化任务详情"
-      // 自动化任务页：去掉左侧导航后，列表 / 详情各占 50%，详情夹在 320~720；
-      // 会话页仍是固定 320。<1024px 一律改浮层，不挤压主列表。
-      className={`flex flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[799px]:absolute max-[799px]:inset-y-0 max-[799px]:right-0 max-[799px]:z-20 max-[799px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] ${split ? "max-[799px]:w-[320px] min-[800px]:[flex:1_1_50%] min-[800px]:min-w-[320px] min-[800px]:max-w-[720px]" : "w-[320px] shrink-0"}`}
+      className={split
+        ? "flex flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[879px]:absolute max-[879px]:inset-y-0 max-[879px]:right-0 max-[879px]:z-20 max-[879px]:w-[320px] max-[879px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] min-[880px]:[flex:1_1_50%] min-[880px]:min-w-[320px] min-[880px]:max-w-[720px]"
+        : "flex w-[320px] shrink-0 flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[799px]:absolute max-[799px]:inset-y-0 max-[799px]:right-0 max-[799px]:z-20 max-[799px]:w-[320px] max-[799px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"}
     >
       {/* header：标题 + 暂停/运行中 + 更多 + 关闭（Figma 9897:2990） */}
       <header className="flex h-[48px] shrink-0 items-center gap-[10px] border-b border-[#f2f2f2] px-[16px] py-[8px]">
@@ -1128,12 +1201,20 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
 // ============================================================================
 // 自动化任务列表页（Figma 9665:49113）
 // ============================================================================
-export function AutomationView({ tasks, onTasksChange, onLaunchChat }: {
+export function AutomationView({ tasks, onTasksChange, onLaunchChat, navCollapsed = false, onSidebarToggle, onNewChat }: {
   // 任务数据由 App 持有：点「创建」会跳到会话页，本组件随即卸载，
   // 任务必须活在上一层，AI 创建完成后回到这里才看得到。
   tasks: AutomationTask[];
   onTasksChange: (updater: (current: AutomationTask[]) => AutomationTask[]) => void;
   onLaunchChat: (payload: { schedule: ScheduleState; prompt: string }) => void;
+  // 本页桌面端没有全局顶栏（Figma 9937:57105），而收起导航后要用到的两个按钮
+  // （「展开侧边栏」「新建对话」）原本只长在顶栏里，于是导航一收，两个入口一起消失。
+  // 这里由 App 传入「导航已收起且顶栏确实不存在」的状态，在页面左上角补出与 ChatHeader
+  // 收起态完全同款的一组按钮（同图标、同 24px 尺寸、同 hover、同 8px 间距、同 12px 顶偏移），
+  // 与项目页 / 资料库页等其余 tab 的收起态交互保持一致。<800px 时顶栏仍在（自带这两个入口），故不重复渲染。
+  navCollapsed?: boolean;
+  onSidebarToggle?: () => void;
+  onNewChat?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<AutomationTab>("已启用");
@@ -1196,12 +1277,44 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat }: {
   return (
     <>
       <div className="relative flex min-h-0 flex-1">
-        <main ref={mainRef} className={`relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-white px-[16px] ${narrowPadding ? "" : "min-[800px]:px-[24px]"} ${detailTask ? "min-[800px]:[flex:1_1_50%]" : ""}`}>
-          {/* 桌面（Figma 9937:57105）无全局顶栏：列表列自身留 48px 顶部间距；<800px 保留 ChatHeader，只留常规 16px，避免双倍空白 */}
-          <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col min-[800px]:pt-[46px]">
+        {/* 导航收起态：本页没有全局顶栏，顶栏收起态自带的两个入口只能由页面自己补。
+            与 ChatHeader 收起态逐一对齐：同图标、同 24px 尺寸、同 p-[4px] 内边距、
+            同 hover #f7f7f7、同 8px 间距、同 top-[12px]；左偏移跟随本列内边距（16 / 24）。
+            放在滚动容器外层，滚列表时不会跟着滚走。 */}
+        {navCollapsed && (
+          <div className={`absolute top-[12px] z-30 flex items-center gap-[8px] ${narrowPadding ? "left-[16px]" : "left-[24px]"}`}>
+            <button
+              type="button"
+              onClick={onSidebarToggle}
+              aria-label="展开侧边栏"
+              className="relative flex size-[24px] shrink-0 cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
+            >
+              <span aria-hidden className="relative size-[16px] shrink-0">
+                <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/0c886.svg" />
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={onNewChat}
+              aria-label="新建对话"
+              className="relative flex size-[24px] shrink-0 cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
+            >
+              <span aria-hidden className="relative size-[16px] shrink-0">
+                <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/a4798.svg" />
+              </span>
+            </button>
+          </div>
+        )}
+        {/* 详情并排时列表占 50%，断点与 AutomationDetailPanel 的 split 保持一致（≥880 才并排）：
+            880 = 240 导航 + 320 列表 + 320 详情，保证中间列表不会被挤到 320 以下；
+            再窄则详情转浮层，列表独占内容区（内容区本身 min-w-[320px]）。 */}
+        <main ref={mainRef} className={`relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-white px-[16px] ${narrowPadding ? "" : "min-[800px]:px-[24px]"} ${detailTask ? "min-[880px]:[flex:1_1_50%] min-[880px]:min-w-[320px]" : ""}`}>
+          {/* 桌面（Figma 9937:57105）无全局顶栏：列表列自身留顶部间距；<800px 保留 ChatHeader，只留常规 16px，避免双倍空白 */}
+          {/* 顶部 48px 取自 Figma 9872:63167「内容区」padding-top 48（列顶 → 标题行顶）。
+              导航收起时按钮占 12~36px，仍在 48px 之上，不会压住标题。 */}
+          <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col min-[800px]:pt-[48px]">
             <ListPageHeader
               title="自动化任务"
-              pbClass="pb-[28px]"
               query={query}
               onQueryChange={setQuery}
               searchPlaceholder="搜索自动化任务名称"
@@ -1218,22 +1331,25 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat }: {
                 <img src="/assets/automation-create-add.svg" alt="" className="size-[16px] shrink-0" />
                 <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)]">新建</span>
               </button>
-              {/* 列变窄 / <560px：收起为 32x32 蓝色图标按钮 */}
+              {/* 列变窄 / <560px：收起为 32x32 图标按钮，与项目页「新建项目」收起态完全同款
+                  （透明底 + 20px 蓝色 add-circle-fill 圆形图标，hover #EBF4FF / active #99C3FF），
+                  不再是蓝底白加号的方块。 */}
               <button
                 type="button"
                 aria-label="新建"
                 onClick={() => setCreateOpen(true)}
-                className={`size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#1e63f5] hover:bg-[#1554d1] ${compactHeader ? "flex" : "hidden max-[559px]:flex"}`}
+                className={`size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#ebf4ff] active:bg-[#99c3ff] ${compactHeader ? "flex" : "hidden max-[559px]:flex"}`}
               >
-                <img src="/assets/automation-create-add.svg" alt="" className="size-[16px]" />
+                <img src="/assets/project-add-circle.svg" alt="" className="size-[20px]" />
               </button>
             </ListPageHeader>
 
-            <TagTabs items={AUTOMATION_TABS} active={tab} onChange={setTab} pbClass="pb-[12px]" />
+            <TagTabs items={AUTOMATION_TABS} active={tab} onChange={setTab} />
 
             {/* 内容区：有数据显示任务卡片列表（含 hover 操作项），无数据显示空态 */}
+            {/* 卡片间距 4px：Figma 9872:63167 卡片一 y=148、高 64，卡片二 y=216 → 216-(148+64)=4 */}
             {visibleTasks.length > 0 ? (
-              <div className="flex w-full flex-col gap-[8px] pb-[24px]">
+              <div className="flex w-full flex-col gap-[4px] pb-[24px]">
                 {visibleTasks.map(task => (
                   <AutomationTaskCard
                     key={task.id}
