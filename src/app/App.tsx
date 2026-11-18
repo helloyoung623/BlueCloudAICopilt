@@ -1,4 +1,5 @@
-import { Fragment, forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import type { CSSProperties } from "react";
 import { motion } from "motion/react";
 import svgPaths from "@/imports/默认首页-1/svg-4ly00k0kqz";
 import svgPanel from "@/imports/需求确认-1/svg-1yxmq1shfb";
@@ -20,6 +21,7 @@ import { Dialog, DialogClose, DialogContent, DialogTitle } from "./components/ui
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./components/ui/sheet";
 import { useIsMobile } from "./components/ui/use-mobile";
 import { OperationMenu } from "./components/operation-menu";
+import { AddContentMenu } from "./components/add-content-menu";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
@@ -2288,10 +2290,7 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
-  const addMenuRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
   // 输入框最大高度跟随窗口高度收缩：矮窗口（如约 400px 高的预览面板）里，
   // 固定 328px 会把底部工具栏和发送按钮顶到窗口外
@@ -2344,17 +2343,6 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
     return () => observer.disconnect();
   }, [value, attachments.length, cardMaxHeight]);
 
-  useEffect(() => {
-    if (!addMenuOpen) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!addMenuRef.current?.contains(event.target as Node)) {
-        setAddMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, [addMenuOpen]);
-
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -2385,98 +2373,12 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
       </div>
       <div ref={toolbarRef} className="flex shrink-0 items-center gap-[32px] px-[8px] pb-[8px] pr-[46px]">
         <div className="relative flex min-w-0 items-center gap-[8px]">
-        <div ref={addMenuRef} className="relative shrink-0">
-          <button
-            type="button"
-            aria-label="添加内容"
-            aria-haspopup="menu"
-            aria-expanded={addMenuOpen}
-            onClick={() => {
-              setAddMenuOpen(open => !open);
-              setAttachmentSource(null);
-            }}
-            className={`flex size-[30px] cursor-pointer items-center justify-center rounded-full border-0 ${addMenuOpen ? "bg-[#f2f2f2]" : "hover:bg-[#f7f7f7]"}`}
-            title="添加内容"
-          >
-            <img src="/assets/afee9.svg" alt="" />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            accept=".png,.jpg,.jpeg,.pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.html,.eml,.msg"
-            multiple
-            onChange={event => {
-              const files = Array.from(event.currentTarget.files ?? []);
-              if (files.length) onAddFiles(files);
-              event.currentTarget.value = "";
-              setAddMenuOpen(false);
-            }}
-          />
-          {addMenuOpen && (
-            <OperationMenu anchor={addMenuRef.current?.querySelector(":scope > button") ?? null}
-              gap={8}
-              role="menu"
-              aria-label="添加内容"
-              onKeyDown={event => {
-                if (event.key === "Escape") {
-                  setAddMenuOpen(false);
-                  addMenuRef.current?.querySelector("button")?.focus();
-                }
-              }}
-              className="w-[192px] overflow-hidden rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]"
-            >
-              <div className="flex w-full flex-col py-[4px]">
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    fileInputRef.current?.click();
-                    setAddMenuOpen(false);
-                  }}
-                  className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left font-normal hover:bg-[#f2f2f2] focus-visible:bg-[#f2f2f2]"
-                >
-                  <img src="/assets/f811e.svg" alt="" className="shrink-0" />
-                  <span className="min-w-0 flex-1 truncate text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">上传本地文件</span>
-                </button>
-                {([
-                  { label: "从 OneDrive 中添加", icon: "d70fd", source: "OneDrive" },
-                  { label: "从 Outlook 中添加", icon: "cc7e9", source: "Outlook" },
-                  { label: "从 SharePoint 中添加", icon: "9c4f2", source: "SharePoint" },
-                  { label: "从产物中添加", icon: "ec778", source: "产物" },
-                  { label: "从项目资料中添加", icon: "1d8f2", source: "项目资料" },
-                  { label: "来源", icon: "29219", message: "来源功能暂未接入" },
-                ] satisfies ({ label: string; icon: string } & ({ source: AttachmentSource } | { message: string }))[])
-                  .filter(item => item.source !== "项目资料" || hasProject).map(item => (
-                  <Fragment key={item.label}>
-                    {item.label === "来源" && (
-                      <div role="separator" className="relative h-0 w-full">
-                        <img src="/assets/11020.svg" alt="" className="absolute -top-[0.5px] left-0 max-w-none" />
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        if ("source" in item && item.source) {
-                          setAttachmentSource(item.source);
-                        } else {
-                          toast.info(item.message);
-                        }
-                      }}
-                      className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left font-normal hover:bg-[#f2f2f2] focus-visible:bg-[#f2f2f2]"
-                    >
-                      <img src={`/assets/${item.icon}.svg`} alt="" className="shrink-0" />
-                      <span className="min-w-0 flex-1 truncate text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">{item.label}</span>
-                      {item.label === "来源" && <img src="/assets/fb6a4.svg" alt="" className="shrink-0" />}
-                    </button>
-                  </Fragment>
-                ))}
-              </div>
-            </OperationMenu>
-          )}
-        </div>
+        <AddContentMenu
+          hasProject={hasProject}
+          onAddFiles={onAddFiles}
+          onSelectSource={setAttachmentSource}
+          onOpenChange={open => { if (open) setAttachmentSource(null); }}
+        />
         <div className="shrink-0">
           <PptGenerationToggle selected={pptGeneration} onChange={onPptGenerationChange} borderless />
         </div>
@@ -2764,6 +2666,14 @@ function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects,
 
 const SUGGESTIONS = ["找出近一周的邮件", "请帮我起草一封给团队的邮件", "总结下智能助手项目邮件"];
 
+// 推荐问题入场：淡入 + 上浮，位移逐颗加大形成视差层次（只走 transform/opacity，不占布局）
+function suggestInStyle(shift: number, delay: number): CSSProperties {
+  return {
+    "--suggest-shift": `${shift}px`,
+    animation: `suggestIn .52s cubic-bezier(.22,.61,.36,1) ${delay}s both`,
+  } as unknown as CSSProperties;
+}
+
 function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, projects, selectedProjectId, onSelectProject, onCreateProject }: {
   input: string;
   onInputChange: (v: string) => void;
@@ -2782,7 +2692,9 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
   const selectedProject = projects.find(project => project.id === selectedProjectId);
   return (
     <div className="flex-1 min-h-0 bg-white flex flex-col overflow-hidden">
-      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
+      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes suggestIn{0%{opacity:0;transform:translateY(var(--suggest-shift,14px)) scale(.98)}100%{opacity:1;transform:translateY(0) scale(1)}}
+@media (prefers-reduced-motion: reduce){[data-suggest-in]{animation:none!important;opacity:1!important;transform:none!important}}`}</style>
       <div className="conversation-gutter relative flex-1 min-h-0">
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden">
           <div className="w-[756px] h-[400px] rounded bg-gradient-to-r from-[#a3ffff] to-[#1e63f5] opacity-10 blur-[100px]" />
@@ -2795,14 +2707,14 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
             <span className="w-[16px] h-[4px] bg-[rgba(0,0,0,0.88)] self-end mb-[10px]" style={{ animation: "blink 1s step-end infinite" }} />
           </div>
           <div className="flex flex-col items-center w-full">
-            <div className="shrink-0 flex items-center gap-[8px] pt-[32px] pb-[20px]">
+            <div className="shrink-0 flex items-center gap-[8px] pt-[32px] pb-[20px]" data-suggest-in style={suggestInStyle(8, 0)}>
               <svg width="80" height="1" viewBox="0 0 80 1" fill="none"><path d="M0 0.5H80" stroke="url(#gl)" /><defs><linearGradient id="gl" x1="0" y1="1" x2="80" y2="1" gradientUnits="userSpaceOnUse"><stop stopOpacity="0" /><stop offset="1" stopOpacity="0.3" /></linearGradient></defs></svg>
               <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] whitespace-nowrap">试试这些</span>
               <svg width="80" height="1" viewBox="0 0 80 1" fill="none"><path d="M0 0.5H80" stroke="url(#gr)" /><defs><linearGradient id="gr" x1="0" y1="1" x2="80" y2="1" gradientUnits="userSpaceOnUse"><stop stopOpacity="0.3" /><stop offset="1" stopOpacity="0" /></linearGradient></defs></svg>
             </div>
             <div className="shrink-0 flex flex-wrap items-center justify-center gap-[12px]">
               {SUGGESTIONS.map((s, i) => (
-                <button key={s} onClick={() => onSend(s)} className="flex items-center gap-[10px] px-[8px] py-[8px] bg-[#f7f7f7] hover:bg-[#f2f2f2] rounded-[8px] transition-colors cursor-pointer">
+                <button key={s} onClick={() => onSend(s)} data-suggest-in style={suggestInStyle(18 + i * 7, 0.08 + i * 0.075)} className="flex items-center gap-[10px] px-[8px] py-[8px] bg-[#f7f7f7] hover:bg-[#f2f2f2] rounded-[8px] transition-colors cursor-pointer">
                   <AIIcon uid={`s${i}`} />
                   <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] whitespace-nowrap font-normal">{s}</span>
                 </button>
@@ -3962,11 +3874,16 @@ const AUTOMATION_CARD_CSS = `
   .ac-bg,.ac-icon,.ac-title,.ac-sub,.ac-actions{animation:none;opacity:1;transform:none}
   .ac-sweep{animation:none;opacity:0}
 }
+/* 历史消息：卡片直接呈现，不重播入场与扫光（切换对话回来时不应像重新加载） */
+.ac-static,.ac-static .ac-icon,.ac-static .ac-title,.ac-static .ac-sub{animation:none;opacity:1;transform:none}
+.ac-static .ac-sweep{animation:none;opacity:0}
 `;
 
-function AutomationCard({ automation, onOpen }: {
+function AutomationCard({ automation, onOpen, instant = false }: {
   automation: NonNullable<Message["automation"]>;
   onOpen?: (taskId: string) => void;
+  // 历史消息（instant）：不播入场/扫光动画，避免切换对话回来像「重新加载」
+  instant?: boolean;
 }) {
   return (
     <>
@@ -3975,7 +3892,7 @@ function AutomationCard({ automation, onOpen }: {
         type="button"
         data-automation-card={automation.taskId}
         onClick={() => onOpen?.(automation.taskId)}
-        className="ac-bg relative flex w-full shrink-0 cursor-pointer items-center gap-[8px] overflow-hidden rounded-[8px] bg-[#f7f7f7] p-[8px] text-left transition-colors hover:bg-[#f2f2f2]"
+        className={`ac-bg relative flex w-full shrink-0 cursor-pointer items-center gap-[8px] overflow-hidden rounded-[8px] bg-[#f7f7f7] p-[8px] text-left transition-colors hover:bg-[#f2f2f2]${instant ? " ac-static" : ""}`}
       >
         <img src={automationIconSrc(automation.icon)} alt="" className="ac-icon size-[32px] shrink-0" />
         <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
@@ -4081,19 +3998,28 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   const [localInstant, setLocalInstant] = useState(Boolean(instant));
   useEffect(() => { setLocalInstant(Boolean(instant)); }, [instant]);
   const [copied, setCopied] = useState(false);
+  // 复制：Figma 2459:8219 .copy Icon 有 Default（copy-line）与 success（勾）两态，
+  // 点击后先切勾并保持 1.5s 再复位；写入剪贴板失败则立刻收回，不假装成功。
+  const handleCopy = () => {
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+    navigator.clipboard?.writeText(msg.text ?? "")?.catch(() => setCopied(false));
+  };
   // 正文打完字后再让自动化卡片入场，保证「先文字、后卡片」的阅读顺序
   // 历史消息（instant）视为已打完，避免挂载时被重置为 false 导致操作项永不出现
   const [textDone, setTextDone] = useState(instant || !msg.text);
   useEffect(() => { setTextDone(instant || !msg.text); }, [msg.text, instant]);
   // 卡片内容（底色/图标/标题/副标题/扫光）全部演完，才出现下方操作项
-  const [actionsShown, setActionsShown] = useState(false);
+  const [actionsShown, setActionsShown] = useState(Boolean(instant));
   useEffect(() => {
     if (!textDone) { setActionsShown(false); return; }
+    // 历史消息（instant）直接显示操作项，不再等卡片扫光/延时淡入
+    if (instant) { setActionsShown(true); return; }
     // 自动化卡片需等扫光动画演完再显示操作项；普通回答打字结束即可显示
     const delay = msg.automation ? 1400 : 120;
     const id = window.setTimeout(() => setActionsShown(true), delay);
     return () => window.clearTimeout(id);
-  }, [msg.automation?.taskId, textDone]);
+  }, [msg.automation?.taskId, textDone, instant]);
   const autoAdvance = msg.role === "user" || msg.role === "result" || (msg.role === "ai" && Boolean(msg.thinking));
   useEffect(() => { if (autoAdvance) advance(index); }, [autoAdvance, advance, index]);
 
@@ -4131,15 +4057,11 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
             type="button"
             aria-label="复制"
             title={copied ? "已复制" : "复制"}
-            onClick={() => {
-              navigator.clipboard?.writeText(msg.text ?? "").then(() => {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              }).catch(() => undefined);
-            }}
+            onClick={handleCopy}
             className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
           >
-            <img src="/assets/msg-copy-user.svg" alt="" className="size-[16px]" />
+            {/* Figma 2459:8219 .copy Icon：默认 copy-line，点击复制后切 success（勾） */}
+            <img src={copied ? "/assets/msg-copy-success.svg" : "/assets/msg-copy-user.svg"} alt="" className="size-[16px]" />
           </button>
           <button
             type="button"
@@ -4182,7 +4104,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
           <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter key={regenKey} instant={localInstant} text={msg.text ?? ""} onDone={() => { setTextDone(true); advance(index); }} /></p>
           {/* 自动化卡片（Figma 9925:54896）：#F7F7F7 底、r8、p8、g8，32 图标 + 标题/副标题 */}
           {msg.automation && textDone && (
-            <AutomationCard automation={msg.automation} onOpen={onOpenAutomation} />
+            <AutomationCard automation={msg.automation} onOpen={onOpenAutomation} instant={localInstant} />
           )}
           {msg.artifacts && msg.artifacts.length > 0 && (
             <div className="artifact-grid grid w-full gap-[12px]">
@@ -4192,7 +4114,11 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
           {/* 回答下方的操作项（Figma MessageActions）：重新生成 / 复制 / 来源。
               所有 AI 回答都渲染：最新一条常显，历史回答默认隐藏、hover 整条消息时淡入 */}
           {actionsShown && (
-            <div className={`ac-actions flex items-center gap-[8px] transition-opacity ${isLastAi ? "" : "opacity-0 group-hover/ai:opacity-100"}`}>
+            <div
+              // 历史消息（重新进入/切换对话）不播入场动画：仅保留 hover 的 opacity 过渡
+              style={{ animation: localInstant ? "none" : undefined }}
+              className={`ac-actions flex items-center gap-[8px] transition-opacity ${isLastAi ? "" : "opacity-0 group-hover/ai:opacity-100"}`}
+            >
               <button
                 type="button"
                 aria-label="重新生成"
@@ -4206,15 +4132,10 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
                 type="button"
                 aria-label="复制"
                 title={copied ? "已复制" : "复制"}
-                onClick={() => {
-                  navigator.clipboard?.writeText(msg.text ?? "").then(() => {
-                    setCopied(true);
-                    window.setTimeout(() => setCopied(false), 1500);
-                  }).catch(() => undefined);
-                }}
+                onClick={handleCopy}
                 className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
               >
-                <img src="/assets/msg-copy.svg" alt="" className="size-[24px]" />
+                <img src={copied ? "/assets/msg-copy-success.svg" : "/assets/msg-copy.svg"} alt="" className={copied ? "size-[16px]" : "size-[24px]"} />
               </button>
               {/* 来源：3 个 20px 圆形来源徽标（重叠 -4）+「N个来源」 */}
               <div className="flex items-center gap-[4px] px-[4px]">
@@ -4231,7 +4152,8 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
                   key={question}
                   type="button"
                   onClick={() => onFollowUp?.(question)}
-                  style={{ animation: `followUpIn 320ms cubic-bezier(0.22,1,0.36,1) ${qi * 110}ms both` }}
+                  // 历史消息（重新进入/切换对话）不再重播错峰入场动画，直接呈现
+                  style={{ animation: localInstant ? "none" : `followUpIn 320ms cubic-bezier(0.22,1,0.36,1) ${qi * 110}ms both` }}
                   className="w-fit max-w-full cursor-pointer rounded-[8px] border border-[#f2f2f2] bg-white px-[12px] py-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] transition-colors hover:border-transparent hover:bg-[#f2f2f2]"
                 >
                   {question}
@@ -4269,7 +4191,16 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
   onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages]);
+  // useLayoutEffect：切换会话/新消息时在绘制前就定位到底部，
+  // 用 useEffect 会先画出「停在旧滚动位置」的一帧，看起来像内容重新加载了一次。
+  // 图标/字体高度在下一帧才最终确定，补一次 rAF 校正，避免停在差十几像素的位置。
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    const id = requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    return () => cancelAnimationFrame(id);
+  }, [messages]);
 
   // 回到底部按钮：距底部超过 80px（即下方还有 >80px 内容被遮住）时显示
   const [showBackToBottom, setShowBackToBottom] = useState(false);
@@ -4290,7 +4221,9 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
   const advance = useCallback((i: number) => setRevealed(r => Math.max(r, i + 1)), []);
   // switching conversations shows history in full without replaying typewriters
   const msgCount = messages.length;
-  useEffect(() => { setRevealed(msgCount); }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // useLayoutEffect：切会话时在浏览器绘制前就把揭示指针推到末尾。
+  // 用 useEffect 会先绘制一帧「只显示部分消息」的画面，切回内容多的会话就像重新加载。
+  useLayoutEffect(() => { setRevealed(msgCount); }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 历史消息靠消息自身的 instant 标记判断（handleSelectHistory 载入时打标），
   // 新发送的消息不带标记 → 仍有打字与执行过程动画。不再按会话切换推断，避免误判新消息。
@@ -4321,11 +4254,14 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
             <div className="conversation-messages flex flex-col pt-[16px] pb-[56px]">
               {messages.map((msg, i) => {
                 if (i > revealed) return null;
+                // key 带上会话 id：切换会话时强制重挂，避免 React 复用同 index 的旧实例
+                // 把上一条会话的 instant / 打字进度 / 操作项状态带过来（表现为内容重新加载、重新打字）
+                const rowKey = `${conversationId ?? "draft"}-${i}`;
                 if (msg.role === "process" && taskComplete) {
-                  return i === firstProcessIndex ? <div key={i} className={`w-full ${spacingBefore(i)}`}><MergedProcess presets={processPresets} /></div> : null;
+                  return i === firstProcessIndex ? <div key={rowKey} className={`w-full ${spacingBefore(i)}`}><MergedProcess presets={processPresets} /></div> : null;
                 }
                 return (
-                  <div key={i} data-message-index={i} className={`flex w-full flex-col ${spacingBefore(i)}`}>
+                  <div key={rowKey} data-message-index={i} className={`flex w-full flex-col ${spacingBefore(i)}`}>
                     <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onProcessProgress={onProcessProgress} />
                   </div>
                 );
@@ -4750,6 +4686,24 @@ export default function App() {
   // setTimeout 回调里读最新会话 id（state 会过期）
   const activeHistoryIdRef = useRef<number | null>(null);
   activeHistoryIdRef.current = activeHistoryId;
+  // 当前会话的消息实时回写历史条目。
+  // 之前只有「切走后由后台回调 applyToConversation 写入」才同步，历史条目的 messages 常年为空：
+  // 切换任务会丢内容，迟到的异步结果还会被追加到别的会话上（任务串台）。
+  const messagesOwnerRef = useRef<number | null>(null);
+  useEffect(() => { messagesOwnerRef.current = activeHistoryId; }, [activeHistoryId]);
+  useEffect(() => {
+    const owner = messagesOwnerRef.current;
+    if (owner === null) return;
+    setHistory(h => {
+      let changed = false;
+      const next = h.map(item => {
+        if (item.id !== owner || item.messages === messages) return item;
+        changed = true;
+        return { ...item, messages };
+      });
+      return changed ? next : h;
+    });
+  }, [messages]);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const attachmentsRef = useRef<ChatAttachment[]>([]);
   const uploadTimers = useRef(new Map<string, number>());
@@ -5068,11 +5022,12 @@ export default function App() {
 
   const handleRequirementConfirm = () => {
     const runId = ++activeRunId.current;
+    const convId = activeHistoryIdRef.current;
     setStage("outline_generating");
     setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "outline" }]);
     setTimeout(() => {
-      if (activeRunId.current !== runId) return;
-      setMessages(prev => {
+      if (activeRunId.current !== runId || convId === null) return;
+      applyToConversation(convId, prev => {
         const next = [...prev];
         const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
         if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
@@ -5085,11 +5040,12 @@ export default function App() {
 
   const handleOutlineConfirm = () => {
     const runId = ++activeRunId.current;
+    const convId = activeHistoryIdRef.current;
     setStage("ppt_generating");
     setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "ppt" }]);
     setTimeout(() => {
-      if (activeRunId.current !== runId) return;
-      setMessages(prev => {
+      if (activeRunId.current !== runId || convId === null) return;
+      applyToConversation(convId, prev => {
         const next = [...prev];
         const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
         if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
@@ -5160,7 +5116,7 @@ export default function App() {
   };
   // 新建自动化任务弹窗点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
   // 由 AI 承接并完成创建。排期条件转成自然语言写进 AI 的过程与回复里。
-  const handleLaunchAutomationChat = ({ schedule, prompt }: { schedule: ScheduleState; prompt: string }) => {
+  const handleLaunchAutomationChat = ({ schedule, prompt, attachments }: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[] }) => {
     const summary = summarizeSchedule(schedule);
     const when = describeSchedule(schedule);
     const title = prompt.split("\n")[0].trim() || "未命名自动化任务";
@@ -5177,7 +5133,8 @@ export default function App() {
     setLibraryOpen(false);
     setSelectedProjectId(null);
     setActiveProjectId(null);
-    clearDraftAttachments(true);
+    // 附件交给了新会话与新建的任务：预览地址要继续用，不能回收
+    clearDraftAttachments(!attachments?.length);
     setInput("");
     setPptGeneration(false);
     setStage("idle");
@@ -5186,7 +5143,7 @@ export default function App() {
     setHistory(h => [{ id, title: title.slice(0, 20), createdAt: Date.now(), messages: [] }, ...h]);
     setActiveHistoryId(id);
     setMessages([
-      { role: "user", text: prompt },
+      { role: "user", text: prompt, ...(attachments?.length ? { attachments } : {}) },
       {
         role: "process",
         text: "",
@@ -5205,9 +5162,11 @@ export default function App() {
     ]);
 
     // AI「创建完成」：任务才真正落到「自动化任务」列表（本地模拟，后续可换真实 Agent）
+    runIdByConversation.current.set(id, runId);
     window.setTimeout(() => {
-      if (activeRunId.current !== runId) return;
-      setMessages(prev => {
+      if (runIdByConversation.current.get(id) !== runId) return;
+      // 结果按会话写回：用户可能已经切回别的任务，直接 setMessages 会把结果追加到别人的会话里
+      applyToConversation(id, prev => {
         const next = [...prev];
         const index = next.findLastIndex(message => message.role === "process" && message.thinking);
         if (index !== -1) next[index] = { ...next[index], thinking: false };
@@ -5235,6 +5194,7 @@ export default function App() {
           schedule,
           prompt,
           icon,
+          ...(attachments?.length ? { attachments } : {}),
         },
         ...current,
       ]);
@@ -5454,7 +5414,7 @@ export default function App() {
           mobile={isMobile}
           sidebarOpen={!isMobile && sidebarOpen}
           onSidebarToggle={() => setSidebarOpen(o => !o)}
-          onNewChat={messages.length > 0 || activeProject !== null ? handleNewChat : undefined}
+          onNewChat={handleNewChat}
         />
         )}
         <div className={libraryOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}>

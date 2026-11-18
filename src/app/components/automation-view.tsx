@@ -1,8 +1,15 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog";
+import { Popover, PopoverAnchor } from "./ui/popover";
 import { OperationMenu } from "./operation-menu";
 import { ListPageHeader } from "./list-page-header";
+import { AddContentMenu } from "./add-content-menu";
+import { AttachmentPicker } from "./attachment-picker";
+import type { AttachmentSource } from "./attachment-picker";
+import { AttachmentTray } from "./attachment-tray";
+import type { ChatAttachment } from "./attachment-tray";
+import { useDraftAttachments } from "./use-draft-attachments";
 
 // ============================================================================
 // 自动化任务页（Figma 9665:49113 列表页；9782/9783/9785 新建自动化任务弹窗各周期态）
@@ -164,6 +171,8 @@ export type AutomationTask = {
   // 详情栏（9787:71282）展示的完整条件，新建弹窗里填什么就存什么
   schedule: ScheduleState;
   prompt: string;
+  // 「就」里挂的附件（与输入框同一套：菜单 → 选择面板 → 附件卡片），随任务保存
+  attachments?: ChatAttachment[];
   // 语义匹配出来的图标（icons.kubai.design），随任务一起存下来保证稳定
   icon: AutomationIcon;
 };
@@ -188,7 +197,10 @@ const TIMEZONES = [
   "UTC+09:00•日本标准时间",
   "UTC+00:00•协调世界时",
   "UTC-08:00•太平洋时间",
-] as const;const HOURS = ["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"] as const;
+] as const;
+// 时间选择器两列滚轮（Figma 9988:58658 Time picker）：时 00-23、分 00-59
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
+const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
 const DAYS = Array.from({ length: 31 }, (_, index) => `${index + 1}号`);
 
 // Tag-2 组件 Size=L（与项目页/自动化页共用同一套 Figma 组件 9625:52202）
@@ -320,11 +332,95 @@ function SelectChip({ options, value, onChange, width = 120, forceBelow = false,
   );
 }
 
-// 时间选择器 chip：弹出小时列表（Figma 18:00）
+// 时间选择器（Figma 9988:58658 Time picker，实例见 9783:70644）：
+// 128×256 白底 r8、投影 0 0 8 rgba(0,0,0,.08)；内容左右各 16px，时/分两列各占 48；
+// 行高 48、可见 5 行，选中值固定在中间槽位（上下各 1px rgba(0,0,0,.1) 细线），
+// 未选中 rgba(0,0,0,.38) Regular，选中 rgba(0,0,0,.88) Medium；左列左对齐、右列右对齐。
+const WHEEL_ROW_H = 48;
+// 中间槽位上沿：8（内边距）+ 2 行 = 104
+const WHEEL_CENTER_TOP = 104;
+
+function TimeWheelColumn({ options, value, onChange, align }: {
+  options: readonly string[];
+  value: string;
+  onChange: (value: string) => void;
+  align?: "left" | "right";
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const snapTimer = useRef<number | undefined>(undefined);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  // 展开时把当前值滚到中间槽位
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = Math.max(0, options.indexOf(valueRef.current)) * WHEEL_ROW_H;
+    return () => window.clearTimeout(snapTimer.current);
+  }, [options]);
+
+  // Radix Dialog 打开时会在 document 上锁滚动，portal 面板里即使有 overflow 也滚不动。
+  // 在列自身上接管 wheel（只绑定一次、卸载时移除），手动滚 scrollTop。
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const step = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? el.clientHeight : 1;
+      el.scrollTop += event.deltaY * step;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener("wheel", onWheel, true);
+  }, []);
+
+  const handleScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const index = Math.min(options.length - 1, Math.max(0, Math.round(el.scrollTop / WHEEL_ROW_H)));
+    if (options[index] !== valueRef.current) onChange(options[index]);
+    // 滚动静止后对齐到整行。不用 CSS scroll-snap：滚轮是手动改 scrollTop 的，
+    // 强制吸附会把小幅滚动立刻弹回原处，滚轮就转不动了。
+    window.clearTimeout(snapTimer.current);
+    snapTimer.current = window.setTimeout(() => {
+      const node = listRef.current;
+      if (!node) return;
+      const target = Math.round(node.scrollTop / WHEEL_ROW_H) * WHEEL_ROW_H;
+      if (Math.abs(node.scrollTop - target) > 0.5) node.scrollTo({ top: target, behavior: "smooth" });
+    }, 160);
+  };
+
+  return (
+    <div
+      ref={listRef}
+      onScroll={handleScroll}
+      className="wheel-scroll h-[256px] min-w-0 flex-1 overflow-y-auto overscroll-contain"
+    >
+      <div className="h-[104px] shrink-0" aria-hidden />
+      {options.map(option => (
+        <button
+          key={option}
+          type="button"
+          onClick={() => {
+            onChange(option);
+            listRef.current?.scrollTo({ top: options.indexOf(option) * WHEEL_ROW_H, behavior: "smooth" });
+          }}
+          className={`flex h-[48px] w-full shrink-0 cursor-pointer items-center font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] ${align === "right" ? "justify-end" : "justify-start"} ${option === value ? "text-[rgba(0,0,0,0.88)]" : "text-[rgba(0,0,0,0.38)] hover:text-[rgba(0,0,0,0.6)]"}`}
+          style={{ fontWeight: option === value ? 500 : 400 }}
+        >
+          {option}
+        </button>
+      ))}
+      <div className="h-[104px] shrink-0" aria-hidden />
+    </div>
+  );
+}
+
+// 时间 chip：点开双列滚轮（时 / 分），滚动或点选实时回写 HH:mm
 function TimeChip({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(anchor, setAnchor);
-  const unlockScroll = useUnlockScrollInDialog();
+  const [hour, minute] = value.split(":");
   return (
     <Fragment>
       <button
@@ -334,15 +430,19 @@ function TimeChip({ value, onChange }: { value: string; onChange: (value: string
       >
         <span className="whitespace-nowrap">{value}</span>
       </button>
-      {anchor && <OperationMenu anchor={anchor} gap={8} className="flex flex-col rounded-[12px] border border-[#f2f2f2] bg-white p-[4px] px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]" style={{ width: 100 }} onPointerDown={event => event.stopPropagation()}>
-        <div ref={unlockScroll} className="-mr-[8px] flex max-h-[320px] flex-col gap-[2px] overflow-y-auto py-[4px] pr-[8px]">
-          {HOURS.map(hour => (
-            <button key={hour} type="button" onClick={() => { onChange(hour); setAnchor(null); }}
-              className={`flex h-[36px] shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-[14px] hover:bg-[#f2f2f2] ${hour === value ? "bg-white font-medium text-[rgba(0,0,0,0.88)]" : "text-[rgba(0,0,0,0.88)]"}`}>
-              {hour}
-            </button>
-          ))}
+      {anchor && <OperationMenu
+        anchor={anchor}
+        gap={8}
+        className="relative overflow-hidden rounded-[8px] bg-white shadow-[0_0_8px_rgba(0,0,0,0.08)]"
+        style={{ width: 128 }}
+        onPointerDown={event => event.stopPropagation()}
+      >
+        <div className="flex h-[256px] w-full items-stretch px-[16px]">
+          <TimeWheelColumn options={HOUR_OPTIONS} value={hour ?? "00"} onChange={next => onChange(`${next}:${minute ?? "00"}`)} />
+          <TimeWheelColumn options={MINUTE_OPTIONS} value={minute ?? "00"} onChange={next => onChange(`${hour ?? "00"}:${next}`)} align="right" />
         </div>
+        <div className="pointer-events-none absolute left-[16px] right-[16px] top-[104px] h-px bg-[rgba(0,0,0,0.1)]" />
+        <div className="pointer-events-none absolute left-[16px] right-[16px] top-[152px] h-px bg-[rgba(0,0,0,0.1)]" />
       </OperationMenu>}
     </Fragment>
   );
@@ -629,10 +729,13 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   // 点「创建」发起一个新会话，由 AI 创建这条任务（Figma 9625:49728）
-  onCreate: (schedule: ScheduleState, prompt: string) => void;
+  onCreate: (schedule: ScheduleState, prompt: string, attachments: ChatAttachment[]) => void;
 }) {
   const [schedule, setSchedule] = useState<ScheduleState>(DEFAULT_SCHEDULE);
   const [prompt, setPrompt] = useState("");
+  // 「就」里的 + 与输入框同一套面板：菜单 → 文件选择/云盘面板 → 附件卡片
+  const { attachments, addFiles, removeAttachment, clearAttachments } = useDraftAttachments();
+  const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
   // 高级设置（Figma 9783:70644）：默认收起
   const [advOpen, setAdvOpen] = useState(false);
 
@@ -640,8 +743,10 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
     if (open) {
       setPrompt("");
       setAdvOpen(false);
+      setAttachmentSource(null);
+      clearAttachments();
     }
-  }, [open]);
+  }, [open, clearAttachments]);
 
   const patchSchedule = (patch: Partial<ScheduleState>) => setSchedule(current => ({ ...current, ...patch }));
 
@@ -685,26 +790,43 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
           {/* 就 行 */}
           <div className="flex w-full flex-col gap-[12px] px-[12px]">
             <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">就</span>
-            <div className="relative w-full overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
-              <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
-                <textarea
-                  rows={1}
-                  value={prompt}
-                  onChange={event => setPrompt(event.target.value)}
-                  placeholder="希望我干什么？"
-                  className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
+            <Popover open={attachmentSource !== null} onOpenChange={next => { if (!next) setAttachmentSource(null); }}>
+              <PopoverAnchor asChild>
+                <div className="relative w-full overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
+                  <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
+                    <AttachmentTray attachments={attachments} onRemove={removeAttachment} />
+                    <textarea
+                      rows={1}
+                      value={prompt}
+                      onChange={event => setPrompt(event.target.value)}
+                      placeholder="希望我干什么？"
+                      className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
+                    />
+                  </div>
+                  <div className="flex items-center gap-[8px] p-[8px]">
+                    <AddContentMenu
+                      hasProject={false}
+                      onAddFiles={addFiles}
+                      onSelectSource={setAttachmentSource}
+                      iconSrc="/assets/automation-add-dark.svg"
+                      iconClassName="size-[16px]"
+                      onOpenChange={next => { if (next) setAttachmentSource(null); }}
+                    />
+                  </div>
+                </div>
+              </PopoverAnchor>
+              {attachmentSource && (
+                <AttachmentPicker
+                  source={attachmentSource}
+                  hasProject={false}
+                  onSourceChange={setAttachmentSource}
+                  attachments={attachments}
+                  onAddFiles={addFiles}
+                  onRemove={removeAttachment}
+                  onClose={() => setAttachmentSource(null)}
                 />
-              </div>
-              <div className="flex items-center gap-[8px] p-[8px]">
-                <button
-                  type="button"
-                  aria-label="添加内容"
-                  className="flex size-[30px] shrink-0 cursor-pointer items-center justify-center rounded-full hover:bg-[#f2f2f2]"
-                >
-                  <img src="/assets/automation-add-dark.svg" alt="" className="size-[16px]" />
-                </button>
-              </div>
-            </div>
+              )}
+            </Popover>
           </div>
 
           {/* 高级设置：Figma 9783:70663（容器 padding 0 8px），展开后箭头翻转为 up-small */}
@@ -740,7 +862,12 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
           <button
             type="button"
             disabled={!prompt.trim()}
-            onClick={() => { onCreate(schedule, prompt.trim()); onOpenChange(false); }}
+            onClick={() => {
+              onCreate(schedule, prompt.trim(), attachments);
+              // 附件已带进新会话，预览地址还要继续用，不能回收
+              clearAttachments(false);
+              onOpenChange(false);
+            }}
             className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1] disabled:cursor-not-allowed disabled:bg-[#99c3ff] disabled:text-[rgba(255,255,255,0.55)] disabled:hover:bg-[#99c3ff]"
           >
             创建
@@ -1014,6 +1141,17 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
   const [advOpen, setAdvOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(moreAnchor, setMoreAnchor);
+  // 「就」里的 + 与输入框 / 新建弹窗同一套：菜单 → 文件选择或云盘面板 → 附件卡片，
+  // 附件落在任务上（task.attachments），切换任务时换成该任务自己的列表。
+  const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
+  const { attachments, addFiles, removeAttachment, resetAttachments } = useDraftAttachments({
+    initial: task.attachments,
+    onChange: next => onChange({ attachments: next }),
+  });
+  useEffect(() => {
+    setAttachmentSource(null);
+    resetAttachments(task.attachments ?? []);
+  }, [task.id, resetAttachments]);
 
   const label = "font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]";
 
@@ -1152,26 +1290,43 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
             {/* 就：Chat Input（Figma 9897:37323） */}
             <div className="flex flex-col gap-[12px] px-[12px]">
               <span className={label}>就</span>
-              <div className="flex flex-col overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
-                <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
-                  <textarea
-                    rows={1}
-                    value={task.prompt}
-                    onChange={event => onChange({ prompt: event.target.value })}
-                    placeholder="希望我干什么？"
-                    className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
+              <Popover open={attachmentSource !== null} onOpenChange={next => { if (!next) setAttachmentSource(null); }}>
+                <PopoverAnchor asChild>
+                  <div className="flex w-full flex-col overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
+                    <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
+                      <AttachmentTray attachments={attachments} onRemove={removeAttachment} />
+                      <textarea
+                        rows={1}
+                        value={task.prompt}
+                        onChange={event => onChange({ prompt: event.target.value })}
+                        placeholder="希望我干什么？"
+                        className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
+                      />
+                    </div>
+                    <div className="flex items-center gap-[8px] p-[8px]">
+                      <AddContentMenu
+                        hasProject={false}
+                        onAddFiles={addFiles}
+                        onSelectSource={setAttachmentSource}
+                        iconSrc="/assets/automation-add-dark.svg"
+                        iconClassName="size-[16px]"
+                        onOpenChange={next => { if (next) setAttachmentSource(null); }}
+                      />
+                    </div>
+                  </div>
+                </PopoverAnchor>
+                {attachmentSource && (
+                  <AttachmentPicker
+                    source={attachmentSource}
+                    hasProject={false}
+                    onSourceChange={setAttachmentSource}
+                    attachments={attachments}
+                    onAddFiles={addFiles}
+                    onRemove={removeAttachment}
+                    onClose={() => setAttachmentSource(null)}
                   />
-                </div>
-                <div className="flex items-center gap-[8px] p-[8px]">
-                  <button
-                    type="button"
-                    aria-label="添加内容"
-                    className="flex size-[30px] shrink-0 cursor-pointer items-center justify-center rounded-full hover:bg-[#f2f2f2]"
-                  >
-                    <img src="/assets/automation-add-dark.svg" alt="" className="size-[16px]" />
-                  </button>
-                </div>
-              </div>
+                )}
+              </Popover>
             </div>
 
             {/* 高级设置（折叠）。与弹窗同一套几何：AdvancedSettings 内部各区块自带 px-[12px]，
@@ -1208,7 +1363,7 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, navCollapse
   // 任务必须活在上一层，AI 创建完成后回到这里才看得到。
   tasks: AutomationTask[];
   onTasksChange: (updater: (current: AutomationTask[]) => AutomationTask[]) => void;
-  onLaunchChat: (payload: { schedule: ScheduleState; prompt: string }) => void;
+  onLaunchChat: (payload: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[] }) => void;
   // 本页桌面端没有全局顶栏（Figma 9937:57105），而收起导航后要用到的两个按钮
   // （「展开侧边栏」「新建对话」）原本只长在顶栏里，于是导航一收，两个入口一起消失。
   // 这里由 App 传入「导航已收起且顶栏确实不存在」的状态，在页面左上角补出与 ChatHeader
@@ -1272,8 +1427,8 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, navCollapse
 
   // 点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
   // 由 AI 承接并完成创建 —— 排期与「就」的内容一起带进会话。
-  const handleCreate = (schedule: ScheduleState, prompt: string) => {
-    onLaunchChat({ schedule, prompt });
+  const handleCreate = (schedule: ScheduleState, prompt: string, attachments: ChatAttachment[]) => {
+    onLaunchChat({ schedule, prompt, attachments });
   };
 
   return (
