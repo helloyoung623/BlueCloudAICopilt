@@ -120,6 +120,11 @@ export function ProjectMembersDialog({ members, onClose, onSave }: {
                   placeholder="搜索"
                   className="min-w-0 flex-1 bg-transparent text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
                 />
+                {search && (
+                  <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setSearch("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+                    <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
+                  </button>
+                )}
               </label>
             </div>
             <div className="min-h-0 max-h-[264px] overflow-y-auto px-[8px]">
