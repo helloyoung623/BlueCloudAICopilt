@@ -106,12 +106,14 @@ function FileIcon({ icon }: { icon: string }) {
   </span>;
 }
 
-export function LibraryView({ active, onAddToTask, projects, onUploadToProject }: {
+export function LibraryView({ active, onAddToTask, projects, onUploadToProject, onCreateProject }: {
   active: boolean;
   onAddToTask?: (file: LibraryFile) => void;
   /** 「上传到项目」二级菜单的目标项目（真实项目列表） */
   projects: { id: number; name: string }[];
   onUploadToProject: (file: LibraryFile, projectId: number) => void;
+  /** 「上传到项目 → 新建项目」：交给上层唤起创建项目弹窗 */
+  onCreateProject: () => void;
 }) {
   const [files, setFiles] = useState(makeExampleFiles);
   const [query, setQuery] = useState("");
@@ -239,6 +241,9 @@ export function LibraryView({ active, onAddToTask, projects, onUploadToProject }
       </OperationMenu>}
       {active && menu && projectAnchor && <OperationMenu ref={projectMenuRef} anchor={projectAnchor} submenu role="menu" aria-label="选择项目" onMouseEnter={() => { if (projectCloseTimer.current) clearTimeout(projectCloseTimer.current); }} onMouseLeave={deferCloseProjectMenu} className="library-surface w-[232px] overflow-hidden rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]">
         <div className="flex max-h-[480px] flex-col overflow-y-auto py-[4px]">
+          {projects.length === 0 && (
+            <div className="px-[8px] py-[11px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">暂无项目</div>
+          )}
           {projects.map(project => (
             <button key={project.id} type="button" role="menuitem" onClick={() => {
               const file = menu.file;
@@ -251,11 +256,11 @@ export function LibraryView({ active, onAddToTask, projects, onUploadToProject }
               <span className="min-w-0 flex-1 truncate" title={project.name}>{project.name}</span>
             </button>
           ))}
-          {projects.length > 0 && <div className="relative h-px w-full"><img src="/assets/4b9c6.svg" alt="" className="absolute left-0 top-0" /></div>}
+          <div className="relative h-px w-full"><img src="/assets/4b9c6.svg" alt="" className="absolute left-0 top-0" /></div>
           <button type="button" role="menuitem" onClick={() => {
-            toast.info("「新建项目」为交互示例，未连接真实项目");
             setProjectAnchor(null);
             setMenu(null);
+            onCreateProject();
           }} className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]">
             <img src="/assets/eede2.svg" alt="" className="shrink-0" />新建项目
           </button>

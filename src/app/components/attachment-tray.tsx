@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LoaderCircle } from "lucide-react";
+import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { OperationMenu } from "./operation-menu";
 
 export type AttachmentStatus = "uploading" | "processing" | "ready" | "failed" | "parse-error" | "expired";
@@ -109,18 +109,21 @@ function statusLabel(status: AttachmentStatus) {
   return null;
 }
 
-function AttachmentTile({
+export function AttachmentTile({
   attachment,
   onRemove,
   imageSize,
   fileWidth,
   compact = false,
+  showRemove = true,
 }: {
   attachment: ChatAttachment;
-  onRemove: (id: string) => void;
+  onRemove?: (id: string) => void;
   imageSize: number;
   fileWidth: number | string;
   compact?: boolean;
+  // 消息流里的附件是只读展示，不显示移除按钮
+  showRemove?: boolean;
 }) {
   const label = statusLabel(attachment.status);
   const hasError = ["failed", "parse-error", "expired"].includes(attachment.status);
@@ -135,9 +138,9 @@ function AttachmentTile({
         title={`${attachment.name}${label ? ` · ${label}` : ""}`}
       >
         {attachment.previewUrl ? (
-          <img src={attachment.previewUrl} alt={attachment.name} className="size-full rounded-[8px] object-cover" />
+          <img src={attachment.previewUrl} alt={attachment.name} className="size-full rounded-[8px] border border-[#f2f2f2] object-cover" />
         ) : (
-          <div className="size-full rounded-[8px] bg-[#f7f7f7]" />
+          <div className="size-full rounded-[8px] border border-[#f2f2f2] bg-[#f7f7f7]" />
         )}
         {label && (
           <div className={`absolute inset-0 flex flex-col items-center justify-center gap-[4px] rounded-[8px] bg-black/45 text-[11px] text-white ${hasError ? "bg-[#fff4f0]/95 text-[#fc5926]" : ""}`}>
@@ -145,16 +148,18 @@ function AttachmentTile({
             <span>{label}</span>
           </div>
         )}
-        <button
-          type="button"
-          aria-label={`移除附件 ${attachment.name}`}
-          title="移除附件"
-          onClick={() => onRemove(attachment.id)}
-          className={`absolute -right-[8px] -top-[8px] z-10 flex size-[16px] cursor-pointer items-center justify-center border-0 bg-transparent p-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${hasError ? "opacity-100" : ""}`}
-        >
-          <img src={removeIcon} alt="" width="16" height="16" className="block group-hover:hidden group-focus-within:hidden" />
-          <img src="/assets/attachment-remove-hover.svg" alt="" width="16" height="16" className="hidden group-hover:block group-focus-within:block" />
-        </button>
+        {showRemove && (
+          <button
+            type="button"
+            aria-label={`移除附件 ${attachment.name}`}
+            title="移除附件"
+            onClick={() => onRemove?.(attachment.id)}
+            className={`absolute -right-[8px] -top-[8px] z-10 flex size-[16px] cursor-pointer items-center justify-center border-0 bg-transparent p-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${hasError ? "opacity-100" : ""}`}
+          >
+            <img src={removeIcon} alt="" width="16" height="16" className="block group-hover:hidden group-focus-within:hidden" />
+            <img src="/assets/attachment-remove-hover.svg" alt="" width="16" height="16" className="hidden group-hover:block group-focus-within:block" />
+          </button>
+        )}
       </div>
     );
   }
@@ -167,7 +172,7 @@ function AttachmentTile({
     >
       {/* 从选中第一刻就显示正确的类型图标，上传进度只由副标题文案表达，避免“先线框后变对”的闪烁 */}
       {attachment.image ? (
-        <img src={attachment.previewUrl} alt="" className="shrink-0 rounded-[4px] object-cover size-[40px]" />
+        <img src={attachment.previewUrl} alt="" className="size-[40px] shrink-0 rounded-[4px] border border-[#f2f2f2] object-cover" />
       ) : (
         <span className="relative flex size-[32px] shrink-0 items-center justify-center">
           <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
@@ -189,26 +194,28 @@ function AttachmentTile({
           </span>
         )}
       </div>
-      <button
-        type="button"
-        aria-label={`移除附件 ${attachment.name}`}
-        title="移除附件"
-        onClick={() => onRemove(attachment.id)}
-        className={`absolute -right-[8px] -top-[8px] z-10 flex size-[16px] cursor-pointer items-center justify-center border-0 bg-transparent p-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${hasError ? "opacity-100" : ""}`}
-      >
-        <img src={removeIcon} alt="" width="16" height="16" className="block group-hover:hidden group-focus-within:hidden" />
-        <img src="/assets/attachment-remove-hover.svg" alt="" width="16" height="16" className="hidden group-hover:block group-focus-within:block" />
-      </button>
+      {showRemove && (
+        <button
+          type="button"
+          aria-label={`移除附件 ${attachment.name}`}
+          title="移除附件"
+          onClick={() => onRemove?.(attachment.id)}
+          className={`absolute -right-[8px] -top-[8px] z-10 flex size-[16px] cursor-pointer items-center justify-center border-0 bg-transparent p-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 ${hasError ? "opacity-100" : ""}`}
+        >
+          <img src={removeIcon} alt="" width="16" height="16" className="block group-hover:hidden group-focus-within:hidden" />
+          <img src="/assets/attachment-remove-hover.svg" alt="" width="16" height="16" className="hidden group-hover:block group-focus-within:block" />
+        </button>
+      )}
     </div>
   );
 }
 
-const ATTACHMENT_GAP = 8;
-const OVERFLOW_WIDTH = 32;
-const MIN_FILE_WIDTH = 178;
-const MAX_FILE_WIDTH = 280;
+export const ATTACHMENT_GAP = 8;
+export const OVERFLOW_WIDTH = 32;
+export const MIN_FILE_WIDTH = 178;
+export const MAX_FILE_WIDTH = 280;
 
-function getVisibleLayout(width: number, attachments: ChatAttachment[]) {
+export function getVisibleLayout(width: number, attachments: ChatAttachment[]) {
   if (!width || !attachments.length) return { count: attachments.length, fileWidth: MIN_FILE_WIDTH, imageSize: 56 };
 
   const hasFiles = attachments.some(item => !item.image);
@@ -226,7 +233,9 @@ function getVisibleLayout(width: number, attachments: ChatAttachment[]) {
     const fixedWidth = imageCount * imageSize + (hasOverflow ? OVERFLOW_WIDTH : 0) + gapsWidth;
     const calculatedFileWidth = fileCount ? (width - fixedWidth) / fileCount : MIN_FILE_WIDTH;
 
-    if (calculatedFileWidth >= MIN_FILE_WIDTH || fileCount === 0) {
+    // 纯图片也可能放不下：必须同时满足「整行宽度装得下」才停止收缩，
+    // 否则 10 张图会溢出到卡片外（被卡片圆角裁切），应改为显示 +N
+    if (calculatedFileWidth >= MIN_FILE_WIDTH && fixedWidth <= width) {
       return {
         count,
         fileWidth: Math.min(MAX_FILE_WIDTH, calculatedFileWidth),
@@ -343,6 +352,53 @@ export function AttachmentTray({
             </OperationMenu>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 消息流中的只读附件区。与输入框 AttachmentTray 共用 getVisibleLayout 响应式规则：
+ * 卡片宽度 178–280px 弹性、图片优先、放不下的进「+N」、ResizeObserver 跟随容器宽度。
+ * 区别：只读（无移除按钮）、溢出块为静态展示（不可点开菜单）。
+ */
+export function MessageAttachments({ attachments }: { attachments: ChatAttachment[] }) {
+  const trayRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const orderedAttachments = useMemo(
+    () => [...attachments.filter(item => item.image), ...attachments.filter(item => !item.image)],
+    [attachments],
+  );
+  const { count: visibleCount, fileWidth, imageSize } = getVisibleLayout(width, orderedAttachments);
+  const visibleAttachments = orderedAttachments.slice(0, visibleCount);
+  const hiddenCount = orderedAttachments.length - visibleCount;
+
+  useEffect(() => {
+    const element = trayRef.current;
+    if (!element) return;
+    setWidth(element.getBoundingClientRect().width);
+    const observer = new ResizeObserver(entries => setWidth(entries[0]?.contentRect.width ?? 0));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [attachments.length > 0]);
+
+  if (!attachments.length) return null;
+
+  return (
+    <div ref={trayRef} className="mb-[8px] flex w-full max-w-[768px] items-center justify-end gap-[8px]">
+      {visibleAttachments.map(attachment => (
+        <AttachmentTile
+          key={attachment.id}
+          attachment={attachment}
+          imageSize={imageSize}
+          fileWidth={fileWidth}
+          showRemove={false}
+        />
+      ))}
+      {hiddenCount > 0 && (
+        <div className="flex h-[56px] w-[32px] shrink-0 items-center justify-center rounded-[8px] bg-[#f7f7f7] text-center text-[12px] leading-[14px] text-[rgba(0,0,0,0.6)]">
+          +{hiddenCount}
+        </div>
       )}
     </div>
   );

@@ -13,6 +13,7 @@ import imgStyle1 from "@/imports/需求确认-1/29d4a489057188d7298a9a9f8b923d2d
 import imgStyle2 from "@/imports/需求确认-1/f49f63a62b02589f759f36fc0961c6709a8e1bdf.png";
 import imgStyle3 from "@/imports/需求确认-1/9b2936619dc23e46dde47ce229cadb09c1b911ab.png";
 import { PptPanel, PptResultMessage } from "./components/ppt-result";
+import { RadarArcLoader } from "./components/radar-arc-loader";
 import { ArtifactFileCard, TaskArtifactsButton } from "./components/task-artifacts";
 import type { LocatedTaskArtifact, TaskArtifact } from "./components/task-artifacts";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./components/ui/dialog";
@@ -22,7 +23,7 @@ import { OperationMenu } from "./components/operation-menu";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
-import { AttachmentTray, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, readFileMeta, readVirtualFile } from "./components/attachment-tray";
+import { AttachmentTray, MessageAttachments, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, readFileMeta, readVirtualFile } from "./components/attachment-tray";
 import type { ChatAttachment } from "./components/attachment-tray";
 import { AttachmentPicker } from "./components/attachment-picker";
 import type { AttachmentSource } from "./components/attachment-picker";
@@ -57,6 +58,12 @@ type Message = {
   automation?: { taskId: string; title: string; cycle: string; description: string; icon: AutomationIcon };
   // 自动化卡片下方的延展问题（Figma 9925:54837「延展问题」模块）
   followUps?: string[];
+  // 用户消息的发送状态（Figma 9369:50206）：failed=发送失败（红色感叹号），info=信息提示（info 图标）
+  sendState?: "failed" | "info";
+  // 历史消息标记：从历史会话载入的消息为 true，AI 正文/执行过程直接完整显示，不重播打字动画
+  instant?: boolean;
+  // 执行过程已展开的步骤进度：切走任务再回来时据此恢复（含最后一批仍处于 loading 的状态）
+  progress?: { shown: number; batchStart: number };
 };
 type PptStage = "idle" | "requirement" | "outline_generating" | "outline" | "ppt_generating" | "preview";
 type PptMode = "标准" | "PowerPoint";
@@ -93,6 +100,13 @@ const buildTaskArtifacts = (text: string): TaskArtifact[] => {
   return [{ id: `${Date.now()}-${extension}`, name: `${baseName}.${extension === "html" ? "html" : extension}`, extension, size: "36M" }];
 };
 const PPT_ARTIFACT_NAME = "信息的分析报告.pptx";
+
+// 最新 AI 回复下方默认展示的延展/推荐问题（Figma「延展问题」模块）
+const DEFAULT_FOLLOW_UPS = [
+  "帮我总结一下这段内容的要点",
+  "能不能再展开讲讲？",
+  "有没有相关的其他案例？",
+];
 
 // build an execution process whose copy reflects the user's actual request
 const buildQueryProcess = (query: string): ProcessPreset => {
@@ -2210,24 +2224,47 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
   placeholder?: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
+  // 输入框最大高度跟随窗口高度收缩：矮窗口（如约 400px 高的预览面板）里，
+  // 固定 328px 会把底部工具栏和发送按钮顶到窗口外
+  const [cardMaxHeight, setCardMaxHeight] = useState(() => Math.min(328, Math.max(200, window.innerHeight - 220)));
   const hasText = value.trim().length > 0;
-  const canSend = (hasText || attachments.length > 0) && attachments.every(attachment => attachment.status === "ready");
+  // 必须输入文字才可发送；仅有附件（无文字）时禁用发送按钮
+  const canSend = hasText && attachments.every(attachment => attachment.status === "ready");
 
   useEffect(() => {
     if (!hasProject && attachmentSource === "项目资料") setAttachmentSource(null);
   }, [hasProject, attachmentSource]);
 
   useEffect(() => {
+    // 输入区始终贴在会话/首页底部，卡片下边界位置稳定：以它向上量出可用高度，
+    // 卡片再高也不会把底部工具栏顶出窗口（矮至 400px 的预览面板同样成立）
+    const syncCardMax = () => {
+      const card = cardRef.current;
+      const bottom = card ? card.getBoundingClientRect().bottom : window.innerHeight - 22;
+      setCardMaxHeight(Math.max(200, Math.min(328, bottom - 96)));
+    };
+    syncCardMax();
+    window.addEventListener("resize", syncCardMax);
+    return () => window.removeEventListener("resize", syncCardMax);
+  }, []);
+
+  useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
     const resize = () => {
-      const maxHeight = Math.min(228, 328 - 24 - (attachments.length ? 64 : 0) - 36 - (toolbarRef.current?.offsetHeight ?? 38) - 2);
+      // 用实际布局量出输入框上方已占用的高度（上内边距 + 附件行），再减去下方
+      // 「36 占位 + 12 内容下内边距 + 工具栏 + 2 边框」，避免固定数值在附件多/矮窗口时失准
+      const card = cardRef.current;
+      const topOffset = card ? el.getBoundingClientRect().top - card.getBoundingClientRect().top : 12;
+      const reserved = 36 + 12 + (toolbarRef.current?.offsetHeight ?? 38) + 2;
+      const maxHeight = Math.max(22, Math.min(228, cardMaxHeight - topOffset - reserved));
       el.style.height = "auto";
       el.style.maxHeight = maxHeight + "px";
       el.style.height = Math.min(el.scrollHeight, maxHeight) + "px";
@@ -2242,7 +2279,7 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [value, attachments.length]);
+  }, [value, attachments.length, cardMaxHeight]);
 
   useEffect(() => {
     if (!addMenuOpen) return;
@@ -2267,8 +2304,8 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
       if (!open) setAttachmentSource(null);
     }}>
     <PopoverAnchor asChild>
-    <div className="relative w-full max-h-[328px] rounded-[20px] border border-[#e6e6e6] bg-white shadow-none">
-      <div className="px-[12px] pt-[12px] pb-[12px]" onPointerDown={() => textareaRef.current?.focus()}>
+    <div ref={cardRef} className="relative flex w-full flex-col overflow-hidden rounded-[20px] border border-[#e6e6e6] bg-white shadow-none" style={{ maxHeight: cardMaxHeight }}>
+      <div className="flex min-h-0 flex-1 flex-col px-[12px] pt-[12px] pb-[12px]" onPointerDown={() => textareaRef.current?.focus()}>
         <AttachmentTray attachments={attachments} onRemove={onRemoveAttachment} />
         <textarea ref={textareaRef} value={value} onChange={e => onChange(e.target.value)} onKeyDown={handleKeyDown}
           onPaste={event => {
@@ -2279,11 +2316,11 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
             if (files.length) onAddFiles(files);
           }}
           placeholder={placeholder} rows={1} style={{ minHeight: 22, maxHeight: 228 }}
-          className="relative z-10 block w-full resize-none bg-transparent text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px] placeholder:text-[rgba(0,0,0,0.26)] outline-none overflow-y-auto"
+          className="relative z-10 block w-full min-h-[22px] shrink resize-none overflow-y-auto bg-transparent text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px] placeholder:text-[rgba(0,0,0,0.26)] outline-none"
         />
-        <div className="h-[36px]" />
+        <div className="h-[36px] shrink-0" />
       </div>
-      <div ref={toolbarRef} className="px-[8px] pb-[8px] flex items-center gap-[32px]">
+      <div ref={toolbarRef} className="flex shrink-0 items-center gap-[32px] px-[8px] pb-[8px] pr-[46px]">
         <div className="relative flex min-w-0 items-center gap-[8px]">
         <div ref={addMenuRef} className="relative shrink-0">
           <button
@@ -2381,6 +2418,9 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
           <PptGenerationToggle selected={pptGeneration} onChange={onPptGenerationChange} borderless />
         </div>
         </div>
+      </div>
+      {/* 发送按钮绝对定位在输入框右下角内侧：工具栏再挤也不会把按钮挤到边框外 */}
+      <div className="absolute bottom-[8px] right-[8px]">
         <SendButton
           canSend={canSend}
           agentRunning={agentRunning}
@@ -2684,12 +2724,14 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden">
           <div className="w-[756px] h-[400px] rounded bg-gradient-to-r from-[#a3ffff] to-[#1e63f5] opacity-10 blur-[100px]" />
         </div>
-        <div className="conversation-content relative mx-auto flex h-full w-full flex-col items-center pt-[160px]">
+        <div className="conversation-content relative mx-auto flex h-full min-h-0 w-full flex-col items-center pt-[clamp(16px,14vh,160px)] [@media(max-height:520px)]:pt-0">
+          {/* 矮窗口（如预览面板约 400px 高）时，欢迎区可压缩滚动，保证底部输入框和发送按钮始终可见 */}
+          <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto [@media(max-height:520px)]:hidden">
           <div className="shrink-0 flex items-baseline gap-[8px] pb-[16px]">
             <span className="text-[46px] font-semibold leading-[56px] text-[rgba(0,0,0,0.88)] tracking-[0.046px]">Hi，xxxx</span>
             <span className="w-[16px] h-[4px] bg-[rgba(0,0,0,0.88)] self-end mb-[10px]" style={{ animation: "blink 1s step-end infinite" }} />
           </div>
-          <div className="flex-1 flex flex-col items-center w-full">
+          <div className="flex flex-col items-center w-full">
             <div className="shrink-0 flex items-center gap-[8px] pt-[32px] pb-[20px]">
               <svg width="80" height="1" viewBox="0 0 80 1" fill="none"><path d="M0 0.5H80" stroke="url(#gl)" /><defs><linearGradient id="gl" x1="0" y1="1" x2="80" y2="1" gradientUnits="userSpaceOnUse"><stop stopOpacity="0" /><stop offset="1" stopOpacity="0.3" /></linearGradient></defs></svg>
               <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] whitespace-nowrap">试试这些</span>
@@ -2704,7 +2746,8 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
               ))}
             </div>
           </div>
-          <div className="shrink-0 w-full shadow-none">
+          </div>
+          <div className="mt-auto w-full shrink-0 shadow-none">
             <HomeProjectPicker
               projects={projects}
               selectedProjectId={selectedProjectId}
@@ -3891,81 +3934,189 @@ function AutomationCard({ automation, onOpen }: {
   );
 }
 
-function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp }: {
-  msg: Message; index: number; advance: (i: number) => void;
+// 用户消息长文本折叠（Figma 7631:98626 折叠态 / 7976:38094 展开态）：
+// 正文 16px/26px，超过 7 行（26×7=182px）折叠；折叠时底部渐变遮罩（透明→#F7F7F7）+「展开」向下箭头，
+// 展开后完整文字 + 静态渐变条 +「收起」向上箭头。气泡需 relative 以承载绝对定位的遮罩。
+const USER_TEXT_MAX_LINES = 7;
+const USER_TEXT_LINE_HEIGHT = 26;
+const USER_TEXT_MAX_HEIGHT = USER_TEXT_MAX_LINES * USER_TEXT_LINE_HEIGHT;
+const USER_FADE_GRADIENT = "linear-gradient(180deg, rgba(247,247,247,0) 0%, rgba(247,247,247,1) 50%)";
+
+function UserMessageText({ text }: { text: string }) {
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const [overflow, setOverflow] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = textRef.current;
+      if (!el) return;
+      const prev = el.style.maxHeight;
+      el.style.maxHeight = "none";
+      setOverflow(el.scrollHeight > USER_TEXT_MAX_HEIGHT + 1);
+      el.style.maxHeight = prev;
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [text]);
+
+  const collapsed = overflow && !expanded;
+  return (
+    <>
+      <p
+        ref={textRef}
+        className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap break-words"
+        style={collapsed ? { maxHeight: `${USER_TEXT_MAX_HEIGHT}px`, overflow: "hidden" } : undefined}
+      >{text}</p>
+      {overflow && collapsed && (
+        <div
+          className="absolute inset-x-0 bottom-0 flex flex-col gap-[10px] rounded-b-[8px] pl-[8px] pr-[12px] pb-[8px] pt-[32px]"
+          style={{ background: USER_FADE_GRADIENT }}
+        >
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="flex w-fit cursor-pointer items-center gap-[8px] rounded-[8px] px-[4px] py-[3px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] transition-colors hover:bg-[#ececec]"
+          >
+            展开
+            <img src="/assets/msg-fold-down.svg" alt="" className="size-[16px]" />
+          </button>
+        </div>
+      )}
+      {overflow && !collapsed && (
+        <div className="flex flex-col gap-[10px]" style={{ background: USER_FADE_GRADIENT }}>
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            className="-ml-[4px] flex w-fit cursor-pointer items-center gap-[8px] rounded-[8px] px-[4px] py-[3px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] transition-colors hover:bg-[#ececec]"
+          >
+            收起
+            <img src="/assets/msg-fold-up.svg" alt="" className="size-[16px]" />
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp, onEditMessage, onDeleteMessage, onRetryMessage, onProcessProgress }: {
+  msg: Message; index: number; isLastAi?: boolean; instant?: boolean; advance: (i: number) => void;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   onDownloadArtifact: (artifact: TaskArtifact) => void;
   onOpenAutomation?: (taskId: string) => void;
   onFollowUp?: (text: string) => void;
+  onEditMessage?: (index: number) => void;
+  onDeleteMessage?: (index: number) => void;
+  onRetryMessage?: (index: number) => void;
+  onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
 }) {
   // messages without a running typewriter advance the reveal pointer on mount;
   // process messages advance via onGoalDone once their goal finishes typing
   // 重新生成：重挂 Typewriter 重新打字；复制：短暂提示已复制
   const [regenKey, setRegenKey] = useState(0);
+  // 历史消息 instant=true 直接显示全文；点「重新生成」时临时关掉以重播打字
+  const [localInstant, setLocalInstant] = useState(Boolean(instant));
+  useEffect(() => { setLocalInstant(Boolean(instant)); }, [instant]);
   const [copied, setCopied] = useState(false);
   // 正文打完字后再让自动化卡片入场，保证「先文字、后卡片」的阅读顺序
-  const [textDone, setTextDone] = useState(!msg.text);
-  useEffect(() => { setTextDone(!msg.text); }, [msg.text]);
+  // 历史消息（instant）视为已打完，避免挂载时被重置为 false 导致操作项永不出现
+  const [textDone, setTextDone] = useState(instant || !msg.text);
+  useEffect(() => { setTextDone(instant || !msg.text); }, [msg.text, instant]);
   // 卡片内容（底色/图标/标题/副标题/扫光）全部演完，才出现下方操作项
   const [actionsShown, setActionsShown] = useState(false);
   useEffect(() => {
-    if (!msg.automation || !textDone) { setActionsShown(false); return; }
-    const id = window.setTimeout(() => setActionsShown(true), 1400);
+    if (!textDone) { setActionsShown(false); return; }
+    // 自动化卡片需等扫光动画演完再显示操作项；普通回答打字结束即可显示
+    const delay = msg.automation ? 1400 : 120;
+    const id = window.setTimeout(() => setActionsShown(true), delay);
     return () => window.clearTimeout(id);
   }, [msg.automation?.taskId, textDone]);
   const autoAdvance = msg.role === "user" || msg.role === "result" || (msg.role === "ai" && Boolean(msg.thinking));
   useEffect(() => { if (autoAdvance) advance(index); }, [autoAdvance, advance, index]);
 
-  if (msg.role === "user") return (
-    <div className="flex justify-end">
-      <div className="user-message min-w-0 bg-[#f7f7f7] px-[12px] py-[8px] rounded-tl-[8px] rounded-br-[8px] rounded-bl-[8px]">
-        {msg.text && <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap break-words">{msg.text}</p>}
-        {msg.attachments && msg.attachments.length > 0 && (
-          <div className={`flex flex-wrap gap-[8px] ${msg.text ? "mt-[8px]" : ""}`}>
-            {msg.attachments.map(attachment => (
-              attachment.image ? (
-                <img
-                  key={attachment.id}
-                  src={attachment.previewUrl}
-                  alt={attachment.name}
-                  title={attachment.name}
-                  className="size-[56px] rounded-[8px] object-cover"
-                />
-              ) : (
-                <div key={attachment.id} className="flex h-[56px] w-[200px] min-w-0 items-center gap-[8px] rounded-[8px] bg-white px-[8px]">
-                  <span className="relative flex size-[32px] shrink-0 items-center justify-center">
-                    <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
-                    {attachment.badge && (
-                      <img src={attachment.badge} alt="" aria-hidden width="16" height="16" className="absolute bottom-0 right-0 z-[1] size-[16px]" />
-                    )}
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[14px] leading-[22px]">{attachment.name}</span>
-                    <span className="text-[12px] leading-[20px] text-[rgba(0,0,0,0.38)]">{attachment.subtitle ?? `${attachment.extension.toUpperCase()} · ${formatFileSize(attachment.size)}`}</span>
-                  </div>
-                </div>
-              )
-            ))}
+  if (msg.role === "user") {
+    const hasSendState = msg.sendState === "failed" || msg.sendState === "info";
+    return (
+      <div className="group/user flex w-full flex-col items-end">
+        {/* 附件区（Figma 9369:50206「引用slot → .上传区」）：独立于气泡、位于气泡上方；响应式规则与输入框 AttachmentTray 完全一致 */}
+        {msg.attachments && msg.attachments.length > 0 && <MessageAttachments attachments={msg.attachments} />}
+        <div className="flex w-full items-center justify-end gap-[12px]">
+          {/* 发送状态图标（Figma 9369:50206）：红色感叹号=发送失败，info=信息提示；位于气泡左侧 */}
+          {hasSendState && (
+            <img
+              src={msg.sendState === "failed" ? "/assets/msg-error-fill.svg" : "/assets/msg-info-fill.svg"}
+              alt={msg.sendState === "failed" ? "发送失败" : "提示"}
+              className="size-[16px] shrink-0"
+            />
+          )}
+          <div className="user-message relative min-w-0 bg-[#f7f7f7] px-[12px] py-[8px] rounded-tl-[8px] rounded-br-[8px] rounded-bl-[8px]">
+            {msg.text && <UserMessageText text={msg.text} />}
           </div>
+        </div>
+        {/* 用户消息操作项（Figma 917:11666）：编辑 / 复制 / 删除，hover 气泡时显示，右对齐 */}
+        <div className="flex items-center justify-end gap-[8px] pt-[4px] opacity-0 transition-opacity group-hover/user:opacity-100">
+          <button
+            type="button"
+            aria-label="编辑"
+            title="编辑"
+            onClick={() => onEditMessage?.(index)}
+            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
+          >
+            <img src="/assets/msg-edit.svg" alt="" className="size-[16px]" />
+          </button>
+          <button
+            type="button"
+            aria-label="复制"
+            title={copied ? "已复制" : "复制"}
+            onClick={() => {
+              navigator.clipboard?.writeText(msg.text ?? "").then(() => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              }).catch(() => undefined);
+            }}
+            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
+          >
+            <img src="/assets/msg-copy-user.svg" alt="" className="size-[16px]" />
+          </button>
+          <button
+            type="button"
+            aria-label="删除"
+            title="删除"
+            onClick={() => onDeleteMessage?.(index)}
+            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
+          >
+            <img src="/assets/msg-delete.svg" alt="" className="size-[16px]" />
+          </button>
+        </div>
+        {/* 发送失败提示 + 重试（Figma 截图黑色胶囊），失败态显示 */}
+        {msg.sendState === "failed" && (
+          <button
+            type="button"
+            onClick={() => onRetryMessage?.(index)}
+            className="mt-[4px] flex items-center gap-[8px] rounded-[6px] bg-[rgba(0,0,0,0.88)] px-[10px] py-[5px] text-[12px] leading-[18px] text-white transition-opacity hover:opacity-90"
+          >
+            <span>发送失败</span>
+            <span className="text-[#9cc5ff]">重试</span>
+          </button>
         )}
       </div>
-    </div>
-  );
+    );
+  }
   if (msg.role === "process") return (
-    <div className="w-full max-w-[768px]"><ExecutionProcess running={Boolean(msg.thinking)} variant={msg.variant ?? "requirement"} preset={msg.preset} onGoalDone={() => advance(index)} /></div>
+    <div className="w-full max-w-[768px]"><ExecutionProcess running={Boolean(msg.thinking)} instant={instant} progress={msg.progress} onProgress={p => onProcessProgress?.(index, p)} variant={msg.variant ?? "requirement"} preset={msg.preset} onGoalDone={() => advance(index)} /></div>
   );
   if (msg.role === "result") return (
     <div className="w-full max-w-[768px]"><PptResultMessage onOpen={() => onOpenPpt?.()} onRegenerate={onRegeneratePpt} /></div>
   );
   return (
-    <div className="w-full max-w-[768px]">
+    <div className="group/ai w-full max-w-[768px]">
       {msg.thinking ? (
         <div className="flex items-center gap-[6px] py-[4px]">
           {[0, 200, 400].map(d => <span key={d} className="w-[6px] h-[6px] rounded-full bg-[rgba(0,0,0,0.26)] inline-block" style={{ animation: `blink 1s ${d}ms step-end infinite` }} />)}
         </div>
       ) : (
         <div className="flex w-full flex-col gap-[12px]">
-          <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter key={regenKey} text={msg.text ?? ""} onDone={() => { setTextDone(true); advance(index); }} /></p>
+          <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter key={regenKey} instant={localInstant} text={msg.text ?? ""} onDone={() => { setTextDone(true); advance(index); }} /></p>
           {/* 自动化卡片（Figma 9925:54896）：#F7F7F7 底、r8、p8、g8，32 图标 + 标题/副标题 */}
           {msg.automation && textDone && (
             <AutomationCard automation={msg.automation} onOpen={onOpenAutomation} />
@@ -3975,14 +4126,15 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
               {msg.artifacts.map(artifact => <ArtifactFileCard key={artifact.id} artifact={artifact} onDownload={onDownloadArtifact} />)}
             </div>
           )}
-          {/* 卡片下方的操作项（Figma 9925:54837 MessageActions）：重新生成 / 复制 / 来源 */}
-          {msg.automation && actionsShown && (
-            <div className="ac-actions flex items-center gap-[8px]">
+          {/* 回答下方的操作项（Figma MessageActions）：重新生成 / 复制 / 来源。
+              所有 AI 回答都渲染：最新一条常显，历史回答默认隐藏、hover 整条消息时淡入 */}
+          {actionsShown && (
+            <div className={`ac-actions flex items-center gap-[8px] transition-opacity ${isLastAi ? "" : "opacity-0 group-hover/ai:opacity-100"}`}>
               <button
                 type="button"
                 aria-label="重新生成"
                 title="重新生成"
-                onClick={() => { setTextDone(false); setRegenKey(key => key + 1); }}
+                onClick={() => { setTextDone(false); setLocalInstant(false); setRegenKey(key => key + 1); }}
                 className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
               >
                 <img src="/assets/msg-refresh.svg" alt="" className="size-[16px]" />
@@ -4008,15 +4160,16 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
               </div>
             </div>
           )}
-          {/* 延展问题（Figma 9925:54837）：白底、#F2F2F2 描边、r8、p 8/12，hover 去边框；短问句贴内容宽，长问句自动撑满换行 */}
-          {msg.automation && msg.followUps && actionsShown && (
+          {/* 延展问题（Figma 9925:54837 / 9787:71282）：白底、#F2F2F2 描边、r8、p 8/12；hover 变 #F2F2F2 灰底并去描边；短问句贴内容宽，长问句自动撑满换行。仅消息流末尾（最新）AI 回答显示推荐问题，发新消息后旧回答的推荐问题消失 */}
+          {msg.followUps && isLastAi && actionsShown && (
             <div className="flex flex-col gap-[12px]">
-              {msg.followUps.map(question => (
+              {msg.followUps.map((question, qi) => (
                 <button
                   key={question}
                   type="button"
                   onClick={() => onFollowUp?.(question)}
-                  className="w-fit max-w-full cursor-pointer rounded-[8px] border border-[#f2f2f2] px-[12px] py-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] transition-colors hover:border-transparent hover:bg-transparent"
+                  style={{ animation: `followUpIn 320ms cubic-bezier(0.22,1,0.36,1) ${qi * 110}ms both` }}
+                  className="w-fit max-w-full cursor-pointer rounded-[8px] border border-[#f2f2f2] bg-white px-[12px] py-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] transition-colors hover:border-transparent hover:bg-[#f2f2f2]"
                 >
                   {question}
                 </button>
@@ -4029,7 +4182,7 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation }: {
+function ChatView({ conversationId, messages, input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onEditMessage, onDeleteMessage, onRetryMessage, onProcessProgress }: {
   conversationId: number | null;
   messages: Message[];
   input: string;
@@ -4047,9 +4200,26 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
   agentRunning: boolean; onStop: () => void;
   onOpenAutomation?: (taskId: string) => void;
+  onEditMessage?: (index: number) => void;
+  onDeleteMessage?: (index: number) => void;
+  onRetryMessage?: (index: number) => void;
+  onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages]);
+
+  // 回到底部按钮：距底部超过 80px（即下方还有 >80px 内容被遮住）时显示
+  const [showBackToBottom, setShowBackToBottom] = useState(false);
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowBackToBottom(distanceToBottom > 80);
+  }, []);
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
 
   // reveal messages one at a time: the next message renders only after the
   // current one has finished its typewriter / entrance
@@ -4059,27 +4229,41 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
   const msgCount = messages.length;
   useEffect(() => { setRevealed(msgCount); }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 历史消息靠消息自身的 instant 标记判断（handleSelectHistory 载入时打标），
+  // 新发送的消息不带标记 → 仍有打字与执行过程动画。不再按会话切换推断，避免误判新消息。
+
   // once the whole task finishes, the three stage blocks merge into one collapsed
   // "任务已完成" rendered at the position of the first process message
   const processIndices = messages.map((m, i) => (m.role === "process" ? i : -1)).filter(i => i >= 0);
   const firstProcessIndex = processIndices[0];
   const processPresets = processIndices.map(i => messages[i].preset ?? PROCESS_PRESETS[messages[i].variant ?? "requirement"]);
   const taskComplete = messages.some(m => m.role === "result") && !messages.some(m => m.role === "process" && m.thinking);
+  // 间距：执行过程/任务完成 → 回答 = 12px（Figma _AIMessage 内部 gap，紧凑贴合）；其余消息之间 = 32px
+  const spacingBefore = (i: number): string => {
+    if (i === 0) return "";
+    const prev = messages[i - 1]?.role;
+    const cur = messages[i]?.role;
+    if (prev === "process" && cur === "ai") return "mt-[12px]";
+    return "mt-[32px]";
+  };
+  // 只有位于消息流末尾的 AI 回答（即当前最新一轮、后面没有任何更新消息）操作项常显；
+  // 一旦用户发了新消息/新一轮处理中，旧回答都降为 hover 显示
+  const lastAiIndex = messages.length - 1;
   return (
     <div className="flex-1 min-h-0 bg-white flex flex-col">
-      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}`}</style>
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}@keyframes followUpIn{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}`}</style>
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto">
         <div className="conversation-gutter min-h-full pt-[16px]">
           <div className="conversation-content mx-auto w-full">
-            <div className="conversation-messages flex flex-col gap-[32px] py-[16px]">
+            <div className="conversation-messages flex flex-col pt-[16px] pb-[56px]">
               {messages.map((msg, i) => {
                 if (i > revealed) return null;
                 if (msg.role === "process" && taskComplete) {
-                  return i === firstProcessIndex ? <MergedProcess key={i} presets={processPresets} /> : null;
+                  return i === firstProcessIndex ? <div key={i} className={`w-full ${spacingBefore(i)}`}><MergedProcess presets={processPresets} /></div> : null;
                 }
                 return (
-                  <div key={i} data-message-index={i} className="flex w-full flex-col">
-                    <ChatMessageRow msg={msg} index={i} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} />
+                  <div key={i} data-message-index={i} className={`flex w-full flex-col ${spacingBefore(i)}`}>
+                    <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onProcessProgress={onProcessProgress} />
                   </div>
                 );
               })}
@@ -4088,7 +4272,17 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
         </div>
       </div>
       <div aria-hidden={!showInput} className={`conversation-gutter shrink-0 transition-opacity duration-200 ${showInput ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
-        <div className="conversation-content mx-auto w-full">
+        <div className="conversation-content relative mx-auto w-full">
+            {/* 回到底部按钮（Figma 122:1719）：输入框上方 32px 居中；出现动画 缩放 0.8→1、透明度 0→1 */}
+            <button
+              type="button"
+              aria-label="回到底部"
+              title="回到底部"
+              onClick={scrollToBottom}
+              className={`absolute bottom-[calc(100%+32px)] left-1/2 z-10 flex size-[40px] -translate-x-1/2 items-center justify-center rounded-full border border-[#f2f2f2] bg-white shadow-[0_0_12px_rgba(0,0,0,0.08)] transition-[opacity,translate,scale,box-shadow] duration-200 hover:shadow-[0_0_24px_rgba(0,0,0,0.16)] ${showBackToBottom ? "translate-y-0 scale-100 opacity-100" : "pointer-events-none translate-y-[32px] scale-0 opacity-0"}`}
+            >
+              <img src="/assets/back-to-bottom.svg" alt="" className="size-[20px]" />
+            </button>
             <ChatInput
               value={input}
               hasProject={hasProject}
@@ -4122,7 +4316,7 @@ type ToolKind = "search" | "read" | "extract" | "analyze" | "generate" | "check"
 function TaskIcon({ type, expanded = false }: { type: ToolKind; expanded?: boolean }) {
   const wrap = (content: React.ReactNode) => <span className="relative size-[16px] shrink-0 overflow-hidden">{content}</span>;
   if (type === "search") return wrap(<svg className="absolute inset-[4.16%_7.02%_7.02%_8.33%]" viewBox="0 0 13.543 14.2102" fill="none" preserveAspectRatio="none"><path d={svgProgress.p3b5d3c00} fill="black" fillOpacity="0.38"/><path d={svgProgress.p313b1700} fill="black" fillOpacity="0.38"/></svg>);
-  if (type === "read") return wrap(<svg className="absolute left-[1.33px] top-[1.33px] size-[13.333px]" viewBox="0 0 13.3333 13.3333" fill="none" preserveAspectRatio="none"><path d={svgProgress.p27585af0} fill="black" fillOpacity="0.38"/><path d={svgProgress.p10b3d540} fill="black" fillOpacity="0.38"/><path d={svgProgress.p376ce200} fill="black" fillOpacity="0.38"/></svg>);
+  if (type === "read") return wrap(<svg className="absolute inset-0 size-[16px]" viewBox="0 0 16 16" fill="none" preserveAspectRatio="none"><path d="M8.00027 4.66659C9.45956 4.66666 10.7208 5.45135 11.568 6.15356C12.001 6.51248 12.35 6.86963 12.5908 7.13729C12.7116 7.27155 12.8065 7.38476 12.872 7.46541C12.9047 7.50563 12.9303 7.53807 12.9482 7.56112C12.957 7.57251 12.9639 7.58175 12.969 7.58846C12.9716 7.59184 12.9739 7.5948 12.9755 7.59692L12.9775 7.59953L12.9788 7.60083C12.9788 7.60083 12.9724 7.60585 12.4443 7.99992C12.9724 8.39398 12.9788 8.39901 12.9788 8.39901L12.9775 8.40031L12.9755 8.40291C12.9739 8.40504 12.9716 8.408 12.969 8.41138C12.9639 8.41809 12.957 8.42733 12.9482 8.43872C12.9303 8.46177 12.9047 8.49421 12.872 8.53442C12.8065 8.61508 12.7116 8.72828 12.5908 8.86255C12.35 9.13021 12.001 9.48735 11.568 9.84627C10.7208 10.5485 9.45956 11.3332 8.00027 11.3333C6.54088 11.3333 5.27913 10.5485 4.43191 9.84627C3.9989 9.48734 3.6499 9.13019 3.40913 8.86255C3.28834 8.72829 3.19401 8.61508 3.12853 8.53442C3.09581 8.49413 3.07029 8.46181 3.05235 8.43872C3.04339 8.42719 3.03601 8.41813 3.03087 8.41138C3.0283 8.408 3.02596 8.40504 3.02436 8.40291L3.02241 8.40031L3.02176 8.39966L3.55561 7.99992L3.02176 7.60083L3.02241 7.59953L3.02436 7.59692C3.02596 7.5948 3.0283 7.59184 3.03087 7.58846C3.03601 7.5817 3.04339 7.57265 3.05235 7.56112C3.07029 7.53803 3.09581 7.5057 3.12853 7.46541C3.19401 7.38476 3.28834 7.27155 3.40913 7.13729C3.6499 6.86965 3.9989 6.51249 4.43191 6.15356C5.27913 5.45131 6.54088 4.66659 8.00027 4.66659ZM8.00027 5.99992C7.00512 5.99992 6.04416 6.54857 5.28282 7.17961C4.92706 7.47449 4.63505 7.77126 4.42735 7.99992C4.63505 8.22858 4.92706 8.52535 5.28282 8.82023C6.04416 9.45127 7.00512 9.99992 8.00027 9.99992C8.99529 9.99984 9.95581 9.45118 10.7171 8.82023C11.0728 8.52539 11.3649 8.22857 11.5725 7.99992C11.3649 7.77127 11.0728 7.47445 10.7171 7.17961C9.95581 6.54866 8.99529 6 8.00027 5.99992ZM3.55561 7.99992L3.0211 8.39836C2.84489 8.16196 2.84489 7.83788 3.0211 7.60148L3.55561 7.99992ZM12.9788 7.60083C13.1551 7.83727 13.1551 8.16257 12.9788 8.39901L12.4443 7.99992L12.9788 7.60083Z" fill="black" fillOpacity="0.38"/><path d="M8.44428 8.00011C8.44428 7.75473 8.24563 7.55557 8.00027 7.55545C7.75482 7.55545 7.55561 7.75466 7.55561 8.00011C7.55573 8.24547 7.75489 8.44412 8.00027 8.44412C8.24555 8.44401 8.44416 8.2454 8.44428 8.00011ZM9.77762 8.00011C9.7775 8.98178 8.98193 9.77734 8.00027 9.77746C7.01851 9.77746 6.22239 8.98185 6.22228 8.00011C6.22228 7.01828 7.01844 6.22212 8.00027 6.22212C8.98201 6.22224 9.77762 7.01835 9.77762 8.00011Z" fill="black" fillOpacity="0.38"/><path d="M1.3335 9.49992H2.66683V13.3333H6.50016V14.6666H2.60042C1.90086 14.6666 1.3335 14.0992 1.3335 13.3997V9.49992ZM1.3335 2.60018C1.3335 1.90062 1.90086 1.33325 2.60042 1.33325H6.50016V2.66659H2.66683V6.49992H1.3335V2.60018ZM14.6668 13.3997C14.6668 14.0992 14.0995 14.6666 13.3999 14.6666H9.50016V13.3333H13.3335V9.49992H14.6668V13.3997ZM14.6668 6.49992H13.3335V2.66659H9.50016V1.33325H13.3999C14.0995 1.33325 14.6668 1.90062 14.6668 2.60018V6.49992Z" fill="black" fillOpacity="0.38"/></svg>);
   if (type === "extract") return wrap(<><svg className="absolute inset-[8.33%_16.67%_12.5%_8.33%]" viewBox="0 0 12 12.667" fill="none" preserveAspectRatio="none"><path d={svgProgress.p31938000} fill="black" fillOpacity="0.38"/></svg><svg className="absolute inset-[63.33%_12.5%_9.17%_58.33%]" viewBox="0 0 4.66667 4.39974" fill="none" preserveAspectRatio="none"><path d={svgProgress.p1528fd00} fill="black" fillOpacity="0.38"/></svg></>);
   if (type === "analyze") return wrap(<svg className="absolute inset-[12.5%_8.33%_8.33%]" viewBox="0 0 13.3334 12.6667" fill="none" preserveAspectRatio="none"><path d={svgProgress.p39797f00} fill="black" fillOpacity="0.38"/><path d={svgProgress.p3d6ffbf0} fill="black" fillOpacity="0.38"/></svg>);
   if (type === "generate") return wrap(<svg className="absolute inset-[8.33%_12.5%]" viewBox="0 0 12 13.3333" fill="none" preserveAspectRatio="none"><path d={svgProgress.p21d54700} fill="black" fillOpacity="0.38"/></svg>);
@@ -4130,7 +4324,9 @@ function TaskIcon({ type, expanded = false }: { type: ToolKind; expanded?: boole
   if (type === "summarize") return wrap(<svg className="absolute left-0 top-1/2 h-[11.314px] w-[15.98px] -translate-y-1/2" viewBox="0 0 15.9804 11.3137" fill="none" preserveAspectRatio="none"><path d={svgProgress.p1305b900} fill="black" fillOpacity="0.38"/><path d={svgProgress.p3d125080} fill="black" fillOpacity="0.38"/><path d={svgProgress.p3fde1480} fill="black" fillOpacity="0.38"/></svg>);
   if (type === "execute") return wrap(<svg className="absolute inset-[12.5%_9.65%_4.14%_4.17%]" viewBox="0 0 13.7892 13.3381" fill="none" preserveAspectRatio="none"><path d={svgProgress.p2a822e00} fill="black" fillOpacity="0.38"/></svg>);
   if (type === "fail") return wrap(<svg className="absolute inset-[17.59%]" viewBox="0 0 10.371 10.371" fill="none" preserveAspectRatio="none"><path d={svgProgress.p16dcd200} fill="#FC5926"/></svg>);
-  return expanded ? <span className="relative block h-[22px] w-[16px] shrink-0"><svg className="absolute inset-[33.8%_23.48%_33.79%_23.48%]" viewBox="0 0 8.48533 5.18533" fill="none" preserveAspectRatio="none"><path d={svgProgress.p33898580} fill="black" fillOpacity="0.38"/></svg></span> : <span className="relative block h-[22px] w-[16px] shrink-0"><svg className="absolute inset-[23.48%_33.8%_23.48%_33.79%]" viewBox="0 0 5.18533 8.48533" fill="none" preserveAspectRatio="none"><path d={svgProgress.p13a1fe00} fill="black" fillOpacity="0.38"/></svg></span>;
+  // 图标容器按 Figma layout_e4b6f33f 为 16×16；inset 百分比据此计算，
+  // 若把高度设成文字行高 22px 会让百分比失准、箭头视觉上偏上。
+  return expanded ? <span className="relative block size-[16px] shrink-0"><svg className="absolute inset-[33.8%_23.48%_33.79%_23.48%]" viewBox="0 0 8.48533 5.18533" fill="none" preserveAspectRatio="none"><path d={svgProgress.p33898580} fill="black" fillOpacity="0.38"/></svg></span> : <span className="relative block size-[16px] shrink-0"><svg className="absolute inset-[23.48%_33.8%_23.48%_33.79%]" viewBox="0 0 5.18533 8.48533" fill="none" preserveAspectRatio="none"><path d={svgProgress.p13a1fe00} fill="black" fillOpacity="0.38"/></svg></span>;
 }
 
 function ToolLoading({ text }: { text: string }) {
@@ -4157,11 +4353,17 @@ function ToolLoading({ text }: { text: string }) {
   </span>;
 }
 
-function Typewriter({ text, speed = 30, className, onDone }: { text: string; speed?: number; className?: string; onDone?: () => void }) {
-  const [count, setCount] = useState(0);
+function Typewriter({ text, speed = 30, className, onDone, instant = false }: { text: string; speed?: number; className?: string; onDone?: () => void; instant?: boolean }) {
+  // instant=true：历史消息直接完整显示，不重播打字动画（重新进入会话/切换任务时用）
+  const [count, setCount] = useState(instant ? text.length : 0);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
   useEffect(() => {
+    if (instant) {
+      setCount(text.length);
+      onDoneRef.current?.();
+      return;
+    }
     setCount(0);
     let i = 0;
     const id = window.setInterval(() => {
@@ -4173,7 +4375,7 @@ function Typewriter({ text, speed = 30, className, onDone }: { text: string; spe
       }
     }, speed);
     return () => window.clearInterval(id);
-  }, [text, speed]);
+  }, [text, speed, instant]);
   return <span className={className}>{text.slice(0, count)}</span>;
 }
 
@@ -4218,16 +4420,21 @@ const PROCESS_PRESETS: Record<ProcessVariant, { goal: string; running: string; a
   },
 };
 
-function ExecutionProcess({ running, variant = "requirement", preset: customPreset, onGoalDone }: { running: boolean; variant?: ProcessVariant; preset?: ProcessPreset; onGoalDone?: () => void }) {
+function ExecutionProcess({ running, instant = false, progress, onProgress, variant = "requirement", preset: customPreset, onGoalDone }: { running: boolean; instant?: boolean; progress?: { shown: number; batchStart: number }; onProgress?: (p: { shown: number; batchStart: number }) => void; variant?: ProcessVariant; preset?: ProcessPreset; onGoalDone?: () => void }) {
   const preset = customPreset ?? PROCESS_PRESETS[variant];
   const actions = preset.actions;
   const total = actions.length;
-  const [expanded, setExpanded] = useState(false);
-  const [visibleActions, setVisibleActions] = useState(0);
+  // 恢复用的进度快照（不放进 effect 依赖，避免上报后自我重置）
+  const progressRef = useRef(progress);
+  progressRef.current = progress;
+  const onProgressRef = useRef(onProgress);
+  onProgressRef.current = onProgress;
+  const [expanded, setExpanded] = useState(Boolean(instant && running));
+  const [visibleActions, setVisibleActions] = useState(instant && running ? (progress?.shown ?? total) : 0);
   // index of the first item in the batch that is currently executing
-  const [batchStart, setBatchStart] = useState(0);
+  const [batchStart, setBatchStart] = useState(instant && running ? (progress?.batchStart ?? Math.max(0, (progress?.shown ?? total) - 1)) : 0);
   // becomes true once the goal typewriter has finished for the active run
-  const [goalTyped, setGoalTyped] = useState(false);
+  const [goalTyped, setGoalTyped] = useState(instant);
   const stepEndRef = useRef<HTMLDivElement>(null);
 
   // reset / finalize state whenever the running flag flips
@@ -4240,15 +4447,36 @@ function ExecutionProcess({ running, variant = "requirement", preset: customPres
       setGoalTyped(false);
       return;
     }
+    if (instant) {
+      // 历史载入且该任务仍在执行：恢复切走前的步骤进度，
+      // 并把最后一批保留为 loading 态，避免重新进入后「工具 loading 消失」。
+      const shown = progressRef.current?.shown ?? total;
+      setExpanded(true);
+      setVisibleActions(shown);
+      setBatchStart(progressRef.current?.batchStart ?? Math.max(0, shown - 1));
+      setGoalTyped(true);
+      return;
+    }
     setExpanded(false);
     setVisibleActions(0);
     setBatchStart(0);
-    setGoalTyped(false);
-  }, [running, total]);
+    // 历史消息：goal 已视为展示完毕，避免子组件 onDone 先于本 effect 执行后被重置为 false
+    setGoalTyped(instant);
+  }, [running, total, instant]);
+
+  // 把执行进度回写到消息上，切走任务再回来时能接着显示
+  useEffect(() => {
+    if (!running || instant) return;
+    onProgressRef.current?.({ shown: visibleActions, batchStart });
+  }, [running, visibleActions, batchStart, instant]);
 
   // reveal the tools only after the goal typewriter has actually finished
   useEffect(() => {
     if (!running || !goalTyped) return;
+    if (instant) {
+      // 历史消息：进度已由上面的 reset effect 恢复，不重播逐批 reveal
+      return;
+    }
     setExpanded(true);
     let shown = 0;
     let revealTimer: number | undefined;
@@ -4262,7 +4490,7 @@ function ExecutionProcess({ running, variant = "requirement", preset: customPres
     };
     revealTimer = window.setTimeout(revealBatch, 320);
     return () => { if (revealTimer) window.clearTimeout(revealTimer); };
-  }, [running, goalTyped, total]);
+  }, [running, goalTyped, total, instant]);
 
   // keep the newest step in view while the agent is running
   useEffect(() => {
@@ -4285,7 +4513,7 @@ function ExecutionProcess({ running, variant = "requirement", preset: customPres
   );
   return (
     <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
-      <p className="text-[14px] leading-[22px] font-normal text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter text={preset.goal} onDone={() => { setGoalTyped(true); onGoalDone?.(); }} /></p>
+      <p className="text-[14px] leading-[22px] font-normal text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter instant={instant} text={preset.goal} onDone={() => { setGoalTyped(true); onGoalDone?.(); }} /></p>
       {goalTyped && (<>
         <button onClick={() => setExpanded(v => !v)} className="flex items-center gap-[8px] text-left">
           <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.running}</span>
@@ -4293,7 +4521,7 @@ function ExecutionProcess({ running, variant = "requirement", preset: customPres
         </button>
         {expanded && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} transition={{ duration: 0.2, ease: "easeOut" }} className="flex flex-col gap-[12px] overflow-hidden">
           {actions.slice(0, visibleActions).map(({ label, icon }, index) => <motion.div key={label} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: "easeOut" }} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">
-            <TaskIcon type={icon} />
+            {index >= batchStart ? <RadarArcLoader /> : <TaskIcon type={icon} />}
             {index >= batchStart ? <ToolLoading text={`正在${label.split("；")[0]}相关信息`} /> : <span>{label}</span>}
           </motion.div>)}
           <div ref={stepEndRef} aria-hidden className="h-px w-full shrink-0" />
@@ -4346,6 +4574,8 @@ export default function App() {
   const [automationOpen, setAutomationOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // 资料库「上传到项目 → 新建项目」唤起同一个创建项目弹窗
+  const [libraryCreateProjectOpen, setLibraryCreateProjectOpen] = useState(false);
   const [activeHistoryId, setActiveHistoryId] = useState<number | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -4436,6 +4666,12 @@ export default function App() {
   }, []);
   const nextHistoryId = useRef(1);
   const activeRunId = useRef(0);
+  // 记录每个会话最新的运行 id：切到别的任务时，原任务的后台流程仍可继续推进，
+  // 只有当同一会话里又发起了新一轮运行时才作废旧的那一轮。
+  const runIdByConversation = useRef(new Map<number, number>());
+  // setTimeout 回调里读最新会话 id（state 会过期）
+  const activeHistoryIdRef = useRef<number | null>(null);
+  activeHistoryIdRef.current = activeHistoryId;
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const attachmentsRef = useRef<ChatAttachment[]>([]);
   const uploadTimers = useRef(new Map<string, number>());
@@ -4626,7 +4862,23 @@ export default function App() {
     setActiveHistoryId(id);
     setActiveProjectId(item.projectId ?? null);
     setSelectedProjectId(null);
-    setMessages(item.messages);
+    // 从历史载入的消息打上 instant 标记：直接完整显示，不重播打字动画
+    setMessages(item.messages.map(m => ({ ...m, instant: true })));
+  };
+
+  // 把一次更新写回指定会话：当前正在看的就是 setMessages，否则写进历史列表，
+  // 保证切走的任务在后台继续推进（进度、完成态都不丢）。
+  const applyToConversation = (conversationId: number, updater: (list: Message[]) => Message[]) => {
+    if (activeHistoryIdRef.current === conversationId) {
+      setMessages(updater);
+    } else {
+      setHistory(h => h.map(i => (i.id === conversationId ? { ...i, messages: updater(i.messages) } : i)));
+    }
+  };
+
+  // 执行过程把已展开的步骤数回写到消息上：切走再回来能续上，工具 loading 态不会丢
+  const handleProcessProgress = (index: number, progress: { shown: number; batchStart: number }) => {
+    setMessages(prev => prev.map((m, i) => (i === index ? { ...m, progress } : m)));
   };
 
   const handleSelectProject = (id: number) => {
@@ -4645,9 +4897,32 @@ export default function App() {
     setSelectedProjectId(null);
   };
 
+  // 用户消息操作项回调（Figma 9369:50206）：编辑回填输入框、删除消息、失败重试重新发送
+  const handleEditMessage = (index: number) => {
+    const msg = messages[index];
+    if (msg?.role === "user") setInput(msg.text);
+  };
+  const handleDeleteMessage = (index: number) => {
+    const target = messages[index];
+    setMessages(prev => prev.filter((_, i) => i !== index));
+    if (target?.role === "process" || target?.role === "result") {
+      activeRunId.current++;
+      // 删掉正在执行的步骤：作废该会话的后台流程，避免回调又把消息补回来
+      if (activeHistoryId !== null) runIdByConversation.current.delete(activeHistoryId);
+    }
+  };
+  const handleRetryMessage = (index: number) => {
+    const target = messages[index];
+    if (!target || target.role !== "user") return;
+    setMessages(prev => prev.map((m, i) => i === index ? { ...m, sendState: undefined } : m));
+    // 重试即重新走一次发送流程（去掉「模拟失败」前缀后作为真实提问）
+    const retryText = target.text.replace(/模拟失败|模拟提示/g, "").trim() || "找出近一周的邮件";
+    window.setTimeout(() => handleSend(retryText, target.attachments), 0);
+  };
+
   const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = []) => {
     const text = (suggestion ?? input).trim();
-    if (!text && !sentAttachments.length) return;
+    if (!text) return;
     if (sentAttachments.some(attachment => attachment.status !== "ready")) return;
     const targetProjectId = activeProjectId ?? selectedProjectId;
     const shouldGeneratePpt = pptGeneration || isPPTIntent(text);
@@ -4657,43 +4932,60 @@ export default function App() {
     setPptGeneration(false);
     const historyTitle = text || sentAttachments[0]?.name || "附件会话";
     // create a history entry when starting a brand-new conversation
-    if (activeHistoryId === null) {
-      const id = nextHistoryId.current++;
-      setHistory(h => [{ id, title: historyTitle.slice(0, 20), createdAt: Date.now(), messages: [], ...(targetProjectId !== null ? { projectId: targetProjectId } : {}) }, ...h]);
-      setActiveHistoryId(id);
+    const isNewConversation = activeHistoryId === null;
+    let conversationId = activeHistoryId;
+    if (conversationId === null) {
+      conversationId = nextHistoryId.current++;
+      setHistory(h => [{ id: conversationId as number, title: historyTitle.slice(0, 20), createdAt: Date.now(), messages: [], ...(targetProjectId !== null ? { projectId: targetProjectId } : {}) }, ...h]);
+      setActiveHistoryId(conversationId);
       setActiveProjectId(targetProjectId);
     }
+    const convId = conversationId;
+    // 该会话的最新运行轮次：切到别的任务不会作废它，只有本会话再发新一轮才会
+    runIdByConversation.current.set(convId, runId);
     setSelectedProjectId(null);
+    // 演示入口（Figma 9369:50206 用户消息变体）：
+    //   「模拟失败」→ 红色感叹号 + 发送失败/重试；「模拟提示」→ info 图标。
+    // 二者作为独立消息展示，不进入 AI 流程；其余普通提问保持原样。
+    const demoState: Message["sendState"] = text.includes("模拟失败") ? "failed" : text.includes("模拟提示") ? "info" : undefined;
+    if (demoState) {
+      const appendUser: (list: Message[]) => Message[] = prev => [...prev, { role: "user", text, attachments: sentAttachments, sendState: demoState }];
+      if (isNewConversation) setMessages(appendUser); else applyToConversation(convId, appendUser);
+      return;
+    }
     const processText = text || "处理上传的文件";
     const initialProcess: Message = shouldGeneratePpt
       ? { role: "process", text: "", thinking: true, variant: "requirement" }
       : { role: "process", text: "", thinking: true, variant: "requirement", preset: buildQueryProcess(processText) };
-    setMessages(prev => [...prev, { role: "user", text, attachments: sentAttachments }, initialProcess]);
+    {
+      const appendRun: (list: Message[]) => Message[] = prev => [...prev, { role: "user", text, attachments: sentAttachments }, initialProcess];
+      if (isNewConversation) setMessages(appendRun); else applyToConversation(convId, appendRun);
+    }
 
     // AI returns summary first
     setTimeout(() => {
-      if (activeRunId.current !== runId) return;
+      if (runIdByConversation.current.get(convId) !== runId) return;
       if (shouldGeneratePpt) {
-        setMessages(prev => {
+        applyToConversation(convId, prev => {
           const next = [...prev];
           const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
           if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
-          next.push({ role: "ai", text: "好的，我来帮您生成PPT。需要先确认演示场景、受众、页数和风格，以便提供针对性的内容结构。" });
+          next.push({ role: "ai", text: "好的，我来帮您生成PPT。需要先确认演示场景、受众、页数和风格，以便提供针对性的内容结构。", followUps: DEFAULT_FOLLOW_UPS });
           return next;
         });
         // panel appears after AI summary is shown
-        setTimeout(() => { if (activeRunId.current === runId) setStage("requirement"); }, 400);
+        setTimeout(() => { if (activeHistoryIdRef.current === convId && runIdByConversation.current.get(convId) === runId) setStage("requirement"); }, 400);
       } else {
-        setMessages(prev => {
+        applyToConversation(convId, prev => {
           const next = [...prev];
           const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
           if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
           const artifacts = buildTaskArtifacts(processText);
-          next.push(artifacts.length ? { role: "ai", text: "帮您整理好了", artifacts } : { role: "ai", text: "好的，我来帮您处理这个请求。" });
+          next.push(artifacts.length ? { role: "ai", text: "帮您整理好了", artifacts, followUps: DEFAULT_FOLLOW_UPS } : { role: "ai", text: "好的，我来帮您处理这个请求。", followUps: DEFAULT_FOLLOW_UPS });
           return next;
         });
       }
-    }, 37000);
+    }, 15000);
   };
 
   const handleRequirementConfirm = () => {
@@ -4706,7 +4998,7 @@ export default function App() {
         const next = [...prev];
         const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
         if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
-        next.push({ role: "ai", text: "需求已确认，大纲生成完成，请确认以下结构。" });
+        next.push({ role: "ai", text: "需求已确认，大纲生成完成，请确认以下结构。", followUps: DEFAULT_FOLLOW_UPS });
         return next;
       });
       setTimeout(() => { if (activeRunId.current === runId) setStage("outline"); }, 400);
@@ -5077,7 +5369,7 @@ export default function App() {
         />
         )}
         <div className={libraryOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-          <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} />
+          <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} onCreateProject={() => setLibraryCreateProjectOpen(true)} />
         </div>
         {libraryOpen ? null : automationOpen
           ? <AutomationView tasks={automationTasks} onTasksChange={setAutomationTasks} onLaunchChat={handleLaunchAutomationChat} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
@@ -5162,6 +5454,10 @@ export default function App() {
               agentRunning={messages.some(message => message.role === "process" && Boolean(message.thinking))}
               onStop={handleStop}
               onOpenAutomation={setChatAutomationId}
+              onEditMessage={handleEditMessage}
+              onDeleteMessage={handleDeleteMessage}
+              onRetryMessage={handleRetryMessage}
+              onProcessProgress={handleProcessProgress}
             />
           : activeProject
             ? <ProjectHomeView
@@ -5221,6 +5517,15 @@ export default function App() {
               }}
             />
         }
+        <CreateProjectDialog
+          open={libraryCreateProjectOpen}
+          onOpenChange={setLibraryCreateProjectOpen}
+          onCreate={project => {
+            const id = Date.now();
+            setProjects(current => [...current, { ...project, id }]);
+            handleSelectProject(id);
+          }}
+        />
         {dragActive && (
           <div className="pointer-events-none absolute inset-0 z-[100] flex items-center justify-center bg-white/80 backdrop-blur-[1px]">
             <div className="flex flex-col items-center gap-[8px] rounded-[16px] border-2 border-dashed border-[#1e63f5] px-[40px] py-[32px] text-center text-[16px] text-[rgba(0,0,0,0.88)]">
