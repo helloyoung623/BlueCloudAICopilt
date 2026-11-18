@@ -22,7 +22,7 @@ import { OperationMenu } from "./components/operation-menu";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
-import { AttachmentTray, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, readVirtualFile } from "./components/attachment-tray";
+import { AttachmentTray, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, readFileMeta, readVirtualFile } from "./components/attachment-tray";
 import type { ChatAttachment } from "./components/attachment-tray";
 import { AttachmentPicker } from "./components/attachment-picker";
 import type { AttachmentSource } from "./components/attachment-picker";
@@ -30,6 +30,8 @@ import { DEMO_PROJECT_FILES, ProjectFilesPanel, createCloudSourceFiles, pickSour
 import type { ProjectFiles } from "./components/project-files";
 import { SelectFileDialog } from "./components/select-file-dialog";
 import type { CloudSourceTab } from "./components/select-file-dialog";
+import { ImportTaskPanel } from "./components/import-task-panel";
+import type { ImportTask } from "./components/import-task-panel";
 import { FileFilterButton } from "./components/file-filter";
 import type { FileFormat, TimeFilter } from "./components/file-filter";
 import { Popover, PopoverAnchor } from "./components/ui/popover";
@@ -53,6 +55,8 @@ type Message = {
   artifacts?: TaskArtifact[];
   // AI 回复里附带的自动化卡片（Figma 9925:54896）：点卡片打开右侧详情栏
   automation?: { taskId: string; title: string; cycle: string; description: string; icon: AutomationIcon };
+  // 自动化卡片下方的延展问题（Figma 9925:54837「延展问题」模块）
+  followUps?: string[];
 };
 type PptStage = "idle" | "requirement" | "outline_generating" | "outline" | "ppt_generating" | "preview";
 type PptMode = "标准" | "PowerPoint";
@@ -67,6 +71,15 @@ type OutlinePage = { id: number; pageLabel: string; title: string; content: Outl
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const isPPTIntent = (t: string) => /ppt|演示|幻灯|slide/i.test(t) || t.includes("PPT");
+
+// 「2.9MB / 860KB」这类展示用文案 → 字节数（资料库文件上传到项目时复用）
+const SIZE_UNITS = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as const;
+const parseFileSize = (size: string) => {
+  const match = /^([\d.]+)\s*(B|KB|MB|GB)$/i.exec(size.trim());
+  if (!match) return 2 * 1024 * 1024;
+  const unit = match[2].toUpperCase() as keyof typeof SIZE_UNITS;
+  return Math.max(1, Math.round(Number.parseFloat(match[1]) * (SIZE_UNITS[unit] ?? SIZE_UNITS.MB)));
+};
 
 // mock files produced by the AI for requests that ask for a document-like output
 const buildTaskArtifacts = (text: string): TaskArtifact[] => {
@@ -3483,7 +3496,7 @@ const UPLOAD_MENU_ITEMS: { label: string; icon: string; tab?: CloudSourceTab }[]
   { label: "从产物中添加", icon: "/assets/upload-menu-artifact.svg", tab: "产物" },
 ];
 
-function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask, onDeleteTask, onCreateProject, inputProps, onUpdateProject, configurationOpen, compact }: {
+function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask, onDeleteTask, onCreateProject, inputProps, onUpdateProject, onStartImport, configurationOpen, compact }: {
   project: ProjectItem;
   configurationOpen: boolean;
   // 详情页宽度 < 800px：右侧配置边栏收起，指令 / 成员并入「配置」页签
@@ -3496,6 +3509,8 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
   onCreateProject: (project: Omit<ProjectItem, "id">) => number;
   inputProps: React.ComponentProps<typeof ChatInput>;
   onUpdateProject: (updates: Pick<ProjectItem, "instruction"> | Pick<ProjectItem, "members"> | Pick<ProjectItem, "files">) => void;
+  // 文件导入会话挂在全局（App 根），浮窗不随项目页卸载而消失
+  onStartImport: (files: { name: string; size: number }[], source: CloudSourceTab, projectId: number) => void;
 }) {
   const [instructionOpen, setInstructionOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -3701,11 +3716,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
             <SelectFileDialog
               initialTab={selectFileTab}
               onClose={() => setSelectFileTab(null)}
-              onConfirm={files => {
-                const base = project.files ?? DEMO_PROJECT_FILES;
-                onUpdateProject({ files: { ...base, sources: [...base.sources, ...createCloudSourceFiles(files)] } });
-                toast.success(`已添加 ${files.length} 个文件到来源`);
-              }}
+              onConfirm={(files, source) => onStartImport(files, source, project.id)}
             />
           )}
           <div role="tabpanel" aria-label={tab} className={`min-h-0 flex-1 ${tab === "任务" ? "-mx-[8px] overflow-y-auto pt-[12px]" : "flex flex-col"}`}>
@@ -3717,7 +3728,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
                 </div>
               </div>
             ) : tab !== "任务" ? (
-              <ProjectFilesPanel key={tab} kind={tab === "来源" ? "sources" : "artifacts"} files={project.files ?? DEMO_PROJECT_FILES} query={filesQuery} formats={tab === "来源" ? sourceFormats : artifactFormats} timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter} onChange={files => onUpdateProject({ files })} />
+              <ProjectFilesPanel key={tab} kind={tab === "来源" ? "sources" : "artifacts"} files={project.files ?? DEMO_PROJECT_FILES} query={filesQuery} formats={tab === "来源" ? sourceFormats : artifactFormats} timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter} onChange={files => onUpdateProject({ files })} onUploadToProject={file => onStartImport([{ name: file.name, size: file.blob ? file.blob.size : file.size }], "产物", project.id)} />
             ) : orderedTasks.length > 0 ? (
               <div className="flex flex-col gap-[8px]">
                 {orderedTasks.map(task => (
@@ -3878,11 +3889,12 @@ function AutomationCard({ automation, onOpen }: {
   );
 }
 
-function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation }: {
+function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp }: {
   msg: Message; index: number; advance: (i: number) => void;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   onDownloadArtifact: (artifact: TaskArtifact) => void;
   onOpenAutomation?: (taskId: string) => void;
+  onFollowUp?: (text: string) => void;
 }) {
   // messages without a running typewriter advance the reveal pointer on mount;
   // process messages advance via onGoalDone once their goal finishes typing
@@ -3919,7 +3931,12 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
                 />
               ) : (
                 <div key={attachment.id} className="flex h-[56px] w-[200px] min-w-0 items-center gap-[8px] rounded-[8px] bg-white px-[8px]">
-                  <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
+                  <span className="relative flex size-[32px] shrink-0 items-center justify-center">
+                    <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
+                    {attachment.badge && (
+                      <img src={attachment.badge} alt="" aria-hidden width="16" height="16" className="absolute bottom-0 right-0 z-[1] size-[16px]" />
+                    )}
+                  </span>
                   <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate text-[14px] leading-[22px]">{attachment.name}</span>
                     <span className="text-[12px] leading-[20px] text-[rgba(0,0,0,0.38)]">{attachment.subtitle ?? `${attachment.extension.toUpperCase()} · ${formatFileSize(attachment.size)}`}</span>
@@ -3989,6 +4006,21 @@ function ChatMessageRow({ msg, index, advance, onOpenPpt, onRegeneratePpt, onDow
               </div>
             </div>
           )}
+          {/* 延展问题（Figma 9925:54837）：白底、#F2F2F2 描边、r8、p 8/12，hover 去边框；短问句贴内容宽，长问句自动撑满换行 */}
+          {msg.automation && msg.followUps && actionsShown && (
+            <div className="flex flex-col gap-[12px]">
+              {msg.followUps.map(question => (
+                <button
+                  key={question}
+                  type="button"
+                  onClick={() => onFollowUp?.(question)}
+                  className="w-fit max-w-full cursor-pointer rounded-[8px] border border-[#f2f2f2] px-[12px] py-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] transition-colors hover:border-transparent hover:bg-transparent"
+                >
+                  {question}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -4045,7 +4077,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
                 }
                 return (
                   <div key={i} data-message-index={i} className="flex w-full flex-col">
-                    <ChatMessageRow msg={msg} index={i} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} />
+                    <ChatMessageRow msg={msg} index={i} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} />
                   </div>
                 );
               })}
@@ -4321,6 +4353,85 @@ export default function App() {
   // 会话里点自动化卡片 → 打开右侧 320 详情栏（Figma 9787:71282 / 9925:54837）
   const [chatAutomationId, setChatAutomationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+
+  // TaskPanel（文件导入悬浮面板，9753:63653）：状态提到根组件，切换页面不中断；
+  // 记录累加不清空，仅在「项目」「资料库」两个导航内展示
+  const [importTasks, setImportTasks] = useState<ImportTask[] | null>(null);
+  const [importCollapsed, setImportCollapsed] = useState(false);
+  const importTimersRef = useRef<number[]>([]);
+
+  // 导入完成的文件写入该任务的目标项目「来源」；经 ref 转发保证读到最新状态
+  const appendImportSources = (files: { name: string; size: number }[], projectId: number) => {
+    setProjects(current => current.map(project => {
+      if (project.id !== projectId) return project;
+      const base = project.files ?? DEMO_PROJECT_FILES;
+      return { ...project, files: { ...base, sources: [...base.sources, ...createCloudSourceFiles(files)] } };
+    }));
+  };
+  const appendSourcesRef = useRef(appendImportSources);
+  appendSourcesRef.current = appendImportSources;
+
+  // 单个文件延时后标记完成并写入来源
+  const scheduleImport = (task: ImportTask, file: { name: string; size: number }, delay: number) => {
+    const timer = window.setTimeout(() => {
+      importTimersRef.current = importTimersRef.current.filter(item => item !== timer);
+      setImportTasks(current => current?.map(item => item.id === task.id ? { ...item, status: "done" } : item) ?? null);
+      appendSourcesRef.current([file], task.projectId);
+    }, delay);
+    importTimersRef.current.push(timer);
+  };
+
+  const retryImportTask = (id: string) => {
+    const task = importTasks?.find(item => item.id === id);
+    if (!task) return;
+    setImportTasks(current => current?.map(item => item.id === id ? { ...item, status: "uploading", failKind: undefined } : item) ?? null);
+    scheduleImport(task, { name: task.name, size: task.size }, 1500);
+  };
+
+  const retryFailedImports = () => {
+    const failed = (importTasks ?? []).filter(item => item.status === "failed");
+    if (!failed.length) return;
+    setImportTasks(current => current?.map(item => item.status === "failed" ? { ...item, status: "uploading", failKind: undefined } : item) ?? null);
+    failed.forEach((task, index) => scheduleImport(task, { name: task.name, size: task.size }, 1200 + index * 500));
+  };
+
+  const startFileImport = (files: { name: string; size: number }[], source: CloudSourceTab, projectId: number) => {
+    const badge = source === "OneDrive" ? "/assets/badge-onedrive.svg"
+      : source === "SharePoint" ? "/assets/badge-sharepoint.svg"
+      : undefined;
+    // 演示两种失败态（9544:34251）：第 2 个解析失败、第 4 个上传失败，其余依次上传完成
+    const tasks: ImportTask[] = files.map((file, index) => {
+      const failed = index === 1
+        ? { status: "failed" as const, failKind: "parse" as const }
+        : index === 3 ? { status: "failed" as const, failKind: "upload" as const } : null;
+      return {
+        id: `import-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+        name: file.name,
+        size: file.size,
+        projectId,
+        ...(badge ? { badge } : {}),
+        ...(failed ?? { status: "uploading" as const }),
+      };
+    });
+    setImportCollapsed(false);
+    // 记录累加：新批次追加在已有记录之后，不覆盖上一批（面板关闭时为 null，等同新建列表）
+    setImportTasks(current => [...(current ?? []), ...tasks]);
+    tasks.forEach((task, index) => {
+      if (task.status !== "uploading") return;
+      scheduleImport(task, files[index], 1200 + index * 600);
+    });
+    const okCount = tasks.filter(task => task.status !== "failed").length;
+    const finishTimer = window.setTimeout(() => {
+      importTimersRef.current = importTimersRef.current.filter(item => item !== finishTimer);
+      if (okCount) toast.success(`已添加 ${okCount} 个文件到来源`);
+    }, 1200 + files.length * 600 + 120);
+    importTimersRef.current.push(finishTimer);
+  };
+
+  useEffect(() => () => {
+    importTimersRef.current.forEach(timer => window.clearTimeout(timer));
+    importTimersRef.current = [];
+  }, []);
   const nextHistoryId = useRef(1);
   const activeRunId = useRef(0);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -4403,6 +4514,7 @@ export default function App() {
     const added = accepted.map((file, index): ChatAttachment => {
       const extension = getAttachmentExtension(file.name);
       const image = ["png", "jpg", "jpeg"].includes(extension);
+      const meta = readFileMeta(file);
       return {
         id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
         file,
@@ -4412,6 +4524,9 @@ export default function App() {
         image,
         ...(image ? { previewUrl: URL.createObjectURL(file) } : {}),
         status: "uploading",
+        // 来源角标 / 自定义副标题（Outlook 邮件副标题=发件人）
+        ...(meta?.badge ? { badge: meta.badge } : {}),
+        ...(meta?.subtitle ? { subtitle: meta.subtitle } : {}),
       };
     });
 
@@ -4433,6 +4548,7 @@ export default function App() {
         status: "ready",
         icon: virtual.icon,
         subtitle: virtual.subtitle,
+        ...(virtual.badge ? { badge: virtual.badge } : {}),
       }];
     });
 
@@ -4639,10 +4755,7 @@ export default function App() {
   const handleAddLibraryFileToTask = (file: { id: string; name: string; size: string; extension?: string }) => {
     handleNewChat();
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-    const sizeMatch = /^([\d.]+)\s*(B|KB|MB|GB)$/i.exec(file.size.trim());
-    const size = sizeMatch
-      ? Math.max(1, Math.round(Number.parseFloat(sizeMatch[1]) * ({ B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 }[sizeMatch[2].toUpperCase() as "B" | "KB" | "MB" | "GB"] ?? 1024 ** 2)))
-      : 2 * 1024 * 1024;
+    const size = parseFileSize(file.size);
     const image = ["png", "jpg", "jpeg"].includes(extension);
     const fakeFile = new File([new Uint8Array(Math.min(size, 1024))], file.name, { type: image ? `image/${extension}` : "application/octet-stream" });
     Object.defineProperty(fakeFile, "size", { value: size });
@@ -4731,6 +4844,12 @@ export default function App() {
           text: `已创建自动化任务「${title}」，${when} 自动执行。\n任务已启用，你可以在「自动化任务」里暂停、修改或查看执行记录。`,
           // 卡片就展示在回复下方，点它打开右侧详情（Figma 9925:54837）
           automation: { taskId, title, cycle: summary.cycle, description: summary.description, icon },
+          // 卡片下方的延展问题（Figma 9925:54837「延展问题」模块）
+          followUps: [
+            "这个任务的执行记录在哪里查看？",
+            "把执行时间改成每天 09:00",
+            "给这个任务设置一个结束时间",
+          ],
         });
         return next;
       });
@@ -4904,6 +5023,8 @@ export default function App() {
         }}
         onDrop={handleDrop}
       >
+        {/* 自动化任务页（Figma 9937:57105）没有全局顶栏：详情栏 header 直接贴窗口顶部；移动端保留顶栏以免失去导航入口 */}
+        {automationOpen && !isMobile ? null : (
         <ChatHeader
           title={chatTitle}
           projectOverview={activeProject && !activeTask && !projectListOpen ? { name: activeProject.name, onOpenProjects: handleOpenProjects } : undefined}
@@ -4952,8 +5073,9 @@ export default function App() {
           onSidebarToggle={() => setSidebarOpen(o => !o)}
           onNewChat={messages.length > 0 || activeProject !== null ? handleNewChat : undefined}
         />
+        )}
         <div className={libraryOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-          <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} />
+          <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} />
         </div>
         {libraryOpen ? null : automationOpen
           ? <AutomationView tasks={automationTasks} onTasksChange={setAutomationTasks} onLaunchChat={handleLaunchAutomationChat} />
@@ -5043,6 +5165,7 @@ export default function App() {
             ? <ProjectHomeView
                 key={activeProject.id}
                 project={activeProject}
+                onStartImport={startFileImport}
                 configurationOpen={projectConfigurationOpen}
                 compact={detailCompact}
                 projects={projects}
@@ -5154,6 +5277,17 @@ export default function App() {
       />
     </div>
     <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
+    {/* 导入面板只在「项目」「资料库」两个导航内出现；切到其他页面仅隐藏，记录与进度保留 */}
+    {importTasks && (libraryOpen || projectListOpen || activeProjectId !== null) && (
+      <ImportTaskPanel
+        tasks={importTasks}
+        collapsed={importCollapsed}
+        onToggleCollapsed={() => setImportCollapsed(current => !current)}
+        onRetry={retryImportTask}
+        onRetryAll={retryFailedImports}
+        onClose={() => setImportTasks(null)}
+      />
+    )}
     <Toaster position="top-center" />
     </Sheet>
   );

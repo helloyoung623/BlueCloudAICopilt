@@ -3,27 +3,17 @@ import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog";
 import { OperationMenu } from "./operation-menu";
 import { FILE_FORMATS, formatByExtension, matchFileFilters } from "./file-filter";
 import type { FileFormat, TimeFilter } from "./file-filter";
+import { OUTLOOK_EMAILS, OUTLOOK_NARROW_BREAKPOINT, OutlookEmailList, emailBlob, emailDate, emailFileName, emailSearchText } from "./outlook-emails";
+import type { OutlookEmail } from "./outlook-emails";
+import { CloudFileList, collectCloudFiles, ONE_DRIVE_ROOT, SHAREPOINT_ROOT, CLOUD_KIND_FILTERS } from "./cloud-file-list";
+import type { CloudEntry, CloudFileKind } from "./cloud-file-list";
 
 // 点击「上传文件」下拉里的云来源（Figma 9484:51165）后弹出的「选择文件」（Figma 9553:41101）
-// 结构：标题 / 云来源页签 / 搜索 + 筛选 / 可多选文件列表 / 已选数量 + 取消 + 确定
+// 结构：标题 / 云来源页签 / 搜索 + 筛选 / 可多选列表 / 已选数量 + 取消 + 确定
+// Outlook 页签与输入框附件面板的 Outlook 完全一致（邮件列表，见 ./outlook-emails）
 export type CloudSourceTab = "Outlook" | "OneDrive" | "SharePoint" | "产物";
 
 export const CLOUD_SOURCE_TABS: CloudSourceTab[] = ["Outlook", "OneDrive", "SharePoint", "产物"];
-
-// 文件夹内部的文件不单独成行（设计稿：选中文件夹时只高亮文件夹这一行，
-// 底部计数按文件夹内的文件数累加），因此 children 只用于计数与提交。
-type CloudChildFile = { id: string; name: string; size: number; icon: string };
-
-type CloudEntry = {
-  id: string;
-  name: string;
-  kind: "folder" | "file";
-  icon: string;
-  size?: number;
-  modified: Date;
-  disabled?: boolean;
-  children?: CloudChildFile[];
-};
 
 const at = (daysAgo: number, hour: number, minute: number) => {
   const now = new Date();
@@ -33,70 +23,19 @@ const at = (daysAgo: number, hour: number, minute: number) => {
 const stamp = (date: Date) => `${date.getFullYear()}.${date.getMonth() + 1}.${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 const sizeText = (size: number) => size >= 1024 * 1024 ? `${Math.round(size / (1024 * 1024))} MB` : `${Math.max(1, Math.round(size / 1024))} KB`;
 
-const FOLDER_ICON = "/assets/select-file-folder.png";
 const EXCEL_ICON = "/assets/select-file-excel.svg";
 const PPT_ICON = "/assets/select-file-ppt.svg";
-const OTHER_ICON = "/assets/select-file-other.svg";
 const WORD_ICON = "/assets/attachment-word.svg";
-const PDF_ICON = "/assets/attachment-pdf.svg";
-
 const mb = (value: number) => Math.round(value * 1024 * 1024);
 const kb = (value: number) => Math.round(value * 1024);
 
-const CLOUD_FILES: Record<CloudSourceTab, CloudEntry[]> = {
-  OneDrive: [
-    {
-      id: "onedrive-folder",
-      name: "项目资料归档",
-      kind: "folder",
-      icon: FOLDER_ICON,
-      modified: at(3, 17, 49),
-      children: [
-        { id: "onedrive-folder-spec", name: "需求规格说明书.XLSX", size: mb(36), icon: EXCEL_ICON },
-        { id: "onedrive-folder-report", name: "立项汇报.PPTX", size: mb(36), icon: PPT_ICON },
-      ],
-    },
-    { id: "onedrive-budget", name: "项目排期与预算.XLSX", kind: "file", icon: EXCEL_ICON, size: mb(36), modified: at(3, 17, 49) },
-    { id: "onedrive-compare", name: "竞品对比分析.PPTX", kind: "file", icon: PPT_ICON, size: mb(36), modified: at(5, 9, 12) },
-    { id: "onedrive-legacy", name: "旧版方案.PPTX", kind: "file", icon: OTHER_ICON, size: mb(36), modified: at(11, 20, 6), disabled: true },
-  ],
-  Outlook: [
-    {
-      id: "outlook-folder",
-      name: "往来邮件附件",
-      kind: "folder",
-      icon: FOLDER_ICON,
-      modified: at(1, 10, 24),
-      children: [
-        { id: "outlook-folder-minutes", name: "项目启动会纪要.PDF", size: kb(820), icon: PDF_ICON },
-        { id: "outlook-folder-letter", name: "客户需求确认函.DOCX", size: kb(460), icon: WORD_ICON },
-      ],
-    },
-    { id: "outlook-quote", name: "供应商报价单.XLSX", kind: "file", icon: EXCEL_ICON, size: kb(312), modified: at(6, 11, 5) },
-    { id: "outlook-align", name: "需求对齐说明.DOCX", kind: "file", icon: WORD_ICON, size: kb(268), modified: at(2, 15, 38) },
-  ],
-  SharePoint: [
-    {
-      id: "sharepoint-folder",
-      name: "团队共享资料",
-      kind: "folder",
-      icon: FOLDER_ICON,
-      modified: at(2, 16, 30),
-      children: [
-        { id: "sharepoint-folder-api", name: "接口设计文档.DOCX", size: mb(1.4), icon: WORD_ICON },
-        { id: "sharepoint-folder-guide", name: "产品使用规范.PDF", size: mb(2.6), icon: PDF_ICON },
-      ],
-    },
-    { id: "sharepoint-version", name: "版本发布记录.XLSX", kind: "file", icon: EXCEL_ICON, size: kb(268), modified: at(8, 14, 12) },
-    { id: "sharepoint-review", name: "季度复盘.PPTX", kind: "file", icon: PPT_ICON, size: mb(3.1), modified: at(4, 9, 48) },
-  ],
-  产物: [
-    { id: "artifact-draft", name: "项目方案初稿.DOCX", kind: "file", icon: WORD_ICON, size: kb(320), modified: at(1, 9, 30) },
-    { id: "artifact-breakdown", name: "需求拆解清单.XLSX", kind: "file", icon: EXCEL_ICON, size: kb(180), modified: at(3, 14, 6) },
-    { id: "artifact-compare", name: "竞品对比分析.PPTX", kind: "file", icon: PPT_ICON, size: mb(3.4), modified: at(5, 18, 42) },
-    { id: "artifact-review", name: "复盘报告.PPTX", kind: "file", icon: PPT_ICON, size: mb(2.2), modified: at(9, 10, 18) },
-  ],
-};
+// 仅「产物」页签保留扁平文件列表；OneDrive / SharePoint 改走共享云盘树（与输入框附件面板一致）。
+const ARTIFACT_FILES: CloudEntry[] = [
+  { id: "artifact-draft", name: "项目方案初稿.DOCX", kind: "file", icon: WORD_ICON, meta: `${sizeText(kb(320))} · ${stamp(at(1, 9, 30))}`, size: kb(320) },
+  { id: "artifact-breakdown", name: "需求拆解清单.XLSX", kind: "file", icon: EXCEL_ICON, meta: `${sizeText(kb(180))} · ${stamp(at(3, 14, 6))}`, size: kb(180) },
+  { id: "artifact-compare", name: "竞品对比分析.PPTX", kind: "file", icon: PPT_ICON, meta: `${sizeText(mb(3.4))} · ${stamp(at(5, 18, 42))}`, size: mb(3.4) },
+  { id: "artifact-review", name: "复盘报告.PPTX", kind: "file", icon: PPT_ICON, meta: `${sizeText(mb(2.2))} · ${stamp(at(9, 10, 18))}`, size: mb(2.2) },
+];
 
 const TIME_OPTIONS: { label: string; value: TimeFilter }[] = [
   { label: "全部时间", value: null },
@@ -107,12 +46,13 @@ const TIME_OPTIONS: { label: string; value: TimeFilter }[] = [
 export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
   initialTab: CloudSourceTab;
   onClose: () => void;
-  onConfirm: (files: { name: string; size: number }[]) => void;
+  onConfirm: (files: { name: string; size: number }[], source: CloudSourceTab) => void;
 }) {
   const [tab, setTab] = useState<CloudSourceTab>(initialTab);
   const [query, setQuery] = useState("");
   const [queryFocused, setQueryFocused] = useState(false);
   const [formats, setFormats] = useState<FileFormat[]>([]);
+  const [cloudKind, setCloudKind] = useState<CloudFileKind>("all");
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filterAnchor, setFilterAnchor] = useState<HTMLButtonElement | null>(null);
@@ -139,39 +79,72 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
     };
   }, [filterAnchor]);
 
-  const entries = CLOUD_FILES[tab];
-  // 只有文件参与筛选；文件夹看其内部文件是否命中
-  const visible = entries.filter(entry => {
-    const hits = (name: string) => matchFileFilters(
-      { name, format: formatByExtension(name), modified: entry.modified },
+  // 列表宽度 < 断点时邮件行走窄版（无头像、正文换行），与输入框附件面板同一判定
+  const [narrow, setNarrow] = useState(false);
+  // 弹窗内容走 Portal，首次 effect 时 ref 还是 null，故用 callback ref 拿节点后再 observe
+  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+  const isOutlook = tab === "Outlook";
+
+  useEffect(() => {
+    if (!listEl) return;
+    const update = () => setNarrow(listEl.clientWidth < OUTLOOK_NARROW_BREAKPOINT);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(listEl);
+    return () => observer.disconnect();
+  }, [listEl]);
+
+  const isCloudTree = tab === "OneDrive" || tab === "SharePoint";
+  const cloudRoot = tab === "OneDrive" ? ONE_DRIVE_ROOT : SHAREPOINT_ROOT;
+
+  // 产物页签：扁平文件列表，沿用格式/时间筛选
+  const visibleArtifacts = isOutlook || isCloudTree ? [] : ARTIFACT_FILES.filter(entry =>
+    matchFileFilters(
+      { name: entry.name, format: formatByExtension(entry.name), modified: new Date() },
       { query, formats, timeFilter },
-    );
-    if (entry.kind === "folder") return (entry.children ?? []).some(file => hits(file.name));
-    return hits(entry.name);
+    ),
+  );
+
+  // 邮件：搜索命中发件人/标题/正文，时间筛选按邮件时间；格式筛选对邮件不适用
+  const visibleEmails = OUTLOOK_EMAILS.filter(email => {
+    if (query.trim() && !emailSearchText(email).toLowerCase().includes(query.trim().toLowerCase())) return false;
+    return matchFileFilters({ name: email.title, format: "其他", modified: emailDate(email.time) }, { formats: [], timeFilter });
   });
 
-  // 文件夹整行选中，计数按内部文件数累加
-  const fileCountOf = (entry: CloudEntry) => entry.kind === "folder" ? entry.children?.length ?? 0 : 1;
-  const selectedCount = entries.reduce((total, entry) => total + (selected.has(entry.id) ? fileCountOf(entry) : 0), 0);
+  const toggle = (id: string) => setSelected(current => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
 
-  const toggle = (entry: CloudEntry) => {
-    if (entry.disabled) return;
-    setSelected(current => {
-      const next = new Set(current);
-      if (next.has(entry.id)) next.delete(entry.id);
-      else next.add(entry.id);
-      return next;
-    });
-  };
+  // 云盘树：整行选中，计数与提交都按「条目下的文件数」累加（文件夹/站点含其全部后代文件）
+  const cloudFileCount = (entry: CloudEntry) => entry.kind === "file" ? 1 : collectCloudFiles(entry).length;
+  const cloudEntryById = new Map<string, CloudEntry>();
+  const indexCloud = (entries: CloudEntry[]) => entries.forEach(entry => { cloudEntryById.set(entry.id, entry); if (entry.children) indexCloud(entry.children); });
+  indexCloud(cloudRoot);
+
+  const selectedCount = isOutlook
+    ? OUTLOOK_EMAILS.filter(email => selected.has(email.id)).length
+    : isCloudTree
+      ? Array.from(selected).reduce((total, id) => {
+          const entry = cloudEntryById.get(id);
+          return total + (entry && !entry.disabled ? cloudFileCount(entry) : 0);
+        }, 0)
+      : visibleArtifacts.filter(entry => selected.has(entry.id)).length;
 
   const confirm = () => {
-    const files = entries.flatMap(entry => {
-      if (!selected.has(entry.id)) return [];
-      if (entry.kind === "folder") return (entry.children ?? []).map(file => ({ name: file.name, size: file.size }));
-      return [{ name: entry.name, size: entry.size ?? 0 }];
-    });
+    const files = isOutlook
+      ? OUTLOOK_EMAILS.filter(email => selected.has(email.id)).map(email => ({ name: emailFileName(email), size: emailBlob(email).size }))
+      : isCloudTree
+        ? Array.from(selected).flatMap(id => {
+            const entry = cloudEntryById.get(id);
+            if (!entry || entry.disabled) return [];
+            return collectCloudFiles(entry).filter(file => !file.disabled).map(file => ({ name: file.name, size: file.size ?? 0 }));
+          })
+        : visibleArtifacts.filter(entry => selected.has(entry.id)).map(entry => ({ name: entry.name, size: entry.size ?? 0 }));
     if (!files.length) return;
-    onConfirm(files);
+    onConfirm(files, tab);
     onClose();
   };
 
@@ -192,7 +165,7 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
             {/* 云来源页签：整行 48 高（含底部 1px 分隔线），选中项 2px 蓝线压住分隔线 */}
             <div role="tablist" aria-label="文件来源" className="flex h-[48px] shrink-0 items-end gap-[24px] border-b border-[#e6e6e6]">
               {CLOUD_SOURCE_TABS.map(item => (
-                <button key={item} type="button" role="tab" aria-selected={tab === item} onClick={() => { setTab(item); setSelected(new Set()); setQuery(""); }} className={`relative flex h-full shrink-0 cursor-pointer items-center text-[16px] leading-[24px] tracking-[0.016px] transition-colors ${tab === item ? "text-[#1e63f5]" : "text-[rgba(0,0,0,0.6)] hover:text-[rgba(0,0,0,0.88)]"}`}>
+                <button key={item} type="button" role="tab" aria-selected={tab === item} onClick={() => { setTab(item); setSelected(new Set()); setQuery(""); setCloudKind("all"); setFormats([]); setTimeFilter(null); }} className={`relative flex h-full shrink-0 cursor-pointer items-center text-[16px] leading-[24px] tracking-[0.016px] transition-colors ${tab === item ? "text-[#1e63f5]" : "text-[rgba(0,0,0,0.6)] hover:text-[rgba(0,0,0,0.88)]"}`}>
                   <span className={tab === item ? "font-medium" : "font-normal"}>{item}</span>
                   {tab === item && <span aria-hidden className="absolute inset-x-0 bottom-[-1px] h-[2px] bg-[#1e63f5]" />}
                 </button>
@@ -217,30 +190,47 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
                   </button>
                 )}
               </label>
-              <button type="button" aria-label="筛选" aria-haspopup="menu" aria-expanded={Boolean(filterAnchor)} onClick={event => setFilterAnchor(current => current ? null : event.currentTarget)} className={`flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2] ${formats.length || timeFilter ? "bg-[#ebf4ff]" : ""}`}>
+              <button type="button" aria-label="筛选" aria-haspopup="menu" aria-expanded={Boolean(filterAnchor)} onClick={event => setFilterAnchor(current => current ? null : event.currentTarget)} className={`flex size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2] ${formats.length || timeFilter || cloudKind !== "all" ? "bg-[#ebf4ff]" : ""}`}>
                 <img src="/assets/project-filter.svg" alt="" className="size-[20px]" />
               </button>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col gap-[4px] overflow-y-auto">
-              {visible.length ? visible.map(entry => {
+            <div ref={setListEl} className="min-h-0 flex-1 overflow-y-auto">
+              {isOutlook ? (
+                <OutlookEmailList
+                  emails={visibleEmails}
+                  isSelected={email => selected.has(email.id)}
+                  onToggle={email => toggle(email.id)}
+                  narrow={narrow}
+                />
+              ) : isCloudTree ? (
+                <CloudFileList
+                  source={tab as "OneDrive" | "SharePoint"}
+                  query={query}
+                  kind={cloudKind}
+                  isSelected={entry => selected.has(entry.id)}
+                  onToggle={entry => toggle(entry.id)}
+                  onOpenFile={entry => toggle(entry.id)}
+                />
+              ) : (
+              <div className="flex flex-col gap-[4px]">
+              {visibleArtifacts.length ? visibleArtifacts.map(entry => {
                 const checked = selected.has(entry.id);
                 return (
-                  <button key={entry.id} type="button" role="checkbox" aria-checked={checked} disabled={entry.disabled} onClick={() => toggle(entry)} className={`flex w-full shrink-0 items-center gap-[8px] rounded-[8px] px-[8px] py-[8px] text-left transition-colors disabled:cursor-not-allowed ${checked ? "bg-[#f2f2f2]" : entry.disabled ? "" : "hover:bg-[#f7f7f7]"}`}>
+                  <button key={entry.id} type="button" role="checkbox" aria-checked={checked} disabled={entry.disabled} onClick={() => toggle(entry.id)} className={`flex w-full shrink-0 items-center gap-[8px] rounded-[8px] px-[8px] py-[8px] text-left transition-colors disabled:cursor-not-allowed ${checked ? "bg-[#f2f2f2]" : entry.disabled ? "" : "hover:bg-[#f7f7f7]"}`}>
                     <img src={checked ? "/assets/checkbox-checked.svg" : "/assets/checkbox-unchecked.svg"} alt="" className={`size-[16px] shrink-0 ${entry.disabled ? "opacity-0" : ""}`} />
-                    {/* 设计稿里文件夹图标是 40×40 的图片压在 32 的坑位上，视觉比其他类型图标略大 */}
                     <span className="flex size-[32px] shrink-0 items-center justify-center">
-                      <img src={entry.icon} alt="" className={entry.kind === "folder" ? "size-[40px] max-w-none shrink-0" : "size-[32px] shrink-0 object-contain"} />
+                      <img src={entry.icon} alt="" className="size-[32px] shrink-0 object-contain" />
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className={`truncate text-[14px] font-normal leading-[22px] tracking-[0.014px] ${entry.disabled ? "text-[rgba(0,0,0,0.26)]" : "text-[rgba(0,0,0,0.88)]"}`}>{entry.name}</span>
-                      <span className={`truncate text-[12px] font-normal leading-[20px] tracking-[0.012px] ${entry.disabled ? "text-[rgba(0,0,0,0.26)]" : "text-[rgba(0,0,0,0.6)]"}`}>
-                        {entry.kind === "folder" ? stamp(entry.modified) : `${sizeText(entry.size ?? 0)} · ${stamp(entry.modified)}`}
-                      </span>
+                      <span className={`truncate text-[12px] font-normal leading-[20px] tracking-[0.012px] ${entry.disabled ? "text-[rgba(0,0,0,0.26)]" : "text-[rgba(0,0,0,0.6)]"}`}>{entry.meta}</span>
                     </span>
                   </button>
                 );
               }) : <p role="status" className="px-[8px] py-[24px] text-center text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)]">没有匹配的文件</p>}
+              </div>
+              )}
             </div>
           </div>
         </div>
@@ -258,7 +248,16 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
         {filterAnchor && (
           <OperationMenu ref={filterMenuRef} anchor={filterAnchor} gap={8} align="end" role="menu" aria-label="筛选文件" className="w-[168px] rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]">
             <div className="flex flex-col py-[4px]">
-              {FILE_FORMATS.map(format => {
+              {/* 云盘页签（OneDrive/SharePoint）与输入框一样按类型筛选；产物按格式；邮件只看时间 */}
+              {isCloudTree && CLOUD_KIND_FILTERS.map(filter => {
+                const on = cloudKind === filter.value;
+                return (
+                  <button key={filter.value} type="button" role="menuitemradio" aria-checked={on} onClick={() => { setCloudKind(filter.value); setFilterAnchor(null); }} className={`flex w-full cursor-pointer rounded-[8px] px-[8px] py-[8px] text-left text-[14px] font-normal hover:bg-[#f2f2f2] ${on ? "text-[#1e63f5]" : "text-[rgba(0,0,0,0.88)]"}`}>
+                    {filter.label}
+                  </button>
+                );
+              })}
+              {!isOutlook && !isCloudTree && FILE_FORMATS.map(format => {
                 const on = formats.includes(format);
                 return (
                   <button key={format} type="button" role="menuitemcheckbox" aria-checked={on} onClick={() => setFormats(current => on ? current.filter(item => item !== format) : [...current, format])} className="flex w-full cursor-pointer items-center justify-between rounded-[8px] px-[8px] py-[11px] text-left text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)] hover:bg-[#f7f7f7]">
@@ -266,8 +265,8 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
                   </button>
                 );
               })}
-              <span aria-hidden className="my-[4px] h-[1px] bg-[#f2f2f2]" />
-              {TIME_OPTIONS.map(option => {
+              <span aria-hidden className={`my-[4px] h-[1px] bg-[#f2f2f2] ${isOutlook || isCloudTree ? "hidden" : ""}`} />
+              {!isCloudTree && TIME_OPTIONS.map(option => {
                 const recentDays = timeFilter?.kind === "recent" ? timeFilter.days : null;
                 const on = option.value === null ? timeFilter === null : option.value.kind === "recent" && recentDays === option.value.days;
                 return (

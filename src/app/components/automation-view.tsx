@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog";
 import { OperationMenu } from "./operation-menu";
@@ -212,13 +212,15 @@ const TIMEZONES = [
 const DAYS = Array.from({ length: 31 }, (_, index) => `${index + 1}号`);
 
 // Tag-2 组件 Size=L（与项目页/自动化页共用同一套 Figma 组件 9625:52202）
-function TagTabs<T extends string>({ items, active, onChange }: {
+function TagTabs<T extends string>({ items, active, onChange, pbClass = "pb-[16px]" }: {
   items: readonly T[];
   active: T;
   onChange: (item: T) => void;
+  // tabs 与下方内容的间距：自动化任务页按 Figma 9937:57105 需要更小间距
+  pbClass?: string;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-[16px] pb-[16px]">
+    <div className={`flex shrink-0 items-center gap-[16px] ${pbClass}`}>
       {items.map(item => (
         <button
           key={item}
@@ -930,11 +932,14 @@ function AutomationEmpty() {
 const DETAIL_TABS = ["详情", "运行记录"] as const;
 type DetailTab = (typeof DETAIL_TABS)[number];
 
-export function AutomationDetailPanel({ task, onClose, onOperate, onChange }: {
+export function AutomationDetailPanel({ task, onClose, onOperate, onChange, split = false }: {
   task: AutomationTask;
   onClose: () => void;
   onOperate: (label: string, task: AutomationTask) => void;
   onChange: (patch: Partial<AutomationTask>) => void;
+  // 自动化任务页：与左侧列表各占内容区 50%，右侧 max720 / min320；
+  // 会话页沿用 Figma 9787:71282 的固定 320 侧栏。
+  split?: boolean;
 }) {
   const [tab, setTab] = useState<DetailTab>("详情");
   const [advOpen, setAdvOpen] = useState(false);
@@ -946,8 +951,9 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange }: {
   return (
     <aside
       aria-label="自动化任务详情"
-      // 宽屏 320 常驻在右；<1024px 改为浮层（覆盖内容区、带投影），不挤压主列表
-      className="flex w-[320px] shrink-0 flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[1023px]:absolute max-[1023px]:inset-y-0 max-[1023px]:right-0 max-[1023px]:z-20 max-[1023px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"
+      // 自动化任务页：去掉左侧导航后，列表 / 详情各占 50%，详情夹在 320~720；
+      // 会话页仍是固定 320。<1024px 一律改浮层，不挤压主列表。
+      className={`flex flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[799px]:absolute max-[799px]:inset-y-0 max-[799px]:right-0 max-[799px]:z-20 max-[799px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] ${split ? "max-[799px]:w-[320px] min-[800px]:[flex:1_1_50%] min-[800px]:min-w-[320px] min-[800px]:max-w-[720px]" : "w-[320px] shrink-0"}`}
     >
       {/* header：标题 + 暂停/运行中 + 更多 + 关闭（Figma 9897:2990） */}
       <header className="flex h-[48px] shrink-0 items-center gap-[10px] border-b border-[#f2f2f2] px-[16px] py-[8px]">
@@ -1135,6 +1141,25 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat }: {
   // 右侧详情栏（Figma 9787:71282）：点卡片展开，关闭或删除后自动收起
   const [detailId, setDetailId] = useState<string | null>(null);
   const detailTask = detailId ? tasks.find(item => item.id === detailId) ?? null : null;
+  // 展开详情后列表列只剩一半宽：列宽不足 520 时表头改紧凑形态（图标搜索 + 图标新建），
+  // 保证「标题 + 搜索 + 新建」永不溢出到右侧详情栏下面（溢出会被面板盖住 → 点不动）
+  const mainRef = useRef<HTMLElement | null>(null);
+  const [compactHeader, setCompactHeader] = useState(false);
+  // 列表列内边距与「项目/资料库」等列表页保持一致：列宽 <560（等于窗口 800px、去掉 240 导航）时用 16px，
+  // 否则 24px。按列宽而非窗口宽判断，展开详情把列挤窄后同样会切到 16px。
+  const [narrowPadding, setNarrowPadding] = useState(false);
+  useEffect(() => {
+    const el = mainRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      // 用 border-box 宽（含 padding）判断，避免内边距切换自身影响阈值
+      const width = el.getBoundingClientRect().width;
+      setCompactHeader(width < 508);
+      setNarrowPadding(width < 560);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // 搜索 + Tab 过滤：命中则展示任务卡片列表，否则展示空态
   const visibleTasks = tasks.filter(task =>
@@ -1171,37 +1196,40 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat }: {
   return (
     <>
       <div className="relative flex min-h-0 flex-1">
-        <main className="relative min-h-0 flex-1 overflow-y-auto bg-white px-[16px] min-[800px]:px-[24px]">
-          <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col">
+        <main ref={mainRef} className={`relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-white px-[16px] ${narrowPadding ? "" : "min-[800px]:px-[24px]"} ${detailTask ? "min-[800px]:[flex:1_1_50%]" : ""}`}>
+          {/* 桌面（Figma 9937:57105）无全局顶栏：列表列自身留 48px 顶部间距；<800px 保留 ChatHeader，只留常规 16px，避免双倍空白 */}
+          <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col min-[800px]:pt-[46px]">
             <ListPageHeader
               title="自动化任务"
+              pbClass="pb-[28px]"
               query={query}
               onQueryChange={setQuery}
               searchPlaceholder="搜索自动化任务名称"
               searchAriaLabel="搜索自动化任务"
+              compactSearch={compactHeader}
             >
-              {/* ≥560px：Figma 9625:49728 Filled Primary Button / r4 / #1E63F5 / 左加号 +「新建」
-                  （Right Icon=false：设计稿此处没有下拉箭头） */}
+              {/* 常规：Figma 9625:49728 Filled Primary Button / r4 / #1E63F5 / 左加号 +「新建」
+                  （Right Icon=false：设计稿此处没有下拉箭头）；列变窄时收紧成 32x32 图标按钮 */}
               <button
                 type="button"
                 onClick={() => setCreateOpen(true)}
-                className="hidden shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] hover:bg-[#1554d1] min-[560px]:flex"
+                className={`shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] hover:bg-[#1554d1] ${compactHeader ? "hidden" : "hidden min-[560px]:flex"}`}
               >
                 <img src="/assets/automation-create-add.svg" alt="" className="size-[16px] shrink-0" />
                 <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)]">新建</span>
               </button>
-              {/* <560px：收起为 32x32 蓝色图标按钮 */}
+              {/* 列变窄 / <560px：收起为 32x32 蓝色图标按钮 */}
               <button
                 type="button"
                 aria-label="新建"
                 onClick={() => setCreateOpen(true)}
-                className="hidden size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#1e63f5] hover:bg-[#1554d1] max-[559px]:flex"
+                className={`size-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#1e63f5] hover:bg-[#1554d1] ${compactHeader ? "flex" : "hidden max-[559px]:flex"}`}
               >
                 <img src="/assets/automation-create-add.svg" alt="" className="size-[16px]" />
               </button>
             </ListPageHeader>
 
-            <TagTabs items={AUTOMATION_TABS} active={tab} onChange={setTab} />
+            <TagTabs items={AUTOMATION_TABS} active={tab} onChange={setTab} pbClass="pb-[12px]" />
 
             {/* 内容区：有数据显示任务卡片列表（含 hover 操作项），无数据显示空态 */}
             {visibleTasks.length > 0 ? (
@@ -1224,6 +1252,7 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat }: {
 
         {detailTask && (
           <AutomationDetailPanel
+            split
             task={detailTask}
             onClose={() => setDetailId(null)}
             onOperate={handleOperate}

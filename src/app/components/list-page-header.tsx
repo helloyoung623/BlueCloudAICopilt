@@ -7,12 +7,15 @@ import { useEffect, useRef, useState } from "react";
 // ≥800px：256x32 搜索框常驻（放大镜 black 0.26 → #1C61F1 激活态，输入后出清空按钮）
 // <800px：收起为 32x32 搜索按钮（hover #F2F2F2 / pressed #DCDCDC），点击展开输入框；
 //         清空且失焦自动收起，点击 ✕ 清空时阻止 blur 误收起
-export function ListPageSearch({ value, onValueChange, placeholder, ariaLabel, narrowPlaceholder = "搜索" }: {
+// forceNarrow：宿主容器变窄（如自动化任务页展开详情后列表列变窄）时强制走紧凑形态，
+// 不依赖视口宽度，避免整行放不下溢出到右侧面板下面
+export function ListPageSearch({ value, onValueChange, placeholder, ariaLabel, narrowPlaceholder = "搜索", forceNarrow = false }: {
   value: string;
   onValueChange: (value: string) => void;
   placeholder: string;
   ariaLabel: string;
   narrowPlaceholder?: string;
+  forceNarrow?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
   const [open, setOpen] = useState(false);
@@ -27,7 +30,8 @@ export function ListPageSearch({ value, onValueChange, placeholder, ariaLabel, n
   const searchIcon = focused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg";
   return (
     <>
-      <div className="ml-auto hidden h-[32px] w-[256px] shrink-0 items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[16px] min-[800px]:flex">
+      {/* 常规 256 宽；空间不足时（如自动化详情展开后列表列变窄）允许收缩到 160，避免整行溢出被右侧详情栏盖住 */}
+      <div className={`ml-auto h-[32px] w-[256px] min-w-[160px] shrink items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[16px] ${forceNarrow ? "hidden" : "hidden min-[800px]:flex"}`}>
         <img src={searchIcon} alt="" className="size-[16px] shrink-0" />
         <input
           value={value}
@@ -49,7 +53,7 @@ export function ListPageSearch({ value, onValueChange, placeholder, ariaLabel, n
           </button>
         )}
       </div>
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-[12px] min-[800px]:hidden">
+      <div className={`flex min-w-0 flex-1 items-center justify-end gap-[12px] ${forceNarrow ? "" : "min-[800px]:hidden"}`}>
         {open ? (
           <div className="flex h-[32px] min-w-0 flex-1 items-center gap-[8px] rounded-[4px] bg-[#f7f7f7] pl-[8px] pr-[8px]">
             <img src={searchIcon} alt="" className="size-[16px] shrink-0" />
@@ -95,17 +99,21 @@ export function ListPageSearch({ value, onValueChange, placeholder, ariaLabel, n
 }
 
 // 列表页页头：标题 20px/28 Medium + 共享搜索 + 操作按钮插槽（响应式由插槽内按钮自行控制）
-export function ListPageHeader({ title, query, onQueryChange, searchPlaceholder, searchAriaLabel, narrowSearchPlaceholder, children }: {
+export function ListPageHeader({ title, query, onQueryChange, searchPlaceholder, searchAriaLabel, narrowSearchPlaceholder, pbClass = "pb-[16px]", compactSearch = false, children }: {
   title: string;
   query: string;
   onQueryChange: (value: string) => void;
   searchPlaceholder: string;
   searchAriaLabel: string;
   narrowSearchPlaceholder?: string;
+  // 标题行与下方内容的间距：自动化任务页按 Figma 9937:57105 需要更大间距
+  pbClass?: string;
+  // 容器变窄时强制搜索框走紧凑形态（自动化页展开详情时列表列变窄）
+  compactSearch?: boolean;
   children?: React.ReactNode;
 }) {
   return (
-    <header className="flex shrink-0 items-center gap-[12px] pb-[16px] pl-0 pr-0 pt-0">
+    <header className={`flex shrink-0 items-center gap-[12px] pl-0 pr-0 pt-0 ${pbClass}`}>
       <h1 className="min-w-fit shrink-0 font-['PingFang_SC:Medium'] text-[20px] font-medium leading-[28px] tracking-[0.02px] text-[rgba(0,0,0,0.88)]">
         {title}
       </h1>
@@ -115,6 +123,7 @@ export function ListPageHeader({ title, query, onQueryChange, searchPlaceholder,
         placeholder={searchPlaceholder}
         ariaLabel={searchAriaLabel}
         narrowPlaceholder={narrowSearchPlaceholder}
+        forceNarrow={compactSearch}
       />
       {children}
     </header>

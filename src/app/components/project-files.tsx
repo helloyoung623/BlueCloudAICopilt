@@ -175,13 +175,15 @@ export function createCloudSourceFiles(files: { name: string; size: number }[]):
   }));
 }
 
-export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onChange }: {
+export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onChange, onUploadToProject }: {
   kind: "sources" | "artifacts";
   files: ProjectFiles;
   query: string;
   formats: FileFormat[];
   timeFilter: TimeFilter;
   onChange: (files: ProjectFiles) => void;
+  /** 产物「上传到项目资料」：交给上层走文件导入面板流程 */
+  onUploadToProject?: (file: ProjectFile) => void;
 }) {
   const [menu, setMenu] = useState<{ id: string; anchor: HTMLButtonElement } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -233,11 +235,8 @@ export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onC
     if (action === "下载") void download(file);
     else if (action === "删除") onChange({ ...files, [kind]: records.filter(item => item.id !== file.id) });
     else if (action === "上传到项目资料") {
-      if (files.sources.some(item => item.id === `uploaded-${file.id}`)) toast.info("该文件已在项目资料中");
-      else {
-        onChange({ ...files, sources: [...files.sources, { ...file, id: `uploaded-${file.id}`, owner: "我", createdAt: Date.now(), status: "enabled" }] });
-        toast.success("已上传到项目资料");
-      }
+      // 与输入框选产物一致：进入文件导入面板，完成后由导入流程写入「来源」
+      onUploadToProject?.(file);
     } else {
       onChange({ ...files, sources: records.map(item => item.id === file.id ? { ...item, status: action === "停用" ? "disabled" : "enabled" } : item) });
     }

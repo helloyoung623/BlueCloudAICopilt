@@ -16,6 +16,8 @@ export type ChatAttachment = {
   // 云盘站点/文件夹等虚拟条目：用自定义图标与副标题，不参与真实文件校验
   icon?: string;
   subtitle?: string;
+  // 图标右下角来源角标：OneDrive / SharePoint / Outlook，站点等虚拟条目无角标
+  badge?: string;
 };
 
 export const MAX_ATTACHMENTS = 10;
@@ -43,22 +45,33 @@ export function getAttachmentExtension(fileName: string) {
   return fileName.split(".").pop()?.toLowerCase() ?? "";
 }
 
-// 云盘站点/文件夹等虚拟条目：用 File 上的自定义标记传递图标/副标题，跳过格式校验直接 ready。
-const VIRTUAL_MARK = "__virtual_attachment__";
-export function makeVirtualFile(name: string, icon: string, subtitle: string) {
-  const file = new File([new Uint8Array(1)], name, { type: "application/octet-stream" });
-  Object.defineProperties(file, {
-    [VIRTUAL_MARK]: { value: true },
-    virtualIcon: { value: icon },
-    virtualSubtitle: { value: subtitle },
-  });
+// 用 File 上的自定义标记传递展示元信息（角标 / 副标题 / 虚拟条目标记）。
+const META_MARK = "__attachment_meta__";
+export type AttachmentMeta = {
+  virtual?: boolean;
+  icon?: string;
+  subtitle?: string;
+  badge?: string;
+};
+export function stampFileMeta(file: File, meta: AttachmentMeta) {
+  Object.defineProperty(file, META_MARK, { value: meta, configurable: true });
   return file;
 }
+export function readFileMeta(file: File): AttachmentMeta | null {
+  return ((file as unknown as Record<string, unknown>)[META_MARK] as AttachmentMeta) ?? null;
+}
+// 云盘站点/文件夹等虚拟条目：无真实内容，跳过格式校验直接 ready。
+export function makeVirtualFile(name: string, icon: string, subtitle: string, badge?: string) {
+  return stampFileMeta(new File([new Uint8Array(1)], name, { type: "application/octet-stream" }), {
+    virtual: true,
+    icon,
+    subtitle,
+    badge,
+  });
+}
 export function readVirtualFile(file: File) {
-  const marked = file as File & { virtualIcon?: string; virtualSubtitle?: string };
-  return (file as Record<string, unknown>)[VIRTUAL_MARK]
-    ? { icon: marked.virtualIcon, subtitle: marked.virtualSubtitle }
-    : null;
+  const meta = readFileMeta(file);
+  return meta?.virtual ? { icon: meta.icon, subtitle: meta.subtitle, badge: meta.badge } : null;
 }
 
 export function getAttachmentValidationError(file: File): "format" | "size" | "empty" | null {
@@ -156,7 +169,12 @@ function AttachmentTile({
       {attachment.image ? (
         <img src={attachment.previewUrl} alt="" className="shrink-0 rounded-[4px] object-cover size-[40px]" />
       ) : (
-        <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
+        <span className="relative flex size-[32px] shrink-0 items-center justify-center">
+          <img src={attachment.icon ?? getAttachmentIcon(attachment.extension)} alt="" width="32" height="32" className="shrink-0" />
+          {attachment.badge && (
+            <img src={attachment.badge} alt="" aria-hidden width="16" height="16" className="absolute bottom-0 right-0 z-[1] size-[16px]" />
+          )}
+        </span>
       )}
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">{attachment.name}</span>

@@ -106,7 +106,13 @@ function FileIcon({ icon }: { icon: string }) {
   </span>;
 }
 
-export function LibraryView({ active, onAddToTask }: { active: boolean; onAddToTask?: (file: LibraryFile) => void }) {
+export function LibraryView({ active, onAddToTask, projects, onUploadToProject }: {
+  active: boolean;
+  onAddToTask?: (file: LibraryFile) => void;
+  /** 「上传到项目」二级菜单的目标项目（真实项目列表） */
+  projects: { id: number; name: string }[];
+  onUploadToProject: (file: LibraryFile, projectId: number) => void;
+}) {
   const [files, setFiles] = useState(makeExampleFiles);
   const [query, setQuery] = useState("");
   const [selectedFormats, setSelectedFormats] = useState<FileFormat[]>([]);
@@ -233,15 +239,19 @@ export function LibraryView({ active, onAddToTask }: { active: boolean; onAddToT
       </OperationMenu>}
       {active && menu && projectAnchor && <OperationMenu ref={projectMenuRef} anchor={projectAnchor} submenu role="menu" aria-label="选择项目" onMouseEnter={() => { if (projectCloseTimer.current) clearTimeout(projectCloseTimer.current); }} onMouseLeave={deferCloseProjectMenu} className="library-surface w-[232px] overflow-hidden rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]">
         <div className="flex max-h-[480px] flex-col overflow-y-auto py-[4px]">
-          <button type="button" role="menuitem" onClick={() => {
-            toast.info("「示例项目」为交互示例，未连接真实项目");
-            setProjectAnchor(null);
-            setMenu(null);
-          }} className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]">
-            <img src="/assets/d95df.svg" alt="" className="shrink-0" />
-            <span className="min-w-0 flex-1 truncate">示例项目</span>
-          </button>
-          <div className="relative h-px w-full"><img src="/assets/4b9c6.svg" alt="" className="absolute left-0 top-0" /></div>
+          {projects.map(project => (
+            <button key={project.id} type="button" role="menuitem" onClick={() => {
+              const file = menu.file;
+              setProjectAnchor(null);
+              setMenu(null);
+              // 与输入框「选产物/云盘文件」一致：进入文件导入面板，完成后写入该项目的「来源」
+              onUploadToProject(file, project.id);
+            }} className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]">
+              <img src="/assets/d95df.svg" alt="" className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate" title={project.name}>{project.name}</span>
+            </button>
+          ))}
+          {projects.length > 0 && <div className="relative h-px w-full"><img src="/assets/4b9c6.svg" alt="" className="absolute left-0 top-0" /></div>}
           <button type="button" role="menuitem" onClick={() => {
             toast.info("「新建项目」为交互示例，未连接真实项目");
             setProjectAnchor(null);
