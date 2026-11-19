@@ -35,8 +35,8 @@ import { SelectFileDialog } from "./components/select-file-dialog";
 import type { CloudSourceTab } from "./components/select-file-dialog";
 import { ImportTaskPanel } from "./components/import-task-panel";
 import type { ImportTask } from "./components/import-task-panel";
-import { FileFilterButton } from "./components/file-filter";
-import type { FileFormat, TimeFilter } from "./components/file-filter";
+import { FileFilterButton, EMPTY_UPLOADER_FILTER, SELF_OWNER } from "./components/file-filter";
+import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./components/file-filter";
 import { Popover, PopoverAnchor } from "./components/ui/popover";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
@@ -2077,7 +2077,10 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
               className="flex h-[44px] w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] hover:bg-[#f7f7f7]"
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0" aria-hidden>
-                <path d="M13.333 13.333V4.667L12 2H1.333L0 4.669V13.333C0 13.702.298 14 .667 14H12.667C13.035 14 13.333 13.702 13.333 13.333ZM1.333 6H12V12.667H1.333V6ZM2.157 3.333H11.176L11.843 4.667H1.491L2.157 3.333ZM8.667 7.333H4.667V8.667H8.667V7.333Z" transform="translate(1 2)" fill="black" fillOpacity="0.26" />
+                {/* 图形本体的可视范围是 13.333×12（x 0~13.333，y 2~14），
+                    平移必须让它落在 1.333~14.667 / 2~14 —— 与其它 16×16 图标同外框居中，
+                    否则会整体偏下 2px、贴到框底，看起来就是歪的。 */}
+                <path d="M13.333 13.333V4.667L12 2H1.333L0 4.669V13.333C0 13.702.298 14 .667 14H12.667C13.035 14 13.333 13.702 13.333 13.333ZM1.333 6H12V12.667H1.333V6ZM2.157 3.333H11.176L11.843 4.667H1.491L2.157 3.333ZM8.667 7.333H4.667V8.667H8.667V7.333Z" transform="translate(1.333 0)" fill="black" fillOpacity="0.26" />
               </svg>
               <span className="whitespace-nowrap font-['PingFang_SC:Regular'] font-normal text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">归档数据</span>
             </button>
@@ -3250,7 +3253,10 @@ function ProjectListView({ projects, onCreateProject, onSelectProject, onEditPro
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-[16px] overflow-visible pb-[24px] max-[900px]:grid-cols-2 max-[620px]:grid-cols-1">
+            <div className="grid gap-[16px] overflow-visible pb-[24px] [grid-template-columns:repeat(auto-fill,minmax(min(288px,100%),1fr))]">
+              {/* 卡片最小宽度 288（设计规则）：列数由可用宽度自动决定，不再按窗口断点写死 3/2/1 列。
+                  960 内容宽 → 3 列（309），880 → 2 列（432），不足 2×288+16 时落 1 列；
+                  极窄（内容 < 288+内边距）时用 min() 兜底，避免横向溢出。 */}
               {visibleProjects.map(project => (
                 <ProjectCard
                   key={project.id}
@@ -3380,7 +3386,8 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
         </div>
         {tab === "项目" ? (
           archivedProjects.length > 0 ? (
-            <div className="mt-[16px] grid grid-cols-[repeat(3,1fr)] gap-[16px]">
+            <div className="mt-[16px] grid gap-[16px] [grid-template-columns:repeat(auto-fill,minmax(min(288px,100%),1fr))]">
+              {/* 与项目列表同一套最小宽度规则：卡片不低于 288，列数由可用宽度自动决定 */}
               {archivedProjects.map(project => (
                 <div
                   key={project.id}
@@ -3634,11 +3641,18 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
   // （以「来源」布局为基准：tab + 16 + 搜索 256 + 16 + 筛选 32 + 16 + 上传按钮 + 最小间距 32）
   const [filesSearchCollapsed, setFilesSearchCollapsed] = useState(false);
   const [filesSearchOpen, setFilesSearchOpen] = useState(false);
-  // 来源 / 产物两页签各自独立的筛选条件，字段与交互和资料库一致（格式 + 更新时间）
+  // 来源 / 产物两页签各自独立的筛选条件，字段与交互和资料库一致（格式 + 更新时间）；
+  // 来源另加「状态」（已启用 / 停用，Figma 10045:64279）与「上传人」（我 / 其他人）
+  const [sourceStatuses, setSourceStatuses] = useState<FileStatus[]>([]);
   const [sourceFormats, setSourceFormats] = useState<FileFormat[]>([]);
   const [sourceTimeFilter, setSourceTimeFilter] = useState<TimeFilter>(null);
+  const [sourceUploader, setSourceUploader] = useState<UploaderFilter>(EMPTY_UPLOADER_FILTER);
   const [artifactFormats, setArtifactFormats] = useState<FileFormat[]>([]);
   const [artifactTimeFilter, setArtifactTimeFilter] = useState<TimeFilter>(null);
+  // 「其他人」里可选的成员：当前来源列表里真实出现过的上传人（排除「我」），
+  // 保证筛选出来的结果不会一片空白
+  const sourceOwners = Array.from(new Set((project.files ?? DEMO_PROJECT_FILES).sources.map(file => file.owner)))
+    .filter(owner => owner && owner !== SELF_OWNER);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const filesToolbarRef = useRef<HTMLDivElement>(null);
   const filesTabsRef = useRef<HTMLDivElement>(null);
@@ -3784,10 +3798,15 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
                 <FileFilterButton
                   key={tab}
                   ariaLabel="筛选"
+                  statuses={tab === "来源" ? sourceStatuses : undefined}
+                  onStatusesChange={tab === "来源" ? setSourceStatuses : undefined}
                   selectedFormats={tab === "来源" ? sourceFormats : artifactFormats}
                   onFormatsChange={tab === "来源" ? setSourceFormats : setArtifactFormats}
                   timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter}
                   onTimeFilterChange={tab === "来源" ? setSourceTimeFilter : setArtifactTimeFilter}
+                  uploader={tab === "来源" ? sourceUploader : undefined}
+                  onUploaderChange={tab === "来源" ? setSourceUploader : undefined}
+                  uploaderOptions={sourceOwners}
                 />
                 {tab === "来源" && (
                   <button ref={filesUploadRef} type="button" aria-haspopup="menu" aria-expanded={Boolean(uploadMenuAnchor)} onClick={event => setUploadMenuAnchor(current => current ? null : event.currentTarget)} className="flex h-[32px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[4px] border border-[#1e63f5] px-[16px] text-[14px] font-normal leading-[22px] text-[#1e63f5] hover:bg-[#ebf4ff]">
@@ -3843,7 +3862,7 @@ function ProjectHomeView({ project, projects, tasks, onSelectTask, onUpdateTask,
                 </div>
               </div>
             ) : tab !== "任务" ? (
-              <ProjectFilesPanel key={tab} kind={tab === "来源" ? "sources" : "artifacts"} files={project.files ?? DEMO_PROJECT_FILES} query={filesQuery} formats={tab === "来源" ? sourceFormats : artifactFormats} timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter} onChange={files => onUpdateProject({ files })} onUploadToProject={file => onStartImport([{ name: file.name, size: file.blob ? file.blob.size : file.size }], "产物", project.id)} />
+              <ProjectFilesPanel key={tab} kind={tab === "来源" ? "sources" : "artifacts"} files={project.files ?? DEMO_PROJECT_FILES} query={filesQuery} formats={tab === "来源" ? sourceFormats : artifactFormats} timeFilter={tab === "来源" ? sourceTimeFilter : artifactTimeFilter} statuses={tab === "来源" ? sourceStatuses : undefined} uploader={tab === "来源" ? sourceUploader : undefined} onChange={files => onUpdateProject({ files })} onUploadToProject={file => onStartImport([{ name: file.name, size: file.blob ? file.blob.size : file.size }], "产物", project.id)} />
             ) : orderedTasks.length > 0 ? (
               <div className="flex flex-col gap-[8px]">
                 {orderedTasks.map(task => (

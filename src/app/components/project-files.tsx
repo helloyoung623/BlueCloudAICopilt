@@ -5,10 +5,11 @@ import { OperationMenu } from "./operation-menu";
 import { EXAMPLE_FILES } from "./attachment-picker";
 import { formatFileSize, getAttachmentExtension, getAttachmentValidationError } from "./attachment-tray";
 import { formatByExtension, matchFileFilters } from "./file-filter";
-import type { FileFormat, TimeFilter } from "./file-filter";
+import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./file-filter";
 import { SmallTip } from "./task-artifacts";
 
-export type SourceStatus = "enabled" | "disabled";
+// 状态口径与筛选「状态」字段共用一套（file-filter 的 FileStatus）
+export type SourceStatus = FileStatus;
 export type ProjectFile = {
   id: string;
   name: string;
@@ -19,7 +20,8 @@ export type ProjectFile = {
 export type ProjectFiles = { sources: ProjectFile[]; artifacts: ProjectFile[] };
 
 const statuses: SourceStatus[] = ["enabled", "enabled", "disabled", "enabled", "enabled"];
-const DEMO_OWNERS = ["Aiden Chen", "Maya Lin", "Ethan Wu", "Sophie Zhang", "Liam Huang", "Noah Wang"];
+// 上传人样例：两字 / 三字姓名混用，拼音首字母（C L W S Z H）互不重复
+const DEMO_OWNERS = ["陈志远", "林晚晴", "吴敏", "苏子墨", "郑浩", "韩静怡"];
 // 产物「来源」列展示任务（或「项目/任务」）名称，与资料库来源列口径一致
 const DEMO_ARTIFACT_SOURCES = [
   "季度经营复盘", "星辰探索计划/方案评审", "数据看板搭建", "蓝海创新项目/市场调研",
@@ -176,12 +178,16 @@ export function createCloudSourceFiles(files: { name: string; size: number }[]):
   }));
 }
 
-export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onChange, onUploadToProject }: {
+export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, statuses, uploader, onChange, onUploadToProject }: {
   kind: "sources" | "artifacts";
   files: ProjectFiles;
   query: string;
   formats: FileFormat[];
   timeFilter: TimeFilter;
+  // 状态筛选（仅来源：已启用 / 停用）
+  statuses?: FileStatus[];
+  // 上传人筛选（仅来源有意义，产物不传）
+  uploader?: UploaderFilter;
   onChange: (files: ProjectFiles) => void;
   /** 产物「上传到项目资料」：交给上层走文件导入面板流程 */
   onUploadToProject?: (file: ProjectFile) => void;
@@ -191,10 +197,10 @@ export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onC
   const [downloading, setDownloading] = useState(false);
   const source = kind === "sources";
   const records = files[kind];
-  // 与资料库同一套筛选判定：名称 / 格式 / 更新时间
+  // 与资料库同一套筛选判定：名称 / 状态 / 格式 / 上传人 / 更新时间
   const visible = records.filter(file => matchFileFilters(
-    { name: file.name, format: formatByExtension(file.name), modified: new Date(file.createdAt) },
-    { query, formats, timeFilter },
+    { name: file.name, format: formatByExtension(file.name), modified: new Date(file.createdAt), owner: file.owner, status: file.status },
+    { query, formats, timeFilter, uploader, statuses },
   ));
   const selected = records.find(file => file.id === menu?.id);
 

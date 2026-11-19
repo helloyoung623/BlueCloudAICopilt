@@ -78,28 +78,42 @@
 .library-filter-heading { padding: 12px 8px 0; font-size: 12px; line-height: 20px; letter-spacing: 0.012px; color: rgba(0, 0, 0, 0.38); }
 .library-filter-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; height: 44px; padding: 11px 8px; border-radius: 8px; text-align: left; }
 .library-filter-item:hover,
-.library-custom-row:hover,
-.library-custom-row:focus-within { background: #f2f2f2; }
+.library-value-row:hover,
+.library-value-row:focus-within { background: #f2f2f2; }
 .library-filter-item[aria-checked="true"],
-.library-custom-row[data-selected] .library-custom-value { font-weight: 500; }
-.library-custom-row { position: relative; border-radius: 8px; }
-.library-custom-value { padding-right: 32px; }
-.library-custom-check { position: absolute; right: 8px; top: 14px; pointer-events: none; }
-.library-custom-actions { position: absolute; right: 8px; top: 10px; display: flex; gap: 4px; visibility: hidden; background: #f2f2f2; }
-.library-custom-actions button { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 4px; border-radius: 4px; }
-.library-custom-actions button:hover { background: white; }
-.library-custom-row[data-selected]:hover .library-custom-value,
-.library-custom-row[data-selected]:focus-within .library-custom-value { padding-right: 64px; font-weight: 400; }
-.library-custom-row:hover .library-custom-actions,
-.library-custom-row:focus-within .library-custom-actions { visibility: visible; }
-.library-custom-row[data-selected]:hover .library-custom-check,
-.library-custom-row[data-selected]:focus-within .library-custom-check { visibility: hidden; }
-/* 编辑态（日期选择器打开）：编辑按钮彻底移除、对勾图标隐藏、操作区去掉灰底，
+.library-value-row[data-selected] .library-value-text { font-weight: 500; }
+/* 「已选值」行：自定义时间 / 上传人 共用同一套交互（Figma 10045:64279）
+   —— 选中后行内显示摘要 + 对勾，hover / 聚焦时右侧出现「编辑 + 删除」，
+   文字让出 64px 由操作区覆盖，避免两者重叠。 */
+.library-value-row { position: relative; border-radius: 8px; }
+.library-value-text { padding-right: 32px; }
+.library-value-check { position: absolute; right: 8px; top: 14px; pointer-events: none; }
+.library-value-actions { position: absolute; right: 8px; top: 10px; display: flex; gap: 4px; visibility: hidden; background: #f2f2f2; }
+.library-value-actions button { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 4px; border-radius: 4px; }
+.library-value-actions button:hover { background: white; }
+.library-value-row[data-selected]:hover .library-value-text,
+.library-value-row[data-selected]:focus-within .library-value-text { padding-right: 64px; font-weight: 400; }
+.library-value-row:hover .library-value-actions,
+.library-value-row:focus-within .library-value-actions { visibility: visible; }
+.library-value-row[data-selected]:hover .library-value-check,
+.library-value-row[data-selected]:focus-within .library-value-check { visibility: hidden; }
+/* 编辑态（日期选择器 / 上传人面板打开）：编辑按钮彻底移除、对勾图标隐藏、操作区去掉灰底，
    只留一个干净的清除 X（不依赖 :hover/:focus-within，焦点丢失也不受影响）。 */
-.library-custom-row[data-calendar-open] .library-custom-edit { display: none; }
-.library-custom-row[data-calendar-open] .library-custom-check { visibility: hidden; }
-.library-custom-row[data-calendar-open] .library-custom-actions { visibility: visible; background: transparent; }
-.library-custom-row[data-calendar-open] .library-custom-actions button:hover { background: transparent; }
+.library-value-row[data-editing] .library-value-edit { display: none; }
+.library-value-row[data-editing] .library-value-check { visibility: hidden; }
+.library-value-row[data-editing] .library-value-actions { visibility: visible; background: transparent; }
+.library-value-row[data-editing] .library-value-actions button:hover { background: transparent; }
+
+/* 上传人「选择成员」面板（Figma 10045:64210）：搜索框 + 成员胶囊列表 */
+.library-owner-picker { width: 240px; padding: 4px 8px 8px; border-radius: 12px; background: white; font-family: "PingFang SC", sans-serif; box-shadow: inset 0 0 0 1px #f2f2f2, 0 0 12px rgba(0, 0, 0, 0.08); }
+.library-owner-search { display: flex; align-items: center; gap: 8px; height: 32px; margin: 4px 8px 8px; border-bottom: 1px solid #e6e6e6; }
+.library-owner-search:focus-within { border-bottom-color: #1e63f5; }
+.library-owner-search input { min-width: 0; flex: 1; background: transparent; font-size: 14px; line-height: 22px; letter-spacing: 0.014px; color: rgba(0, 0, 0, 0.88); outline: none; }
+.library-owner-search input::placeholder { color: rgba(0, 0, 0, 0.26); }
+.library-owner-list { max-height: 264px; overflow-y: auto; }
+.library-owner-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; height: 44px; padding: 10px 8px; border-radius: 8px; }
+.library-owner-option:hover { background: #f2f2f2; }
+.library-owner-empty { padding: 10px 8px; font-size: 14px; line-height: 22px; color: rgba(0, 0, 0, 0.38); }
 /* 双月并排浮层（Figma 9830:74921 / 9849:42184） */
 .library-calendar-popover {
   display: flex;

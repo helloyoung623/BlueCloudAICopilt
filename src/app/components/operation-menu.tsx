@@ -55,8 +55,10 @@ export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
         const below = Math.max(0, viewportHeight - rect.bottom - padding - gap);
         const above = Math.max(0, rect.top - padding - gap);
         const height = menu.scrollHeight + menu.offsetHeight - menu.clientHeight;
-        // forceBelow 时始终向下展开，即使空间不足也保持下方并通过 maxHeight 滚动
-        const opensAbove = !forceBelow && height > below;
+        // forceBelow 时始终向下展开，即使空间不足也保持下方并通过 maxHeight 滚动。
+        // 下方放不下时，只有上方空间更大才翻上去：否则翻到的上方可能更小，
+        // 菜单会被压成一条可滚动的窄条（多分组筛选菜单在矮视口下就会这样）。
+        const opensAbove = !forceBelow && height > below && above > below;
         const width = Math.min(menu.offsetWidth, window.innerWidth - padding * 2);
         const parent = anchor.closest("[data-operation-menu]");
         const placement = submenu

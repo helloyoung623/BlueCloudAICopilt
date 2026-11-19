@@ -27,8 +27,10 @@ export type ImportTask = {
 const HEAD_ICONS = {
   refresh: "/assets/taskpanel-refresh.svg",
   done: "/assets/taskpanel-done.svg",
-  collapse: "/assets/taskpanel-collapse.svg",
-  expand: "/assets/taskpanel-expand.svg",
+  // 注意：两个 svg 的文件名和图形是反的（collapse 画的是向外扩、expand 画的是向内收），
+  // 这里按「图形语义」对应按钮：展开面板用向外扩，收起面板用向内收。
+  collapse: "/assets/taskpanel-expand.svg",
+  expand: "/assets/taskpanel-collapse.svg",
   close: "/assets/search-dialog-close.svg",
 };
 
