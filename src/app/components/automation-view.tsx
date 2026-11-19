@@ -11,6 +11,7 @@ import type { AttachmentSource } from "./attachment-picker";
 import { AttachmentTray } from "./attachment-tray";
 import type { ChatAttachment } from "./attachment-tray";
 import { useDraftAttachments } from "./use-draft-attachments";
+import { useDetailPanelWidth } from "./use-detail-panel-width";
 
 // ============================================================================
 // 自动化任务页（Figma 9665:49113 列表页；9782/9783/9785 新建自动化任务弹窗各周期态）
@@ -205,6 +206,9 @@ export type RunRecord = {
   text: string;
   // 未执行不产生耗时，所以是可选的
   duration?: string;
+  // 这次执行落在哪个对话、第几条消息：点耗时行右侧的图钉要能跳回去（对话被删则提示该任务已删除）
+  conversationId?: number;
+  messageIndex?: number;
 };
 
 const RUN_DOT_COLOR: Record<RunRecordStatus, string> = {
@@ -225,20 +229,22 @@ function runStamp(time: string): string {
 }
 
 // 新建任务时铺一组示例记录：成功 / 未执行 / 失败 / 成功，正文带上一句任务目标，比纯占位更像真跑过
-export function buildRunRecords(prompt: string, time: string): RunRecord[] {
+// conversationId：这组记录归属的会话（创建任务的那个对话），图钉定位要用
+export function buildRunRecords(prompt: string, time: string, conversationId?: number): RunRecord[] {
   const stamp = runStamp(time);
   const goal = prompt.trim().replace(/\s+/g, " ");
   const summary = goal ? `${goal.slice(0, 56)}${goal.length > 56 ? "…" : ""}` : "按计划执行本任务";
   return [
-    { id: "run-1", time: stamp, status: "成功", text: `对齐本次任务目标：${summary}`, duration: "4m59s" },
-    { id: "run-2", time: stamp, status: "未执行", text: "本轮未触发（上一轮任务尚未结束，不计入扣费）" },
-    { id: "run-3", time: stamp, status: "失败", text: "执行失败；你的套餐用量已用完，请升级套餐或等待用量重置", duration: "4m59s" },
-    { id: "run-4", time: stamp, status: "成功", text: "复核输出要点：字段口径、空值与缺省策略、示例一致性，确认无前后理解偏差。", duration: "4m59s" },
+    { id: "run-1", time: stamp, status: "成功", text: `对齐本次任务目标：${summary}`, duration: "4m59s", conversationId },
+    { id: "run-2", time: stamp, status: "未执行", text: "本轮未触发（上一轮任务尚未结束，不计入扣费）", conversationId },
+    { id: "run-3", time: stamp, status: "失败", text: "执行失败；你的套餐用量已用完，请升级套餐或等待用量重置", duration: "4m59s", conversationId },
+    { id: "run-4", time: stamp, status: "成功", text: "复核输出要点：字段口径、空值与缺省策略、示例一致性，确认无前后理解偏差。", duration: "4m59s", conversationId },
   ];
 }
 
 // 「立即执行」补一条成功记录，插到最前面（最新在上）
-export function makeRunRecord(prompt: string): RunRecord {
+// conversationId / messageIndex：这次执行落在哪个对话的第几条消息（发送出去的那条），供图钉定位
+export function makeRunRecord(prompt: string, conversationId?: number, messageIndex?: number): RunRecord {
   const now = new Date();
   const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   const goal = prompt.trim().replace(/\s+/g, " ");
@@ -248,6 +254,8 @@ export function makeRunRecord(prompt: string): RunRecord {
     status: "成功",
     text: goal ? `按任务要求执行：${goal.slice(0, 56)}${goal.length > 56 ? "…" : ""}` : "按任务要求执行，输出已生成。",
     duration: "4m59s",
+    conversationId,
+    messageIndex,
   };
 }
 
@@ -1243,7 +1251,7 @@ function AutomationEmpty() {
 // 每行：8px 时间轴列（圆点 + 连到下一颗圆点的 1px 竖线，竖线只在相邻两行之间画）+ 内容卡
 // 内容卡 4px 8px / r4，hover 变 #F2F2F2 / r8 并在耗时行右侧露出图钉（设计稿里图钉默认 opacity 0）
 // ============================================================================
-function RunRecordList({ records }: { records: RunRecord[] }) {
+function RunRecordList({ records, onLocate }: { records: RunRecord[]; onLocate?: (record: RunRecord) => void }) {
   return (
     <div className="flex flex-col gap-[16px] px-[12px]">
       {records.map((record, index) => (
@@ -1275,7 +1283,7 @@ function RunRecordList({ records }: { records: RunRecord[] }) {
                     <button
                       type="button"
                       aria-label="定位到消息位置"
-                      onClick={event => event.stopPropagation()}
+                      onClick={event => { event.stopPropagation(); onLocate?.(record); }}
                       className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] opacity-0 transition-all group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-[rgba(0,0,0,0.08)]"
                     >
                       <img src="/assets/automation-record-pin.svg" alt="" className="size-[16px]" />
@@ -1306,63 +1314,105 @@ function RunRecordList({ records }: { records: RunRecord[] }) {
 const DETAIL_TABS = ["详情", "运行记录"] as const;
 type DetailTab = (typeof DETAIL_TABS)[number];
 
-export function AutomationDetailPanel({ task, onClose, onOperate, onChange, split = false }: {
+// 详情栏可编辑的字段（草稿）：点「保存」才整体写回任务
+type DetailDraft = Pick<AutomationTask, "title" | "prompt" | "schedule" | "attachments" | "newSessionEachRun">;
+
+export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLocateRun }: {
   task: AutomationTask;
   onClose: () => void;
   onOperate: (label: string, task: AutomationTask) => void;
   onChange: (patch: Partial<AutomationTask>) => void;
-  // 自动化任务页：与左侧列表各占内容区 50%，右侧 max720 / min320；
-  // 会话页沿用 Figma 9787:71282 的固定 320 侧栏。
-  split?: boolean;
+  // 运行记录右侧图钉：定位到该次执行所在的对话消息（对话已被删则由 App 层 toast 提示）
+  onLocateRun?: (record: RunRecord) => void;
 }) {
+  // 统一宽度规则：会话页 / 自动化任务页同一个默认宽度、同一套拖拽范围与浮层断点
+  const panelRef = useRef<HTMLElement | null>(null);
+  const { overlay, dragging, style: panelStyle, handleProps } = useDetailPanelWidth(panelRef);
+
   const [tab, setTab] = useState<DetailTab>("详情");
   const [advOpen, setAdvOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(moreAnchor, setMoreAnchor);
-  // 「就」里的 + 与输入框 / 新建弹窗同一套：菜单 → 文件选择或云盘面板 → 附件卡片，
-  // 附件落在任务上（task.attachments），切换任务时换成该任务自己的列表。
-  const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
-  const { attachments, addFiles, removeAttachment, resetAttachments } = useDraftAttachments({
-    initial: task.attachments,
-    onChange: next => onChange({ attachments: next }),
+  // 详情栏是「草稿态」编辑：所有改动先落在本地 draft 上，点底部「保存」才写回任务；
+  // 不保存直接关掉面板 → 改动丢弃（提示语与设计稿「要有保存按钮」的语义一致）。
+  const draftFrom = (item: AutomationTask): DetailDraft => ({
+    title: item.title,
+    prompt: item.prompt,
+    schedule: item.schedule,
+    attachments: item.attachments ?? [],
+    newSessionEachRun: item.newSessionEachRun ?? false,
   });
-  useEffect(() => {
-    setAttachmentSource(null);
-    resetAttachments(task.attachments ?? []);
-  }, [task.id, resetAttachments]);
-
-  // 底部保存条（Figma 9925:54837）：默认禁用，任一字段有改动后变为可点击，
-  // 点保存后回到禁用态。编辑内容实时落在任务上（切 Tab、关掉再打开都保持），
-  // 保存只做「收尾」，不会清空或回退已填内容。
-  const saveSignature = (item: AutomationTask) => JSON.stringify({
+  const saveSignature = (item: DetailDraft) => JSON.stringify({
     title: item.title,
     prompt: item.prompt,
     schedule: item.schedule,
     attachments: (item.attachments ?? []).map(attachment => attachment.id),
     newSessionEachRun: item.newSessionEachRun ?? false,
   });
-  const signature = saveSignature(task);
-  const [savedSignature, setSavedSignature] = useState(signature);
+  const [draft, setDraft] = useState<DetailDraft>(() => draftFrom(task));
+  const [savedSignature, setSavedSignature] = useState(() => saveSignature(draftFrom(task)));
+  // 切换任务时草稿与基线一起换成新任务的内容，免得上一个任务的改动把按钮点亮
   useEffect(() => {
-    // 切换任务时把基线换成新任务的内容，免得上一个任务的改动把按钮点亮
-    setSavedSignature(saveSignature(task));
+    const next = draftFrom(task);
+    setDraft(next);
+    setSavedSignature(saveSignature(next));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.id]);
+  const patchDraft = (patch: Partial<DetailDraft>) => setDraft(current => ({ ...current, ...patch }));
+  const signature = saveSignature(draft);
   const dirty = signature !== savedSignature;
+  const handleSave = () => {
+    // 一次性把整份草稿写回任务（App 层合并到任务列表，列表卡片标题等同步更新）
+    onChange({
+      title: draft.title,
+      prompt: draft.prompt,
+      schedule: draft.schedule,
+      attachments: draft.attachments,
+      newSessionEachRun: draft.newSessionEachRun,
+    });
+    setSavedSignature(signature);
+    toast.success("保存成功", { id: "automation-task-save" });
+    // 保存后收起详情栏（任务页收起右侧详情、会话页收起固定侧栏），
+    // toast 是全局的，收起面板不影响提示
+    onClose();
+  };
+
+  // 「就」里的 + 与输入框 / 新建弹窗同一套：菜单 → 文件选择或云盘面板 → 附件卡片，
+  // 附件先挂在草稿上，保存后才落到任务（task.attachments）。
+  const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
+  const { attachments, addFiles, removeAttachment, resetAttachments } = useDraftAttachments({
+    initial: task.attachments,
+    onChange: next => setDraft(current => ({ ...current, attachments: next })),
+  });
+  useEffect(() => {
+    setAttachmentSource(null);
+    resetAttachments(task.attachments ?? []);
+  }, [task.id, resetAttachments]);
 
   const label = "font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]";
 
-  // 浮层断点分场景（类名必须写成完整字面量，Tailwind 才能扫描生成）：
-  // 任务页要同时容纳「列表 320 + 详情 320」，内容区不足 640（窗口 <880 = 240 导航 + 640）时
-  // 详情转右侧浮层，避免并排把列表挤到 320 以下；
-  // 会话页的详情是固定 320 侧栏，沿用原来的 <800 转浮层，行为不变。
+  // 会话页与自动化任务页共用一套尺寸规则（见 use-detail-panel-width）：
+  // 默认 = 内容区 50%（夹 320~720），可拖左边缘手动改宽，窗口 <880 转右侧浮层固定 320。
   return (
     <aside
+      ref={panelRef}
       aria-label="自动化任务详情"
-      className={split
-        ? "flex flex-col gap-[12px] border-l border-[#f2f2f2] bg-white max-[879px]:absolute max-[879px]:inset-y-0 max-[879px]:right-0 max-[879px]:z-20 max-[879px]:w-[320px] max-[879px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] min-[880px]:[flex:1_1_50%] min-[880px]:min-w-[320px] min-[880px]:max-w-[720px]"
-        : "flex w-[320px] shrink-0 flex-col gap-[12px] border-l border-[#f2f2f2] bg-white max-[799px]:absolute max-[799px]:inset-y-0 max-[799px]:right-0 max-[799px]:z-20 max-[799px]:w-[320px] max-[799px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"}
+      data-resizing={dragging ? "true" : undefined}
+      style={panelStyle}
+      className={`${overlay ? "" : "relative"} flex shrink-0 flex-col gap-[12px] border-l border-[#f2f2f2] bg-white max-[879px]:absolute max-[879px]:inset-y-0 max-[879px]:right-0 max-[879px]:z-20 max-[879px]:w-[320px] max-[879px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] data-[resizing=true]:select-none`}
     >
+      {/* 拖拽手柄：3px 宽热区贴着左侧 1px 描边，hover / 拖动时显示一条蓝色指示线 */}
+      {!overlay && (
+        <div
+          {...handleProps}
+          className="group absolute inset-y-0 left-[-3px] z-30 w-[6px] cursor-col-resize touch-none outline-none"
+        >
+          <span
+            aria-hidden
+            className={`absolute inset-y-0 left-[2px] w-[2px] rounded-full transition-colors ${dragging ? "bg-[#1e63f5]" : "bg-transparent group-hover:bg-[#99c3ff] group-focus-visible:bg-[#99c3ff]"}`}
+          />
+        </div>
+      )}
       {/* header：标题 + 暂停/运行中 + 更多 + 关闭（Figma 9897:2990） */}
       <header className="flex h-[48px] shrink-0 items-center gap-[10px] border-b border-[#f2f2f2] px-[16px] py-[8px]">
         <span className="min-w-0 flex-1 truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
@@ -1448,7 +1498,7 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
 
         {tab === "运行记录" ? (
           task.records?.length ? (
-            <RunRecordList records={task.records} />
+            <RunRecordList records={task.records} onLocate={onLocateRun} />
           ) : (
             <div className="flex flex-1 flex-col items-center pt-[64px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.38)]">
               暂无运行记录
@@ -1466,15 +1516,15 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
               <div className="px-[12px]">
                 <div className="flex h-[32px] items-center gap-[8px] rounded-[4px] border border-[#e6e6e6] px-[8px] focus-within:border-[#1e63f5]">
                   <input
-                    value={task.title}
+                    value={draft.title}
                     maxLength={30}
-                    onChange={event => onChange({ title: event.target.value })}
+                    onChange={event => patchDraft({ title: event.target.value })}
                     placeholder="名称"
                     aria-label="自动化任务名称"
                     className="min-w-0 flex-1 bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.38)]"
                   />
                   <span className="shrink-0 font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">
-                    {task.title.length}/30
+                    {draft.title.length}/30
                   </span>
                 </div>
               </div>
@@ -1486,8 +1536,8 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
               <div className="flex flex-wrap items-center gap-[8px] rounded-[8px] border border-[#e6e6e6] bg-white px-[12px] py-[8px]">
                 <img src="/assets/automation-time-range.svg" alt="" className="size-[16px] shrink-0" />
                 <ScheduleEditor
-                  schedule={task.schedule}
-                  onChange={patch => onChange({ schedule: { ...task.schedule, ...patch } })}
+                  schedule={draft.schedule}
+                  onChange={patch => patchDraft({ schedule: { ...draft.schedule, ...patch } })}
                 />
               </div>
             </div>
@@ -1502,8 +1552,8 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
                       <AttachmentTray attachments={attachments} onRemove={removeAttachment} />
                       <textarea
                         rows={1}
-                        value={task.prompt}
-                        onChange={event => onChange({ prompt: event.target.value })}
+                        value={draft.prompt}
+                        onChange={event => patchDraft({ prompt: event.target.value })}
                         placeholder="希望我干什么？"
                         className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
                       />
@@ -1554,8 +1604,8 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
               {/* 执行方式回写任务：勾选状态存在 task.newSessionEachRun 上 */}
               {advOpen && (
                 <AdvancedSettings
-                  newSession={task.newSessionEachRun ?? false}
-                  onNewSessionChange={value => onChange({ newSessionEachRun: value })}
+                  newSession={draft.newSessionEachRun ?? false}
+                  onNewSessionChange={value => patchDraft({ newSessionEachRun: value })}
                 />
               )}
             </div>
@@ -1564,12 +1614,13 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
       </div>
 
       {/* 底部按钮条（Figma 9925:54837）：内边距 16、右对齐、gap 24；
-          保存按钮 32 高 r4，禁用态 #99C3FF + 55% 白字，有改动后变 #1E63F5 可点 */}
+          保存按钮 32 高 r4，无改动时禁用 #99C3FF + 55% 白字，改过变 #1E63F5 可点；
+          点保存才把草稿写回任务，成功后 toast「保存成功」 */}
       <div className="flex shrink-0 items-center justify-end gap-[24px] p-[16px]">
         <button
           type="button"
           disabled={!dirty}
-          onClick={() => setSavedSignature(signature)}
+          onClick={handleSave}
           className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] transition-colors hover:bg-[#1554d1] disabled:cursor-not-allowed disabled:bg-[#99c3ff] disabled:text-[rgba(255,255,255,0.55)] disabled:hover:bg-[#99c3ff]"
         >
           保存
@@ -1582,12 +1633,14 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
 // ============================================================================
 // 自动化任务列表页（Figma 9665:49113）
 // ============================================================================
-export function AutomationView({ tasks, onTasksChange, onLaunchChat, onRunTask, navCollapsed = false, onSidebarToggle, onNewChat }: {
+export function AutomationView({ tasks, onTasksChange, onLaunchChat, onRunTask, onLocateRun, navCollapsed = false, onSidebarToggle, onNewChat }: {
   // 任务数据由 App 持有：点「创建」会跳到会话页，本组件随即卸载，
   // 任务必须活在上一层，AI 创建完成后回到这里才看得到。
   tasks: AutomationTask[];
   onTasksChange: (updater: (current: AutomationTask[]) => AutomationTask[]) => void;
   onLaunchChat: (payload: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[]; newSessionEachRun: boolean }) => void;
+  // 运行记录图钉：跳到该次执行所在的会话消息（对话已删 → App 层 toast 提示）
+  onLocateRun?: (task: AutomationTask, record: RunRecord) => void;
   // 「立即执行」的落点会话（创建会话 or 新开会话）只有 App 知道：会话列表、导航切换都活在那一层
   onRunTask: (task: AutomationTask) => void;
   // 本页桌面端没有全局顶栏（Figma 9937:57105），而收起导航后要用到的两个按钮
@@ -1704,10 +1757,11 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, onRunTask, 
             </button>
           </div>
         )}
-        {/* 详情并排时列表占 50%，断点与 AutomationDetailPanel 的 split 保持一致（≥880 才并排）：
+        {/* 详情并排时列表占剩余宽度，断点与 AutomationDetailPanel 保持一致（≥880 才并排）：
             880 = 240 导航 + 320 列表 + 320 详情，保证中间列表不会被挤到 320 以下；
-            再窄则详情转浮层，列表独占内容区（内容区本身 min-w-[320px]）。 */}
-        <main ref={mainRef} className={`relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-white px-[16px] ${narrowPadding ? "" : "min-[800px]:px-[24px]"} ${detailTask ? "min-[880px]:[flex:1_1_50%] min-[880px]:min-w-[320px]" : ""}`}>
+            再窄则详情转浮层，列表独占内容区（内容区本身 min-w-[320px]）。
+            详情栏宽度由 use-detail-panel-width 统一给（默认内容区 50%，可拖拽 320~720）。 */}
+        <main ref={mainRef} className={`relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-white px-[16px] ${narrowPadding ? "" : "min-[800px]:px-[24px]"} ${detailTask ? "min-[880px]:min-w-[320px]" : ""}`}>
           {/* 桌面（Figma 9937:57105）无全局顶栏：列表列自身留顶部间距；<800px 保留 ChatHeader，只留常规 16px，避免双倍空白 */}
           {/* 顶部 48px 取自 Figma 9872:63167「内容区」padding-top 48（列顶 → 标题行顶）。
               导航收起时按钮占 12~36px，仍在 48px 之上，不会压住标题。 */}
@@ -1767,10 +1821,10 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, onRunTask, 
 
         {detailTask && (
           <AutomationDetailPanel
-            split
             task={detailTask}
             onClose={() => setDetailId(null)}
             onOperate={handleOperate}
+            onLocateRun={record => onLocateRun?.(detailTask, record)}
             onChange={patch => onTasksChange(current => current.map(item => item.id === detailTask.id ? { ...item, ...patch } : item))}
           />
         )}

@@ -42,7 +42,7 @@ import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
-import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState } from "./components/automation-view";
+import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -1242,6 +1242,67 @@ function DeleteProjectDialog({ open, onOpenChange, onConfirm }: {
 }
 
 /* ------------------------------------------------------------------ *
+ * 删除任务（会话）确认弹窗 — Figma 459:38570
+ * 480 宽 / 8 圆角 / 内边距 24 16 0；标题行（24 取消圆叉 + 20/28 中黑 + 右上关闭，gap 8）、
+ * 说明文案左缩进 32（与标题文字对齐）、底部上下 16 留白 + 右对齐「取消 / 确定」（gap 24）。
+ * 侧栏「···」、归档页、项目详情三处删任务都先走这里，确定后才真正删。
+ * ------------------------------------------------------------------ */
+function DeleteChatTaskDialog({ open, onOpenChange, onConfirm }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="w-[480px] max-w-[calc(100%-32px)] gap-0 overflow-hidden rounded-[8px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[calc(100%-32px)] [&>button]:hidden"
+      >
+        <div className="flex flex-col gap-[16px] px-[16px] pt-[24px]">
+          <div className="flex items-center gap-[8px]">
+            <img src="/assets/dialog-delete-icon.svg" alt="" className="size-[24px] shrink-0" />
+            <DialogTitle className="min-w-0 flex-1 truncate text-[20px] font-medium leading-[28px] tracking-[0.001em] text-[rgba(0,0,0,0.88)]">
+              确定删除此任务？
+            </DialogTitle>
+            <DialogClose asChild>
+              <button
+                type="button"
+                aria-label="关闭删除任务弹窗"
+                className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+              >
+                <img src="/assets/search-dialog-close.svg" alt="" className="size-[20px]" />
+              </button>
+            </DialogClose>
+          </div>
+          <p className="pl-[32px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+            删除后，聊天记录将不可恢复。
+          </p>
+          <div className="flex items-center justify-end gap-[24px] pb-[16px] pt-[16px]">
+            <DialogClose asChild>
+              <button
+                type="button"
+                className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"
+              >
+                取消
+              </button>
+            </DialogClose>
+            <DialogClose asChild>
+              <button
+                type="button"
+                onClick={onConfirm}
+                className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1]"
+              >
+                确定
+              </button>
+            </DialogClose>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * 搜索弹窗 — Figma「AI Chat Component / - Search」(8844:40946)
  * 弹窗固定 560 高；搜索框激活仅放大镜 icon 变色；
  * 列表滚动到底部自动加载，每批 10 条，「没有更多了」仅在发生一次加载后出现
@@ -1423,7 +1484,7 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, mobile = false }: {
+function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, mobile = false }: {
   onSearch: () => void;
   mobile?: boolean;
   history: HistoryItem[];
@@ -1431,6 +1492,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   projects: ProjectItem[];
   setProjects: React.Dispatch<React.SetStateAction<ProjectItem[]>>;
   onRequestDeleteProject?: (id: number) => void;
+  // 删除任务（会话）统一先弹确认（Figma 459:38570），由 App 层持有弹窗
+  onRequestDeleteTask: (id: number) => void;
   onClose: () => void;
   onNewChat: () => void;
   onOpenProjects: () => void;
@@ -1962,7 +2025,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
             setHistory(items => items.map(item => item.id === menuTask.id ? { ...item, archived: true } : item));
             showArchiveToast(() => setHistory(items => items.map(item => item.id === menuTask.id ? { ...item, archived: false } : item)));
           }}
-          onDelete={() => setHistory(items => items.filter(item => item.id !== menuTask.id))}
+          onDelete={() => onRequestDeleteTask(menuTask.id)}
           onClose={closeContextMenu}
         />
       )}
@@ -2612,13 +2675,15 @@ function ChatHeader({ title, projectBreadcrumb, projectOverview, actions, sideba
   );
 }
 
-function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects, onLocateArtifact }: {
+function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects, onLocateArtifact, onRequestDeleteTask }: {
   task: HistoryItem;
   projects: ProjectItem[];
   artifacts: LocatedTaskArtifact[];
   setHistory: React.Dispatch<React.SetStateAction<HistoryItem[]>>;
   setProjects: React.Dispatch<React.SetStateAction<ProjectItem[]>>;
   onLocateArtifact: (artifact: LocatedTaskArtifact) => void;
+  // 删除任务先弹确认（Figma 459:38570），由 App 层执行真正的删除
+  onRequestDeleteTask: (id: number) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
@@ -2675,7 +2740,7 @@ function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects,
             updateTask({ archived: true });
             showArchiveToast(() => updateTask({ archived: false }));
           }}
-          onDelete={() => setHistory(items => items.filter(item => item.id !== task.id))}
+          onDelete={() => onRequestDeleteTask(task.id)}
           onClose={() => setMenuOpen(false)}
         />
       )}
@@ -4636,6 +4701,8 @@ export default function App() {
   const [libraryCreateProjectOpen, setLibraryCreateProjectOpen] = useState(false);
   // 删除项目统一先弹确认窗（侧栏「···」、项目列表、项目详情、归档页共用）
   const [deleteProjectId, setDeleteProjectId] = useState<number | null>(null);
+  // 删除任务（会话）统一确认弹窗（Figma 459:38570）
+  const [deleteChatTaskId, setDeleteChatTaskId] = useState<number | null>(null);
   const [activeHistoryId, setActiveHistoryId] = useState<number | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -4676,7 +4743,8 @@ export default function App() {
         : current
     ));
   };
-  // 会话里点自动化卡片 → 打开右侧 320 详情栏（Figma 9787:71282 / 9925:54837）
+  // 会话里点自动化卡片 → 打开右侧详情栏（Figma 9787:71282 / 9925:54837）；
+  // 宽度、拖拽与浮层断点走统一规则（use-detail-panel-width），与自动化任务页一致
   const [chatAutomationId, setChatAutomationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
 
@@ -5295,8 +5363,9 @@ export default function App() {
           schedule,
           prompt: goal,
           icon,
-          // 运行记录先铺一组示例（Figma 9908:45451），「立即执行」会再插新的
-          records: buildRunRecords(goal, schedule.time),
+          // 运行记录先铺一组示例（Figma 9908:45451），「立即执行」会再插新的；
+          // 带上创建会话 id：这些记录点图钉时也能跳回本对话
+          records: buildRunRecords(goal, schedule.time, id),
           // 执行方式：勾选了「每次执行都开启新会话」→ 每次执行开新对话；
           // 否则写回本会话（sourceConversationId）。会话被删时当次执行也开新对话。
           newSessionEachRun,
@@ -5329,11 +5398,17 @@ export default function App() {
       setActiveHistoryId(id);
     };
     const sourceExists = task.sourceConversationId !== undefined && history.some(item => item.id === task.sourceConversationId);
+    // 这次执行落在哪个对话的第几条消息：运行记录要记下来，图钉才能定位回去
+    let runConversationId: number;
+    let runMessageIndex: number;
     if (!task.newSessionEachRun && sourceExists && task.sourceConversationId !== undefined) {
       const convId = task.sourceConversationId;
+      runConversationId = convId;
+      const base = activeHistoryIdRef.current === convId ? messages : (history.find(i => i.id === convId)?.messages ?? []);
+      // 发送后追加的那条用户消息的位置
+      runMessageIndex = base.length;
       if (activeHistoryIdRef.current !== convId) {
         // 切到创建会话：已有消息按历史处理（instant 不重播动画），任务消息接着往下发
-        const base = history.find(i => i.id === convId)?.messages ?? [];
         gotoConversation(convId);
         setMessages(base.map(m => ({ ...m, instant: true })));
       }
@@ -5341,6 +5416,8 @@ export default function App() {
     } else {
       // 新开一个对话：标题取任务名，任务内容将作为首条消息发出
       const id = nextHistoryId.current++;
+      runConversationId = id;
+      runMessageIndex = 0;
       setHistory(h => [{ id, title: task.title.slice(0, 20), createdAt: Date.now(), messages: [] }, ...h]);
       gotoConversation(id);
       setActiveProjectId(null);
@@ -5349,7 +5426,7 @@ export default function App() {
     applyTasks(current => current.map(item => item.id === task.id
       ? {
         ...item,
-        records: [makeRunRecord(item.prompt), ...(item.records ?? [])],
+        records: [makeRunRecord(item.prompt, runConversationId, runMessageIndex), ...(item.records ?? [])],
         status: item.schedule.cycle === "仅一次" ? "已结束" : item.status,
       }
       : item));
@@ -5358,6 +5435,47 @@ export default function App() {
     // automationRun：跳过「创建自动化任务」意图识别（任务文案常含「创建」字样，不能又被拦去新建）；
     // 附件随任务一起发出去：任务「就」里挂的文件就是这次执行的输入
     window.setTimeout(() => sendRunRef.current(task.prompt, task.attachments ?? [], { automationRun: true }), 80);
+  };
+
+  // 运行记录右侧图钉：定位到这次执行所在的对话消息。
+  // 边界情况：所属对话（任务）已被删除 → 不跳转，toast 提示该任务已删除。
+  const handleLocateRunRecord = (task: AutomationTask, record: RunRecord) => {
+    const conversationId = record.conversationId ?? task.sourceConversationId;
+    const target = conversationId !== undefined ? history.find(item => item.id === conversationId) : undefined;
+    if (!target) {
+      toast.error("该任务已删除", { id: "automation-locate" });
+      return;
+    }
+    setMobileNavigationOpen(false);
+    setStage("idle");
+    setProjectListOpen(false);
+    setAutomationOpen(false);
+    setArchiveOpen(false);
+    setLibraryOpen(false);
+    setChatAutomationId(null);
+    clearDraftAttachments(true);
+    setInput("");
+    setSelectedProjectId(null);
+    setActiveProjectId(target.projectId ?? null);
+    setActiveHistoryId(target.id);
+    setMessages(target.messages.map(m => ({ ...m, instant: true })));
+    // 等会话渲染完再滚过去：优先按记录里的消息位置，找不到再退回「含该任务卡片 / 任务文案的最后一条」
+    window.setTimeout(() => {
+      const rows = [...document.querySelectorAll<HTMLElement>("[data-message-index]")];
+      const byIndex = record.messageIndex !== undefined
+        ? rows.find(el => Number(el.dataset.messageIndex) === record.messageIndex) ?? rows[record.messageIndex]
+        : undefined;
+      const fallback = [...rows].reverse().find(el => (
+        el.querySelector(`[data-automation-card="${task.id}"]`) || el.innerText.includes(task.prompt.slice(0, 10))
+      ));
+      const node = byIndex ?? fallback;
+      if (!node) return;
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      node.animate(
+        [{ backgroundColor: "rgba(30,99,245,0.10)" }, { backgroundColor: "rgba(30,99,245,0)" }],
+        { duration: 1600, easing: "ease-out" },
+      );
+    }, 260);
   };
 
   // Figma 9625:49728：左侧导航「自动化任务」→ 自动化任务页（与项目页互斥，复用同一套组件/响应式）
@@ -5421,6 +5539,24 @@ export default function App() {
     // 删的是当前打开的项目 → 退回项目列表，避免停留在已删除的项目页
     if (activeProjectId === id) handleOpenProjects();
     toast.success("删除成功");
+  };
+
+  // 删除任务（会话）：侧栏「···」、归档页、项目详情三处入口都先弹确认窗（Figma 459:38570），
+  // 点「确定」才真正从历史里移除；删的是当前打开的会话时退回空白新会话
+  const handleRequestDeleteChatTask = (id: number) => setDeleteChatTaskId(id);
+  const handleConfirmDeleteChatTask = () => {
+    if (deleteChatTaskId === null) return;
+    const id = deleteChatTaskId;
+    setDeleteChatTaskId(null);
+    setHistory(current => current.filter(task => task.id !== id));
+    if (activeHistoryId === id) {
+      // 作废这条会话还在跑的后台流程，再清空会话区，避免停留在已删除的任务里
+      activeRunId.current += 1;
+      runIdByConversation.current.delete(id);
+      setMessages([]);
+      setActiveHistoryId(null);
+      setChatAutomationId(null);
+    }
   };
 
   // 会话页右侧自动化详情栏：只在会话视图里生效（切走/新建会话自动收起）
@@ -5508,6 +5644,7 @@ export default function App() {
           onSelect={handleSelectHistory}
           onSelectProject={handleSelectProject}
           onRequestDeleteProject={handleRequestDeleteProject}
+          onRequestDeleteTask={handleRequestDeleteChatTask}
           onSearch={() => setSearchOpen(true)}
         />
   );
@@ -5582,6 +5719,7 @@ export default function App() {
               setHistory={setHistory}
               setProjects={setProjects}
               onLocateArtifact={handleLocateArtifact}
+              onRequestDeleteTask={handleRequestDeleteChatTask}
             />
           ) : undefined}
           projectBreadcrumb={activeProject && activeTask ? { projectName: activeProject.name, taskName: activeTask.title, onSelectProject: () => handleSelectProject(activeProject.id) } : undefined}
@@ -5595,7 +5733,7 @@ export default function App() {
           <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} onCreateProject={() => setLibraryCreateProjectOpen(true)} />
         </div>
         {libraryOpen ? null : automationOpen
-          ? <AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
+          ? <AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} onLocateRun={handleLocateRunRecord} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
           : archiveOpen
           ? <ArchiveView
               projects={projects}
@@ -5619,7 +5757,7 @@ export default function App() {
                 setHistory(current => current.map(task => task.id === id ? { ...task, archived: false } : task));
                 toast.success("任务已取消归档");
               }}
-              onDeleteTask={id => setHistory(current => current.filter(task => task.id !== id))}
+              onDeleteTask={handleRequestDeleteChatTask}
             />
           : projectListOpen
           ? <ProjectListView
@@ -5692,7 +5830,7 @@ export default function App() {
                 tasks={history.filter(task => task.projectId === activeProject.id && !task.archived)}
                 onSelectTask={handleSelectHistory}
                 onUpdateTask={(id, updates) => setHistory(current => current.map(task => task.id === id ? { ...task, ...updates } : task))}
-                onDeleteTask={id => setHistory(current => current.filter(task => task.id !== id))}
+                onDeleteTask={handleRequestDeleteChatTask}
                 onUpdateProject={updates => setProjects(current => current.map(project => project.id === activeProject.id ? { ...project, ...updates } : project))}
                 inputProps={{
                   hasProject: true,
@@ -5754,6 +5892,11 @@ export default function App() {
           onOpenChange={next => { if (!next) setDeleteAutomationTaskId(null); }}
           onConfirm={confirmDeleteAutomationTask}
         />
+        <DeleteChatTaskDialog
+          open={deleteChatTaskId !== null}
+          onOpenChange={next => { if (!next) setDeleteChatTaskId(null); }}
+          onConfirm={handleConfirmDeleteChatTask}
+        />
         {dragActive && (
           <div className="pointer-events-none absolute inset-0 z-[100] flex items-center justify-center bg-white/80 backdrop-blur-[1px]">
             <div className="flex flex-col items-center gap-[8px] rounded-[16px] border-2 border-dashed border-[#1e63f5] px-[40px] py-[32px] text-center text-[16px] text-[rgba(0,0,0,0.88)]">
@@ -5764,12 +5907,14 @@ export default function App() {
           </div>
         )}
       </div>
-      {/* 会话里点自动化卡片 → 右侧 320 详情栏（Figma 9787:71282 / 9925:54837） */}
+      {/* 会话里点自动化卡片 → 右侧详情栏（Figma 9787:71282 / 9925:54837）；
+          宽度与响应规则统一走 use-detail-panel-width：默认内容区 50%（320~720，可拖拽） */}
       {chatAutomationTask && (
         <AutomationDetailPanel
           task={chatAutomationTask}
           onClose={() => setChatAutomationId(null)}
           onOperate={handleChatAutomationOperate}
+          onLocateRun={record => handleLocateRunRecord(chatAutomationTask, record)}
           onChange={patch => {
             const targetId = chatAutomationTask.id;
             applyTasks(current => current.map(item => item.id === targetId ? { ...item, ...patch } : item));
