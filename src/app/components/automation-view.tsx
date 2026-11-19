@@ -1317,17 +1317,20 @@ type DetailTab = (typeof DETAIL_TABS)[number];
 // 详情栏可编辑的字段（草稿）：点「保存」才整体写回任务
 type DetailDraft = Pick<AutomationTask, "title" | "prompt" | "schedule" | "attachments" | "newSessionEachRun">;
 
-export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLocateRun }: {
+export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLocateRun, contentAware = false }: {
   task: AutomationTask;
   onClose: () => void;
   onOperate: (label: string, task: AutomationTask) => void;
   onChange: (patch: Partial<AutomationTask>) => void;
   // 运行记录右侧图钉：定位到该次执行所在的对话消息（对话已被删则由 App 层 toast 提示）
   onLocateRun?: (record: RunRecord) => void;
+  // 自动化任务页传 true：并排条件按内容区实际宽度（640）判断，
+  // 窗口窄时先由 App 收起左侧导航，而不是把两栏压到 320 以下；会话页保持窗口断点。
+  contentAware?: boolean;
 }) {
-  // 统一宽度规则：会话页 / 自动化任务页同一个默认宽度、同一套拖拽范围与浮层断点
+  // 统一宽度规则：会话页 / 自动化任务页同一个默认宽度、同一套拖拽范围与铺满断点
   const panelRef = useRef<HTMLElement | null>(null);
-  const { overlay, dragging, style: panelStyle, handleProps } = useDetailPanelWidth(panelRef);
+  const { overlay, page, pageStyle, dragging, style: panelStyle, handleProps } = useDetailPanelWidth(panelRef, { contentAware });
 
   const [tab, setTab] = useState<DetailTab>("详情");
   const [advOpen, setAdvOpen] = useState(false);
@@ -1392,17 +1395,23 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
   const label = "font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]";
 
   // 会话页与自动化任务页共用一套尺寸规则（见 use-detail-panel-width）：
-  // 默认 = 内容区 50%（夹 320~720），可拖左边缘手动改宽，窗口 <880 转右侧浮层固定 320。
+  // 默认 = 内容区 50%（夹 320~720），可拖左边缘手动改宽；
+  // 内容区不足 640 时不再浮在内容上，而是铺满内容区当整页详情（Figma 10038:61162），
+  // 顶部左箭头返回上一级。
   return (
     <aside
       ref={panelRef}
       aria-label="自动化任务详情"
       data-resizing={dragging ? "true" : undefined}
-      style={panelStyle}
-      className={`${overlay ? "" : "relative"} flex shrink-0 flex-col gap-[12px] border-l border-[#f2f2f2] bg-white max-[879px]:absolute max-[879px]:inset-y-0 max-[879px]:right-0 max-[879px]:z-20 max-[879px]:w-[320px] max-[879px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] data-[resizing=true]:select-none`}
+      style={page ? pageStyle : panelStyle}
+      className={`flex shrink-0 flex-col gap-[12px] bg-white data-[resizing=true]:select-none ${page
+        ? "z-40"
+        : overlay
+          ? "absolute inset-y-0 right-0 z-20 w-[320px] border-l border-[#f2f2f2] shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"
+          : "relative border-l border-[#f2f2f2]"}`}
     >
-      {/* 拖拽手柄：3px 宽热区贴着左侧 1px 描边，hover / 拖动时显示一条蓝色指示线 */}
-      {!overlay && (
+      {/* 拖拽手柄：3px 宽热区贴着左侧 1px 描边，hover / 拖动时显示一条蓝色指示线（铺满/浮层态没有可拖空间） */}
+      {!overlay && !page && (
         <div
           {...handleProps}
           className="group absolute inset-y-0 left-[-3px] z-30 w-[6px] cursor-col-resize touch-none outline-none"
@@ -1413,8 +1422,21 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
           />
         </div>
       )}
-      {/* header：标题 + 暂停/运行中 + 更多 + 关闭（Figma 9897:2990） */}
+      {/* header：标题 + 暂停/运行中 + 更多 + 关闭（Figma 9897:2990）
+          < 640 铺满态换成「左箭头返回 + 标题 + 暂停 + 更多」（Figma 10038:61163），
+          返回箭头等价于关闭：回到任务列表 */}
       <header className="flex h-[48px] shrink-0 items-center gap-[10px] border-b border-[#f2f2f2] px-[16px] py-[8px]">
+        {page && (
+          <button
+            type="button"
+            aria-label="返回任务列表"
+            title="返回"
+            onClick={onClose}
+            className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+          >
+            <img src="/assets/automation-back-left.svg" alt="" className="size-[16px]" />
+          </button>
+        )}
         <span className="min-w-0 flex-1 truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
           自动化任务
         </span>
@@ -1440,17 +1462,19 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
         >
           <img src="/assets/automation-more.svg" alt="" className="size-[20px]" />
         </button>
-        <button
-          type="button"
-          aria-label="关闭详情"
-          title="关闭"
-          onClick={onClose}
-          className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
-        >
-          {/* 关闭图标用 0.88 的深色版：与左侧「暂停 / 更多」两个 20px 0.88 图标同色，
-              公共的 f802d.svg 是 0.6，只适合弹窗标题栏 */}
-          <img src="/assets/automation-close.svg" alt="" className="size-[16px]" />
-        </button>
+        {!page && (
+          <button
+            type="button"
+            aria-label="关闭详情"
+            title="关闭"
+            onClick={onClose}
+            className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+          >
+            {/* 关闭图标用 0.88 的深色版：与左侧「暂停 / 更多」两个 20px 0.88 图标同色，
+                公共的 f802d.svg 是 0.6，只适合弹窗标题栏 */}
+            <img src="/assets/automation-close.svg" alt="" className="size-[16px]" />
+          </button>
+        )}
 
         {moreAnchor && (
           <OperationMenu
@@ -1479,8 +1503,9 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
       </header>
 
       {/* 内容区（Figma 9908:45459）：左右 4px，Tab 与下方内容间距 12（= 侧栏 gap 12）；
-          详情 Tab 内部的各区块之间仍保持 24，由内层容器控制 */}
-      <div className="flex min-h-0 flex-1 flex-col gap-[12px] overflow-y-auto px-[4px] pb-[24px] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[rgba(0,0,0,0.2)] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-[8px]">
+          详情 Tab 内部的各区块之间仍保持 24，由内层容器控制。
+          铺满态按 640 稿（Figma 10038:61168）把 Tab 与下方内容的间距放大到 24 */}
+      <div className={`flex min-h-0 flex-1 flex-col overflow-y-auto px-[4px] pb-[24px] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[rgba(0,0,0,0.2)] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-[8px] ${page ? "gap-[24px]" : "gap-[12px]"}`}>
         {/* 详情 / 运行记录（Figma 9904:43410 Tag-2 Size=M） */}
         <div className="flex shrink-0 items-center gap-[16px] px-[12px]">
           {DETAIL_TABS.map(item => (
@@ -1757,11 +1782,10 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, onRunTask, 
             </button>
           </div>
         )}
-        {/* 详情并排时列表占剩余宽度，断点与 AutomationDetailPanel 保持一致（≥880 才并排）：
-            880 = 240 导航 + 320 列表 + 320 详情，保证中间列表不会被挤到 320 以下；
-            再窄则详情转浮层，列表独占内容区（内容区本身 min-w-[320px]）。
-            详情栏宽度由 use-detail-panel-width 统一给（默认内容区 50%，可拖拽 320~720）。 */}
-        <main ref={mainRef} className={`relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-white px-[16px] ${narrowPadding ? "" : "min-[800px]:px-[24px]"} ${detailTask ? "min-[880px]:min-w-[320px]" : ""}`}>
+        {/* 详情并排时列表占剩余宽度。并排条件由 use-detail-panel-width 按「内容区实际宽度」判断：
+            够 640（320 列表 + 320 详情）就并排，不够就让详情铺满内容区当整页详情（不浮起来）。
+            窗口变窄时先由 App 收起左侧导航腾出 240，而不是把两栏都压到 320 以下。 */}
+        <main ref={mainRef} className={`relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-white px-[16px] ${narrowPadding ? "" : "min-[800px]:px-[24px]"}`}>
           {/* 桌面（Figma 9937:57105）无全局顶栏：列表列自身留顶部间距；<800px 保留 ChatHeader，只留常规 16px，避免双倍空白 */}
           {/* 顶部 48px 取自 Figma 9872:63167「内容区」padding-top 48（列顶 → 标题行顶）。
               导航收起时按钮占 12~36px，仍在 48px 之上，不会压住标题。 */}
@@ -1825,6 +1849,7 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, onRunTask, 
             onClose={() => setDetailId(null)}
             onOperate={handleOperate}
             onLocateRun={record => onLocateRun?.(detailTask, record)}
+            contentAware
             onChange={patch => onTasksChange(current => current.map(item => item.id === detailTask.id ? { ...item, ...patch } : item))}
           />
         )}

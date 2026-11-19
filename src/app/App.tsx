@@ -4744,7 +4744,7 @@ export default function App() {
     ));
   };
   // 会话里点自动化卡片 → 打开右侧详情栏（Figma 9787:71282 / 9925:54837）；
-  // 宽度、拖拽与浮层断点走统一规则（use-detail-panel-width），与自动化任务页一致
+  // 宽度、拖拽与铺满断点走统一规则（use-detail-panel-width），与自动化任务页一致
   const [chatAutomationId, setChatAutomationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
 
@@ -4999,6 +4999,34 @@ export default function App() {
   useEffect(() => {
     if (!isMobile) setMobileNavigationOpen(false);
   }, [isMobile]);
+
+  // 详情栏是「内容 320 + 详情 320」的双栏：再加 240 导航共需 880。
+  // 窗口窄于 880 时先自动收起左侧导航（腾出 240，两栏都保住 320），而不是把两栏压窄
+  // —— 自动化任务页的列表详情、会话页的会话详情都按这条走；
+  // 窗口变宽或关掉详情栏时，把自己收起的那一次还原（用户手动收起的保持不动）。
+  const sidebarOpenRef = useRef(sidebarOpen);
+  sidebarOpenRef.current = sidebarOpen;
+  const autoCollapsedNav = useRef(false);
+  useEffect(() => {
+    if (isMobile) return;
+    const narrow = window.matchMedia("(max-width: 879px)");
+    const sync = () => {
+      if ((automationOpen || chatAutomationId !== null) && narrow.matches) {
+        if (sidebarOpenRef.current) {
+          autoCollapsedNav.current = true;
+          setSidebarOpen(false);
+        }
+        return;
+      }
+      if (autoCollapsedNav.current) {
+        autoCollapsedNav.current = false;
+        setSidebarOpen(true);
+      }
+    };
+    sync();
+    narrow.addEventListener("change", sync);
+    return () => narrow.removeEventListener("change", sync);
+  }, [isMobile, automationOpen, chatAutomationId]);
 
   const resetPptFlow = useCallback(() => setStage("idle"), []);
 
@@ -5651,7 +5679,9 @@ export default function App() {
 
   return (
     <Sheet open={isMobile && mobileNavigationOpen} onOpenChange={setMobileNavigationOpen}>
-    <div className="w-screen h-screen flex flex-row overflow-hidden">
+    {/* relative：详情栏铺满态（内容区 < 640）要按「前一个兄弟」的偏移定位，
+        祖先没有定位容器就只能按视口算，会话页会盖住左侧导航 */}
+    <div className="w-screen h-screen flex flex-row overflow-hidden relative">
       {!isMobile && sidebarOpen && sidebar}
       {isMobile && (
         <SheetContent side="left" aria-describedby={undefined} className="w-[240px] max-w-full gap-0 border-0 p-0 shadow-none sm:max-w-[240px] [&>button]:hidden">
@@ -5908,10 +5938,12 @@ export default function App() {
         )}
       </div>
       {/* 会话里点自动化卡片 → 右侧详情栏（Figma 9787:71282 / 9925:54837）；
-          宽度与响应规则统一走 use-detail-panel-width：默认内容区 50%（320~720，可拖拽） */}
+          宽度与响应规则统一走 use-detail-panel-width：默认内容区 50%（320~720，可拖拽），
+          内容区不足 640 时铺满内容区（不浮起来），顶部左箭头返回会话 */}
       {chatAutomationTask && (
         <AutomationDetailPanel
           task={chatAutomationTask}
+          contentAware
           onClose={() => setChatAutomationId(null)}
           onOperate={handleChatAutomationOperate}
           onLocateRun={record => handleLocateRunRecord(chatAutomationTask, record)}
