@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog";
 import { Popover, PopoverAnchor } from "./ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { OperationMenu } from "./operation-menu";
 import { ListPageHeader } from "./list-page-header";
 import { AddContentMenu } from "./add-content-menu";
@@ -20,6 +21,9 @@ import { useDraftAttachments } from "./use-draft-attachments";
 const AUTOMATION_TABS = ["已启用", "已暂停", "已结束"] as const;
 type AutomationTab = (typeof AUTOMATION_TABS)[number];
 
+// 会话里自动化卡片的状态：任务三个状态 + 任务被删后卡片保留的「已删除」态（Figma 9908:45451）
+export type AutomationCardStatus = AutomationTab | "已删除";
+
 // 周期下拉（Figma 9773:69719 DropdownMenu 更新版）：
 // 仅一次 → 分隔线 → 每天/每周/每月/每年 → 分隔线 → 自定义
 const CYCLES = ["仅一次", "每天", "每周", "每月", "每年", "自定义"] as const;
@@ -27,8 +31,8 @@ type Cycle = (typeof CYCLES)[number];
 // 需要在选项「后面」渲染 #F2F2F2 分隔线的周期项（左右缩进 8px）
 const CYCLE_DIVIDERS: readonly string[] = ["仅一次", "每年"];
 
-// 「自定义」周期的间隔单位下拉（Figma 9895:2849，宽 88px）：分/天/周/月
-const CUSTOM_UNITS = ["分", "天", "周", "月"] as const;
+// 「自定义」周期的间隔单位下拉（Figma 9895:2849 / 10000:58940，宽 88px）：分/小时/天/周/月
+const CUSTOM_UNITS = ["分", "小时", "天", "周", "月"] as const;
 type CustomUnit = (typeof CUSTOM_UNITS)[number];
 
 const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"] as const;
@@ -73,7 +77,9 @@ export function summarizeSchedule(schedule: ScheduleState): { cycle: string; des
     case "每年":
       return { cycle: schedule.cycle, description: `${schedule.yearMonth}月${schedule.yearDay} ${time}` };
     case "自定义": {
-      const every = `隔 ${schedule.customInterval} ${schedule.customUnit}`;
+      const every = `每 ${schedule.customInterval} ${schedule.customUnit}`;
+      // 分 / 小时只到单位为止（Figma 10000:58940），没有具体时刻
+      if (schedule.customUnit === "分" || schedule.customUnit === "小时") return { cycle: schedule.cycle, description: every };
       if (schedule.customUnit === "周") return { cycle: schedule.cycle, description: `${every} ${schedule.weekday} ${time}` };
       if (schedule.customUnit === "月") return { cycle: schedule.cycle, description: `${every} ${schedule.customMonthDay} ${time}` };
       return { cycle: schedule.cycle, description: `${every} ${time}` };
@@ -81,6 +87,29 @@ export function summarizeSchedule(schedule: ScheduleState): { cycle: string; des
     default:
       return { cycle: schedule.cycle, description: `${time} 自动执行` };
   }
+}
+
+// 卡片副标题的「时间」那一段（会话卡片 9925:54915 / 任务列表 9872:63193 共用）。
+// 设计稿的副标题是「时间 · 任务内容」两段（如「每天 · 每个工作日晚自动生成并推送日报」），
+// 不能直接拿 cycle + description 拼 —— 那会拼出「每周 · 周日 09:00」这种同义重复。
+// 这里只保留具体执行时间（周几 / 几号 + 时刻）；「每天」把前缀留下，读起来才完整。
+export function cardTimeLabel(schedule: ScheduleState): string {
+  const { description } = summarizeSchedule(schedule);
+  if (schedule.cycle === "每天") return `每天 ${description.replace(" 自动执行", "")}`;
+  return description;
+}
+
+// 卡片副标题 = 时间 · 任务内容（已暂停时前缀换成「已暂停」，Figma 9872:63219）。
+// 例：周日 09:00 · 帮我创建一个自动化任务，每天早上汇总未读邮件
+// title：任务名与内容完全一样时（新建弹窗里没单独填名字，名字回退成内容）只留时间，不再重复一遍
+export function cardSubtitle(schedule: ScheduleState, prompt: string, status?: AutomationTab, title?: string): string {
+  // 「就」里那段话可能是多行的，压成一行交给 CSS 截断，避免卡片被撑高
+  const content = prompt.trim().replace(/\s+/g, " ");
+  const name = (title ?? "").trim().replace(/\s+/g, " ");
+  const detail = content && content !== name ? content : "";
+  if (status === "已暂停") return detail ? `已暂停 · ${detail}` : "已暂停";
+  const when = cardTimeLabel(schedule);
+  return detail ? `${when} · ${detail}` : when;
 }
 
 // 把排期条件说成人话，用于新会话里 AI 的回复文案（「每天 18:00」「每周六 18:00」）
@@ -98,7 +127,8 @@ export function describeSchedule(schedule: ScheduleState): string {
     case "仅一次":
       return `${schedule.yearMonth}月${schedule.yearDay} ${time}`;
     case "自定义": {
-      const every = `每隔 ${schedule.customInterval} ${schedule.customUnit}`;
+      const every = `每 ${schedule.customInterval} ${schedule.customUnit}`;
+      if (schedule.customUnit === "分" || schedule.customUnit === "小时") return every;
       if (schedule.customUnit === "周") return `${every}的${schedule.weekday} ${time}`;
       if (schedule.customUnit === "月") return `${every}的${schedule.customMonthDay} ${time}`;
       return `${every} ${time}`;
@@ -161,6 +191,66 @@ export function automationIconSrc(icon: AutomationIcon | string): string {
   return `/assets/kubai/${icon}.svg`;
 }
 
+// ---------------------------------------------------------------------------
+// 运行记录（Figma 9908:45451 右侧侧边栏「运行记录」Tab）
+// 一条记录 = 左侧时间轴节点 + 右侧内容卡：头部「18:01 · 成功」、正文、耗时行（可带图钉）
+// 结果三态：成功（#38E38A）/ 失败（#FC5926）/ 未执行（#5E5E5E，头部结果词仍是 38% 黑）
+// ---------------------------------------------------------------------------
+export type RunRecordStatus = "成功" | "失败" | "未执行";
+export type RunRecord = {
+  id: string;
+  // 设计稿只显示时刻（18:01），不显示日期
+  time: string;
+  status: RunRecordStatus;
+  text: string;
+  // 未执行不产生耗时，所以是可选的
+  duration?: string;
+};
+
+const RUN_DOT_COLOR: Record<RunRecordStatus, string> = {
+  成功: "#38E38A",
+  失败: "#FC5926",
+  未执行: "#5E5E5E",
+};
+const RUN_LABEL_COLOR: Record<RunRecordStatus, string> = {
+  成功: "#38E38A",
+  失败: "#FC5926",
+  未执行: "rgba(0,0,0,0.38)",
+};
+
+// 排期时刻（18:00）→ 首次执行时刻（18:01），与设计稿一致
+function runStamp(time: string): string {
+  const matched = /^(\d{1,2}):(\d{2})$/.exec(time);
+  return matched ? `${matched[1].padStart(2, "0")}:01` : "18:01";
+}
+
+// 新建任务时铺一组示例记录：成功 / 未执行 / 失败 / 成功，正文带上一句任务目标，比纯占位更像真跑过
+export function buildRunRecords(prompt: string, time: string): RunRecord[] {
+  const stamp = runStamp(time);
+  const goal = prompt.trim().replace(/\s+/g, " ");
+  const summary = goal ? `${goal.slice(0, 56)}${goal.length > 56 ? "…" : ""}` : "按计划执行本任务";
+  return [
+    { id: "run-1", time: stamp, status: "成功", text: `对齐本次任务目标：${summary}`, duration: "4m59s" },
+    { id: "run-2", time: stamp, status: "未执行", text: "本轮未触发（上一轮任务尚未结束，不计入扣费）" },
+    { id: "run-3", time: stamp, status: "失败", text: "执行失败；你的套餐用量已用完，请升级套餐或等待用量重置", duration: "4m59s" },
+    { id: "run-4", time: stamp, status: "成功", text: "复核输出要点：字段口径、空值与缺省策略、示例一致性，确认无前后理解偏差。", duration: "4m59s" },
+  ];
+}
+
+// 「立即执行」补一条成功记录，插到最前面（最新在上）
+export function makeRunRecord(prompt: string): RunRecord {
+  const now = new Date();
+  const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const goal = prompt.trim().replace(/\s+/g, " ");
+  return {
+    id: `run-${now.getTime()}`,
+    time,
+    status: "成功",
+    text: goal ? `按任务要求执行：${goal.slice(0, 56)}${goal.length > 56 ? "…" : ""}` : "按任务要求执行，输出已生成。",
+    duration: "4m59s",
+  };
+}
+
 // 自动化任务数据（Figma 9625:49728 列表项 / 9872:63167 已暂停态 / 9787:71282 右侧详情）
 export type AutomationTask = {
   id: string;
@@ -175,6 +265,13 @@ export type AutomationTask = {
   attachments?: ChatAttachment[];
   // 语义匹配出来的图标（icons.kubai.design），随任务一起存下来保证稳定
   icon: AutomationIcon;
+  // 运行记录（Figma 9908:45451 右侧「运行记录」Tab），新建时铺一组示例，立即执行会插新的一条
+  records?: RunRecord[];
+  // 执行方式「每次执行都开启新会话」勾选状态：
+  //   勾选 → 每次执行都新开一个对话；不勾 → 执行写回创建本任务的会话（该会话已删除则当次也开新会话）
+  newSessionEachRun?: boolean;
+  // 创建本任务的会话 id（新建流程里由 AI 承接创建的那个对话），执行结果默认写回这里
+  sourceConversationId?: number;
 };
 // 列表初始为空：不预置示例任务，用户新建后才出现卡片（空态见 AutomationEmpty）。
 export const INITIAL_TASKS: AutomationTask[] = [];
@@ -417,7 +514,9 @@ function TimeWheelColumn({ options, value, onChange, align }: {
 }
 
 // 时间 chip：点开双列滚轮（时 / 分），滚动或点选实时回写 HH:mm
-function TimeChip({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+// variant="field"：高级设置「指定时间」用的带描边方框（Figma 9904:38056 / 10031:61074），
+// 白底 + #E6E6E6 描边 + r4，尺寸随内容（h32 / px8），与左侧日期框同一行同一高度。
+function TimeChip({ value, onChange, variant = "chip" }: { value: string; onChange: (value: string) => void; variant?: "chip" | "field" }) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(anchor, setAnchor);
   const [hour, minute] = value.split(":");
@@ -426,7 +525,7 @@ function TimeChip({ value, onChange }: { value: string; onChange: (value: string
       <button
         type="button"
         onClick={event => setAnchor(current => current ? null : event.currentTarget)}
-        className="flex h-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] bg-[#f7f7f7] px-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
+        className={`flex h-[32px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] px-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${variant === "field" ? "border border-[#e6e6e6] bg-white hover:border-[#1e63f5]" : "bg-[#f7f7f7] hover:bg-[#e6e6e6]"}`}
       >
         <span className="whitespace-nowrap">{value}</span>
       </button>
@@ -545,9 +644,10 @@ function TimezoneSelect({ value, onChange }: { value: string; onChange: (value: 
 
 // ============================================================================
 // 排期条件 chip 组（弹窗 9665:49114 与右侧详情栏 9787:71282 共用）
-//   分/天 → 自定义 隔 1 天 于 18:00（9891:71448）
-//   周    → 自定义 隔 1 周 于 [周六] 的 18:00（9891:72000）
-//   月    → 自定义 隔 1 月 于 [1号]  的 18:00（9891:72961）
+//   分/小时 → 自定义 每 1 小时（10000:58940，到单位 chip 为止）
+//   天    → 自定义 每 1 天 于 18:00（9891:71448）
+//   周    → 自定义 每 1 周 于 [周六] 的 18:00（9891:72000）
+//   月    → 自定义 每 1 月 于 [1号]  的 18:00（9891:72961）
 // ============================================================================
 function ScheduleEditor({ schedule, onChange }: {
   schedule: ScheduleState;
@@ -601,7 +701,7 @@ function ScheduleEditor({ schedule, onChange }: {
       </>}
 
       {cycle === "自定义" && <>
-        <span className={muted}>隔</span>
+        <span className={muted}>每</span>
         <NumberStepper value={schedule.customInterval} onChange={customInterval => onChange({ customInterval })} />
         <SelectChip
           options={CUSTOM_UNITS}
@@ -610,11 +710,15 @@ function ScheduleEditor({ schedule, onChange }: {
           width={88}
           arrow
         />
-        <span className={muted}>于</span>
-        {/* 周：追加星期 chip；月：追加日期 chip（31 天列表固定下方、最高 320 可滚动） */}
-        {schedule.customUnit === "周" && <SelectChip options={WEEKDAYS} value={schedule.weekday} onChange={weekday => onChange({ weekday })} width={120} />}
-        {schedule.customUnit === "月" && <SelectChip options={DAYS} value={schedule.customMonthDay} onChange={customMonthDay => onChange({ customMonthDay })} width={120} forceBelow maxHeight={320} />}
-        {tail(schedule.customUnit === "周" || schedule.customUnit === "月")}
+        {/* 分 / 小时：Figma 10000:58940 到单位 chip 就结束，不落到具体时刻；
+            天 / 周 / 月才继续「于 [星期/日期] 的 18:00」 */}
+        {schedule.customUnit !== "分" && schedule.customUnit !== "小时" && <>
+          <span className={muted}>于</span>
+          {/* 周：追加星期 chip；月：追加日期 chip（31 天列表固定下方、最高 320 可滚动） */}
+          {schedule.customUnit === "周" && <SelectChip options={WEEKDAYS} value={schedule.weekday} onChange={weekday => onChange({ weekday })} width={120} />}
+          {schedule.customUnit === "月" && <SelectChip options={DAYS} value={schedule.customMonthDay} onChange={customMonthDay => onChange({ customMonthDay })} width={120} forceBelow maxHeight={320} />}
+          {tail(schedule.customUnit === "周" || schedule.customUnit === "月")}
+        </>}
       </>}
     </>
   );
@@ -624,13 +728,18 @@ function ScheduleEditor({ schedule, onChange }: {
 // 高级设置（Figma 9783:70644 / 9904:38056 / 9904:38242）
 // 结束时间（三选一）+ 执行方式（复选框）+ 时区下拉；弹窗与详情栏共用
 // ============================================================================
-function AdvancedSettings() {
+function AdvancedSettings({ newSession, onNewSessionChange }: {
+  // 「每次执行都开启新会话」由外部（弹窗 / 详情栏）持有：弹窗创建时要带上，详情栏编辑时要回写任务
+  newSession: boolean;
+  onNewSessionChange: (value: boolean) => void;
+}) {
   const [endMode, setEndMode] = useState<EndMode>("永不");
   const [endDate, setEndDate] = useState<CalendarDate>({ year: 2025, month: 7, day: 8 });
   const [endDateAnchor, setEndDateAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(endDateAnchor, setEndDateAnchor);
+  // 指定时间的时刻（Figma 9904:38056 右侧 18:00 框）：与「当」用同一个时间滚轮
+  const [endTime, setEndTime] = useState("18:00");
   const [repeatTimes, setRepeatTimes] = useState<number>(10);
-  const [newSession, setNewSession] = useState(false);
   const [timezone, setTimezone] = useState<string>(TIMEZONES[0]);
   return (
     <div className="flex w-full flex-col gap-[24px]">
@@ -679,6 +788,11 @@ function AdvancedSettings() {
                 selected={endDate}
                 onSelect={setEndDate}
               />}
+              {/* 时刻框：Figma 9904:38056，绝对 x=233（89 + 日期框 136 + 8），同高 32，
+                  点开就是「当」那套 24h 双列滚轮 */}
+              <div className="absolute left-[233px] top-[25px]">
+                <TimeChip value={endTime} onChange={setEndTime} variant="field" />
+              </div>
             </Fragment>
           )}
 
@@ -698,7 +812,7 @@ function AdvancedSettings() {
           type="button"
           role="checkbox"
           aria-checked={newSession}
-          onClick={() => setNewSession(current => !current)}
+          onClick={() => onNewSessionChange(!newSession)}
           className="flex w-fit cursor-pointer items-center gap-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]"
         >
           {newSession ? (
@@ -729,20 +843,23 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   // 点「创建」发起一个新会话，由 AI 创建这条任务（Figma 9625:49728）
-  onCreate: (schedule: ScheduleState, prompt: string, attachments: ChatAttachment[]) => void;
+  // newSessionEachRun：高级设置里「每次执行都开启新会话」的勾选结果，随任务保存
+  onCreate: (schedule: ScheduleState, prompt: string, attachments: ChatAttachment[], newSessionEachRun: boolean) => void;
 }) {
   const [schedule, setSchedule] = useState<ScheduleState>(DEFAULT_SCHEDULE);
   const [prompt, setPrompt] = useState("");
   // 「就」里的 + 与输入框同一套面板：菜单 → 文件选择/云盘面板 → 附件卡片
   const { attachments, addFiles, removeAttachment, clearAttachments } = useDraftAttachments();
   const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
-  // 高级设置（Figma 9783:70644）：默认收起
+  // 高级设置（Figma 9783:70644）：默认收起；勾选项放外层，创建时一并带出
   const [advOpen, setAdvOpen] = useState(false);
+  const [newSessionEachRun, setNewSessionEachRun] = useState(false);
 
   useEffect(() => {
     if (open) {
       setPrompt("");
       setAdvOpen(false);
+      setNewSessionEachRun(false);
       setAttachmentSource(null);
       clearAttachments();
     }
@@ -846,7 +963,7 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
             </button>
           </div>
 
-          {advOpen && <AdvancedSettings />}
+          {advOpen && <AdvancedSettings newSession={newSessionEachRun} onNewSessionChange={setNewSessionEachRun} />}
         </div>
 
         {/* 操作区：padding 24px, flex-end, gap 24px, 上边框 */}
@@ -863,7 +980,7 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
             type="button"
             disabled={!prompt.trim()}
             onClick={() => {
-              onCreate(schedule, prompt.trim(), attachments);
+              onCreate(schedule, prompt.trim(), attachments, newSessionEachRun);
               // 附件已带进新会话，预览地址还要继续用，不能回收
               clearAttachments(false);
               onOpenChange(false);
@@ -1038,8 +1155,9 @@ function AutomationTaskCard({ task, onOperate, onOpen, active }: {
           {task.title}
         </span>
         <span className="truncate font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)]">
-          {/* Figma 9872:63219：已暂停时副标题前缀由周期变为「已暂停 ·」 */}
-          {task.status === "已暂停" ? `已暂停 · ${task.description}` : `${task.cycle} · ${task.description}`}
+          {/* Figma 9872:63193 / 9872:63219：副标题是「时间 · 任务内容」，已暂停时前缀换成「已暂停 ·」；
+              时间从 schedule 实时算，详情栏改完周期这里立刻跟着变 */}
+          {cardSubtitle(task.schedule, task.prompt, task.status, task.title)}
         </span>
       </div>
 
@@ -1121,6 +1239,66 @@ function AutomationEmpty() {
 }
 
 // ============================================================================
+// 运行记录列表（Figma 9908:45451 右侧侧边栏「运行记录」Tab）
+// 每行：8px 时间轴列（圆点 + 连到下一颗圆点的 1px 竖线，竖线只在相邻两行之间画）+ 内容卡
+// 内容卡 4px 8px / r4，hover 变 #F2F2F2 / r8 并在耗时行右侧露出图钉（设计稿里图钉默认 opacity 0）
+// ============================================================================
+function RunRecordList({ records }: { records: RunRecord[] }) {
+  return (
+    <div className="flex flex-col gap-[16px] px-[12px]">
+      {records.map((record, index) => (
+        <div key={record.id} className="relative flex gap-[4px]">
+          {/* 时间轴：圆点距行顶 10px（与首行文字基线对齐），8px 圆点中心落在容器左 16px 处 */}
+          <span aria-hidden className="relative flex w-[8px] shrink-0 justify-center pt-[10px]">
+            <span className="size-[8px] shrink-0 rounded-full" style={{ backgroundColor: RUN_DOT_COLOR[record.status] }} />
+            {/* 竖线：从本行圆点下沿一直到下一条圆点上沿（跨过 16px 行间距） */}
+            {index < records.length - 1 && (
+              <span className="absolute left-[3.5px] top-[18px] bottom-[-26px] w-px bg-[#e6e6e6]" />
+            )}
+          </span>
+          <div className="group flex min-w-0 flex-1 flex-col gap-[4px] rounded-[4px] px-[8px] py-[4px] hover:rounded-[8px] hover:bg-[#f2f2f2]">
+            <span className="font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">
+              {record.time} · <span style={{ color: RUN_LABEL_COLOR[record.status] }}>{record.status}</span>
+            </span>
+            {/* 正文最多显示 5 行，超出省略 */}
+            <span className="line-clamp-5 font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+              {record.text}
+            </span>
+            {record.duration && (
+              <div className="flex items-center gap-[4px]">
+                <span className="min-w-0 flex-1 truncate font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">
+                  耗时：{record.duration}
+                </span>
+                {/* 图钉：hover 显形 + 浅灰底；tips「定位到消息位置」 */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="定位到消息位置"
+                      onClick={event => event.stopPropagation()}
+                      className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] opacity-0 transition-all group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-[rgba(0,0,0,0.08)]"
+                    >
+                      <img src="/assets/automation-record-pin.svg" alt="" className="size-[16px]" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="top"
+                    sideOffset={4}
+                    className="rounded-[4px] bg-[rgba(0,0,0,0.75)] px-[8px] py-[3px] font-['PingFang_SC:Regular'] text-[12px] font-normal leading-[20px] text-white"
+                  >
+                    定位到消息位置
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================================
 // 右侧自动化详情栏（Figma 9787:71282）
 // 宽 320，左侧 1px #F2F2F2 描边；header 48px（标题 + 暂停 + 更多 + 关闭）。
 // 内容：详情/运行记录 Tabs → 自动化任务名称 → 当（条件 chip 组）→ 就（Chat Input）→ 高级设置
@@ -1153,6 +1331,25 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
     resetAttachments(task.attachments ?? []);
   }, [task.id, resetAttachments]);
 
+  // 底部保存条（Figma 9925:54837）：默认禁用，任一字段有改动后变为可点击，
+  // 点保存后回到禁用态。编辑内容实时落在任务上（切 Tab、关掉再打开都保持），
+  // 保存只做「收尾」，不会清空或回退已填内容。
+  const saveSignature = (item: AutomationTask) => JSON.stringify({
+    title: item.title,
+    prompt: item.prompt,
+    schedule: item.schedule,
+    attachments: (item.attachments ?? []).map(attachment => attachment.id),
+    newSessionEachRun: item.newSessionEachRun ?? false,
+  });
+  const signature = saveSignature(task);
+  const [savedSignature, setSavedSignature] = useState(signature);
+  useEffect(() => {
+    // 切换任务时把基线换成新任务的内容，免得上一个任务的改动把按钮点亮
+    setSavedSignature(saveSignature(task));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.id]);
+  const dirty = signature !== savedSignature;
+
   const label = "font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]";
 
   // 浮层断点分场景（类名必须写成完整字面量，Tailwind 才能扫描生成）：
@@ -1163,8 +1360,8 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
     <aside
       aria-label="自动化任务详情"
       className={split
-        ? "flex flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[879px]:absolute max-[879px]:inset-y-0 max-[879px]:right-0 max-[879px]:z-20 max-[879px]:w-[320px] max-[879px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] min-[880px]:[flex:1_1_50%] min-[880px]:min-w-[320px] min-[880px]:max-w-[720px]"
-        : "flex w-[320px] shrink-0 flex-col gap-[8px] border-l border-[#f2f2f2] bg-white max-[799px]:absolute max-[799px]:inset-y-0 max-[799px]:right-0 max-[799px]:z-20 max-[799px]:w-[320px] max-[799px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"}
+        ? "flex flex-col gap-[12px] border-l border-[#f2f2f2] bg-white max-[879px]:absolute max-[879px]:inset-y-0 max-[879px]:right-0 max-[879px]:z-20 max-[879px]:w-[320px] max-[879px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)] min-[880px]:[flex:1_1_50%] min-[880px]:min-w-[320px] min-[880px]:max-w-[720px]"
+        : "flex w-[320px] shrink-0 flex-col gap-[12px] border-l border-[#f2f2f2] bg-white max-[799px]:absolute max-[799px]:inset-y-0 max-[799px]:right-0 max-[799px]:z-20 max-[799px]:w-[320px] max-[799px]:shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"}
     >
       {/* header：标题 + 暂停/运行中 + 更多 + 关闭（Figma 9897:2990） */}
       <header className="flex h-[48px] shrink-0 items-center gap-[10px] border-b border-[#f2f2f2] px-[16px] py-[8px]">
@@ -1200,7 +1397,9 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
           onClick={onClose}
           className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
         >
-          <img src="/assets/f802d.svg" alt="" className="size-[16px]" />
+          {/* 关闭图标用 0.88 的深色版：与左侧「暂停 / 更多」两个 20px 0.88 图标同色，
+              公共的 f802d.svg 是 0.6，只适合弹窗标题栏 */}
+          <img src="/assets/automation-close.svg" alt="" className="size-[16px]" />
         </button>
 
         {moreAnchor && (
@@ -1229,7 +1428,9 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
         )}
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-[24px] overflow-y-auto px-[4px] pb-[24px] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[rgba(0,0,0,0.2)] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-[8px]">
+      {/* 内容区（Figma 9908:45459）：左右 4px，Tab 与下方内容间距 12（= 侧栏 gap 12）；
+          详情 Tab 内部的各区块之间仍保持 24，由内层容器控制 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-[12px] overflow-y-auto px-[4px] pb-[24px] [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[rgba(0,0,0,0.2)] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-[8px]">
         {/* 详情 / 运行记录（Figma 9904:43410 Tag-2 Size=M） */}
         <div className="flex shrink-0 items-center gap-[16px] px-[12px]">
           {DETAIL_TABS.map(item => (
@@ -1246,11 +1447,15 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
         </div>
 
         {tab === "运行记录" ? (
-          <div className="flex flex-1 flex-col items-center pt-[64px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.38)]">
-            暂无运行记录
-          </div>
+          task.records?.length ? (
+            <RunRecordList records={task.records} />
+          ) : (
+            <div className="flex flex-1 flex-col items-center pt-[64px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.38)]">
+              暂无运行记录
+            </div>
+          )
         ) : (
-          <>
+          <div className="flex flex-col gap-[24px]">
             {/* 自动化任务名称（Figma 9899:37780 FormCell）：32 高描边框 + 右下字数 2/30 */}
             <div className="flex flex-col gap-[8px]">
               <div className="flex items-center gap-[8px] pl-[12px]">
@@ -1346,10 +1551,29 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
                   className="size-[16px] shrink-0"
                 />
               </button>
-              {advOpen && <AdvancedSettings />}
+              {/* 执行方式回写任务：勾选状态存在 task.newSessionEachRun 上 */}
+              {advOpen && (
+                <AdvancedSettings
+                  newSession={task.newSessionEachRun ?? false}
+                  onNewSessionChange={value => onChange({ newSessionEachRun: value })}
+                />
+              )}
             </div>
-          </>
+          </div>
         )}
+      </div>
+
+      {/* 底部按钮条（Figma 9925:54837）：内边距 16、右对齐、gap 24；
+          保存按钮 32 高 r4，禁用态 #99C3FF + 55% 白字，有改动后变 #1E63F5 可点 */}
+      <div className="flex shrink-0 items-center justify-end gap-[24px] p-[16px]">
+        <button
+          type="button"
+          disabled={!dirty}
+          onClick={() => setSavedSignature(signature)}
+          className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] transition-colors hover:bg-[#1554d1] disabled:cursor-not-allowed disabled:bg-[#99c3ff] disabled:text-[rgba(255,255,255,0.55)] disabled:hover:bg-[#99c3ff]"
+        >
+          保存
+        </button>
       </div>
     </aside>
   );
@@ -1358,12 +1582,14 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, spli
 // ============================================================================
 // 自动化任务列表页（Figma 9665:49113）
 // ============================================================================
-export function AutomationView({ tasks, onTasksChange, onLaunchChat, navCollapsed = false, onSidebarToggle, onNewChat }: {
+export function AutomationView({ tasks, onTasksChange, onLaunchChat, onRunTask, navCollapsed = false, onSidebarToggle, onNewChat }: {
   // 任务数据由 App 持有：点「创建」会跳到会话页，本组件随即卸载，
   // 任务必须活在上一层，AI 创建完成后回到这里才看得到。
   tasks: AutomationTask[];
   onTasksChange: (updater: (current: AutomationTask[]) => AutomationTask[]) => void;
-  onLaunchChat: (payload: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[] }) => void;
+  onLaunchChat: (payload: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[]; newSessionEachRun: boolean }) => void;
+  // 「立即执行」的落点会话（创建会话 or 新开会话）只有 App 知道：会话列表、导航切换都活在那一层
+  onRunTask: (task: AutomationTask) => void;
   // 本页桌面端没有全局顶栏（Figma 9937:57105），而收起导航后要用到的两个按钮
   // （「展开侧边栏」「新建对话」）原本只长在顶栏里，于是导航一收，两个入口一起消失。
   // 这里由 App 传入「导航已收起且顶栏确实不存在」的状态，在页面左上角补出与 ChatHeader
@@ -1404,10 +1630,20 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, navCollapse
     task.status === tab && task.title.toLowerCase().includes(query.trim().toLowerCase())
   );
 
+  // 删除自动化任务先弹风险确认（Figma 9877:63376），确认后才真正删除
+  const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null);
+  const deleteTask = deleteTaskId ? tasks.find(item => item.id === deleteTaskId) ?? null : null;
+  const confirmDeleteTask = () => {
+    if (deleteTaskId === null) return;
+    const id = deleteTaskId;
+    setDeleteTaskId(null);
+    onTasksChange(current => current.filter(item => item.id !== id));
+    if (detailId === id) setDetailId(null);
+  };
+
   const handleOperate = (label: string, task: AutomationTask) => {
     if (label === "删除") {
-      onTasksChange(current => current.filter(item => item.id !== task.id));
-      if (detailId === task.id) setDetailId(null);
+      setDeleteTaskId(task.id);
       return;
     }
     if (label === "暂停") {
@@ -1421,14 +1657,20 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, navCollapse
       toast.success("任务已开启", { id: "automation-task-status" });
       return;
     }
-    // 「编辑」在右侧详情栏里改；「立即执行 / 执行记录」为交互占位
+    // 「立即执行」整体交给 App：除了插运行记录，还要把执行结果写进落点会话
+    // （未勾选新会话 → 创建本任务的会话；勾选了 / 会话已被删 → 新开一个对话）
+    if (label === "立即执行") {
+      onRunTask(task);
+      return;
+    }
+    // 「编辑」在右侧详情栏里改；「执行记录」直接切到详情栏的运行记录 Tab
     if (label === "编辑" || label === "执行记录") setDetailId(task.id);
   };
 
   // 点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
-  // 由 AI 承接并完成创建 —— 排期与「就」的内容一起带进会话。
-  const handleCreate = (schedule: ScheduleState, prompt: string, attachments: ChatAttachment[]) => {
-    onLaunchChat({ schedule, prompt, attachments });
+  // 由 AI 承接并完成创建 —— 排期、「就」的内容与执行方式一起带进会话。
+  const handleCreate = (schedule: ScheduleState, prompt: string, attachments: ChatAttachment[], newSessionEachRun: boolean) => {
+    onLaunchChat({ schedule, prompt, attachments, newSessionEachRun });
   };
 
   return (
@@ -1534,6 +1776,67 @@ export function AutomationView({ tasks, onTasksChange, onLaunchChat, navCollapse
         )}
       </div>
       <CreateAutomationDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={handleCreate} />
+      <DeleteTaskDialog open={deleteTask !== null} taskTitle={deleteTask?.title ?? ""} onOpenChange={next => { if (!next) setDeleteTaskId(null); }} onConfirm={confirmDeleteTask} />
     </>
+  );
+}
+
+// ============================================================================
+// 删除自动化任务确认弹窗（Figma 9877:63376）：风险提示
+// 480 宽 / 8 圆角；标题行（24 删除图标 + 20/28 Medium「确定删除？」+ 右上关闭）、
+// 风险文案左缩进 48 与标题文字对齐、底部右对齐「取消 / 确定」。
+// 确认后由上层真正删除任务。
+// ============================================================================
+export function DeleteTaskDialog({ open, taskTitle, onOpenChange, onConfirm }: {
+  open: boolean;
+  taskTitle: string;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="w-[480px] max-w-[calc(100%-32px)] gap-0 overflow-hidden rounded-[8px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[calc(100%-32px)] [&>button]:hidden"
+      >
+        <div className="flex items-center gap-[8px] px-[16px] pt-[24px]">
+          <img src="/assets/dialog-delete-icon.svg" alt="" className="size-[24px] shrink-0" />
+          <DialogTitle className="min-w-0 flex-1 truncate text-[20px] font-medium leading-[28px] tracking-[0.001em] text-[rgba(0,0,0,0.88)]">
+            确定删除？
+          </DialogTitle>
+          <DialogClose asChild>
+            <button
+              type="button"
+              aria-label="关闭删除任务弹窗"
+              className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+            >
+              <img src="/assets/search-dialog-close.svg" alt="" className="size-[20px]" />
+            </button>
+          </DialogClose>
+        </div>
+        <p className="px-[16px] pb-0 pl-[48px] pt-[16px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+          确定要删除「{taskTitle}」吗？此操作无法撤销。删除后不再自动执行。
+        </p>
+        <div className="flex items-center justify-end gap-[24px] px-[16px] pb-[16px] pt-[16px]">
+          <DialogClose asChild>
+            <button
+              type="button"
+              className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"
+            >
+              取消
+            </button>
+          </DialogClose>
+          <DialogClose asChild>
+            <button
+              type="button"
+              onClick={onConfirm}
+              className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1]"
+            >
+              确定
+            </button>
+          </DialogClose>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

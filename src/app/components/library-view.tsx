@@ -211,7 +211,7 @@ export function LibraryView({ active, onAddToTask, projects, onUploadToProject, 
             <colgroup><col /><col className="library-col-source" /><col className="library-col-time" /><col className="library-col-size" /></colgroup>
             <thead><tr><th>文件名</th><th className="library-col-source">来源</th><th className="library-col-time">更新时间</th><th className="library-col-size">大小</th></tr></thead>
             <tbody>{visible.map(file => <tr key={file.id} data-menu-open={menu?.file.id === file.id || undefined}>
-              <td><div className="library-filename"><FileIcon icon={file.icon} /><SmallTip label={file.name} side="top" className="max-w-[calc(100vw-16px)] whitespace-normal break-all"><span tabIndex={0} className="min-w-0 flex-1 truncate">{file.name}</span></SmallTip></div>
+              <td><div className="library-filename"><FileIcon icon={file.icon} /><SmallTip label={file.name} side="top" className="max-w-[calc(100vw-16px)] whitespace-normal break-all"><span tabIndex={0} className="min-w-0 max-w-full truncate">{file.name}</span></SmallTip></div>
                 <button type="button" aria-label={`文件操作 ${file.name}`} aria-haspopup="menu" aria-expanded={menu?.file.id === file.id} onClick={event => { setProjectAnchor(null); setMenu(current => current?.file.id === file.id ? null : { file, anchor: event.currentTarget }); }} className="library-row-action"><img src="/assets/64110.svg" alt="" /></button>
               </td>
               <td className="library-col-source truncate" title={file.source}>{formatSource(file.source)}</td>

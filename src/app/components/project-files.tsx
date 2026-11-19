@@ -6,6 +6,7 @@ import { EXAMPLE_FILES } from "./attachment-picker";
 import { formatFileSize, getAttachmentExtension, getAttachmentValidationError } from "./attachment-tray";
 import { formatByExtension, matchFileFilters } from "./file-filter";
 import type { FileFormat, TimeFilter } from "./file-filter";
+import { SmallTip } from "./task-artifacts";
 
 export type SourceStatus = "enabled" | "disabled";
 export type ProjectFile = {
@@ -310,11 +311,11 @@ export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, onC
                   name: (
                     <div className="flex min-w-0 items-center gap-[8px]">
                       <span className="size-[16px] shrink-0"><span className={`inline-flex origin-top-left ${fileIcon(file.name) === "18532" ? "size-[24px] scale-[0.666667]" : ""}`}><img src={`/assets/${fileIcon(file.name)}.svg`} alt="" className="max-w-none" /></span></span>
-                      <span className="truncate" title={file.name}>{file.name}</span>
+                      <SmallTip label={file.name} side="top" className="max-w-[calc(100vw-16px)] whitespace-normal break-all"><span className="block min-w-0 truncate">{file.name}</span></SmallTip>
                     </div>
                   ),
                   status: <div className="flex items-center gap-[8px]"><img src={`/assets/${STATUS_ICONS[file.status]}.svg`} alt="" />{STATUS_LABELS[file.status]}</div>,
-                  owner: <span className="block truncate" title={file.owner}>{file.owner}</span>,
+                  owner: <SmallTip label={file.owner} side="top" className="max-w-[calc(100vw-16px)] whitespace-normal break-all"><span className="inline-block max-w-full truncate align-bottom">{file.owner}</span></SmallTip>,
                   time: new Date(file.createdAt).toLocaleDateString("sv-SE").replace(/-/g, "/"),
                   size: formatFileSize(file.blob ? file.blob.size : file.size),
                 };

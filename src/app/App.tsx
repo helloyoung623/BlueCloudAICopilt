@@ -42,7 +42,7 @@ import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
-import { AutomationView, AutomationDetailPanel, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, resolveAutomationIcon, automationIconSrc, type AutomationIcon, type AutomationTask, type ScheduleState } from "./components/automation-view";
+import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState } from "./components/automation-view";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,10 @@ type Message = {
   preset?: ProcessPreset;
   artifacts?: TaskArtifact[];
   // AI 回复里附带的自动化卡片（Figma 9925:54896）：点卡片打开右侧详情栏
-  automation?: { taskId: string; title: string; cycle: string; description: string; icon: AutomationIcon };
+  // status：卡片态的四种样式 —— 已启用/已暂停/已结束 跟任务状态同步，已删除 是任务被删后卡片留下的状态
+  // schedule / prompt：副标题「时间 · 任务内容」的原始两段（9925:54915），
+  // 时间从 schedule 实时算，详情栏改了周期或「就」的内容，卡片跟着变
+  automation?: { taskId: string; title: string; cycle: string; description: string; icon: AutomationIcon; status?: AutomationCardStatus; schedule?: ScheduleState; prompt?: string };
   // 自动化卡片下方的延展问题（Figma 9925:54837「延展问题」模块）
   followUps?: string[];
   // 用户消息的发送状态（Figma 9369:50206）：failed=发送失败（红色感叹号），info=信息提示（info 图标）
@@ -80,6 +83,33 @@ type OutlinePage = { id: number; pageLabel: string; title: string; content: Outl
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const isPPTIntent = (t: string) => /ppt|演示|幻灯|slide/i.test(t) || t.includes("PPT");
+
+// 聊天里说「创建/生成自动化任务」→ 不走普通问答，直接进自动化创建流程
+// （任务落到「自动化任务」列表，会话里出自动化卡片，与自动化页「创建」入口同一链路）
+const isAutomationIntent = (t: string) => t.includes("自动化任务") && /(创建|新建|设置|添加|生成)/.test(t);
+
+// 从自然语言里解析排期条件、任务名与「就」的内容：
+//   「创建一个自动化任务，每天早上汇总未读邮件」
+//   → 每天 09:00；任务名「每天早上汇总未读邮件」；任务内容「汇总未读邮件」
+const parseAutomationSchedule = (t: string): { schedule: ScheduleState; title: string; goal: string } => {
+  // 执行周期：只有明确写了「每周X」才算每周（注意别把「每天早上」的「每天」误判成周日）
+  const weekdayMatch = t.match(/每周([一二三四五六日天])/);
+  const cycle: ScheduleState["cycle"] = weekdayMatch ? "每周" : "每天";
+  const weekday = weekdayMatch ? `周${weekdayMatch[1].replace("天", "日")}` : "周六";
+  // 执行时刻：优先取明确的 HH:MM；否则按 早/午/晚 推断
+  const timeMatch = t.match(/([01]?\d|2[0-3]):([0-5]\d)/);
+  const time = timeMatch ? timeMatch[0] : t.includes("晚上") ? "20:00" : t.includes("中午") ? "12:00" : "09:00";
+  // 任务名：「自动化任务」后面的内容（去掉标点），没有就回退整句
+  const after = t.split(/自动化任务/)[1]?.replace(/^[，,。：:\s]+/, "").trim();
+  const title = after || t;
+  // 任务内容：把开头的时间描述剥掉（卡片副标题已有「每天 09:00」，避免重复）
+  const goal = title.replace(/^((每天|每日|每周[一二三四五六日天]?|每月|每年|工作日|早上|上午|中午|下午|晚上|凌晨)[，,、\s]*)+/, "").trim() || title;
+  return {
+    schedule: { cycle, weekday, monthDay: "15号", yearMonth: 11, yearDay: "5号", time, customInterval: 1, customUnit: "天", customMonthDay: "1号" },
+    title,
+    goal,
+  };
+};
 
 // 「2.9MB / 860KB」这类展示用文案 → 字节数（资料库文件上传到项目时复用）
 const SIZE_UNITS = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as const;
@@ -2664,7 +2694,7 @@ function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects,
 
 // ── views ─────────────────────────────────────────────────────────────────────
 
-const SUGGESTIONS = ["找出近一周的邮件", "请帮我起草一封给团队的邮件", "总结下智能助手项目邮件"];
+const SUGGESTIONS = ["找出近一周的邮件", "创建一个自动化任务，每天早上汇总未读邮件", "生成一份智能助手项目汇报PPT"];
 
 // 推荐问题入场：淡入 + 上浮，位移逐颗加大形成视差层次（只走 transform/opacity，不占布局）
 function suggestInStyle(shift: number, delay: number): CSSProperties {
@@ -3885,30 +3915,46 @@ function AutomationCard({ automation, onOpen, instant = false }: {
   // 历史消息（instant）：不播入场/扫光动画，避免切换对话回来像「重新加载」
   instant?: boolean;
 }) {
+  // 卡片四态（Figma 9908:45451）：已启用/已暂停 显示「时间 · 任务内容」；
+  // 已结束 只显示「已结束」；已删除 标题加删除线并降到 26% 黑，副标题换成「已删除」且整卡不再可点。
+  const deleted = automation.status === "已删除";
+  const ended = automation.status === "已结束";
+  // 副标题由 schedule + 「就」的内容拼成（Figma 9925:54915），不再把 cycle 和 description 硬拼
+  const subtitle = deleted
+    ? " 已删除"
+    : ended
+      ? " 已结束"
+      : automation.schedule
+        ? cardSubtitle(automation.schedule, automation.prompt ?? "", undefined, automation.title)
+        : `${automation.cycle} · ${automation.description}`;
   return (
     <>
       <style>{AUTOMATION_CARD_CSS}</style>
       <button
         type="button"
         data-automation-card={automation.taskId}
+        data-automation-status={automation.status ?? "已启用"}
+        disabled={deleted}
         onClick={() => onOpen?.(automation.taskId)}
-        className={`ac-bg relative flex w-full shrink-0 cursor-pointer items-center gap-[8px] overflow-hidden rounded-[8px] bg-[#f7f7f7] p-[8px] text-left transition-colors hover:bg-[#f2f2f2]${instant ? " ac-static" : ""}`}
+        className={`ac-bg relative flex w-full shrink-0 items-center gap-[8px] overflow-hidden rounded-[8px] bg-[#f7f7f7] p-[8px] text-left transition-colors ${deleted ? "cursor-default" : "cursor-pointer hover:bg-[#f2f2f2]"}${instant ? " ac-static" : ""}`}
       >
         <img src={automationIconSrc(automation.icon)} alt="" className="ac-icon size-[32px] shrink-0" />
         <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
-          <span className="ac-title truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+          <span className={`ac-title truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] ${deleted ? "text-[rgba(0,0,0,0.26)] line-through" : "text-[rgba(0,0,0,0.88)]"}`}>
             {automation.title}
           </span>
           <span className="ac-sub truncate font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)]">
-            {automation.cycle} · {automation.description}
+            {subtitle}
           </span>
         </div>
-        {/* 最后扫过一道高光 */}
-        <span
-          aria-hidden
-          className="ac-sweep pointer-events-none absolute inset-y-[-20%] left-0 w-[42%]"
-          style={{ backgroundImage: "linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.55) 34%, rgba(255,255,255,1) 52%, rgba(255,255,255,0.5) 70%, rgba(255,255,255,0) 100%)" }}
-        />
+        {/* 最后扫过一道高光（只在任务还活着的时候播） */}
+        {!deleted && !ended && (
+          <span
+            aria-hidden
+            className="ac-sweep pointer-events-none absolute inset-y-[-20%] left-0 w-[42%]"
+            style={{ backgroundImage: "linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.55) 34%, rgba(255,255,255,1) 52%, rgba(255,255,255,0.5) 70%, rgba(255,255,255,0) 100%)" }}
+          />
+        )}
       </button>
     </>
   );
@@ -4596,6 +4642,40 @@ export default function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   // 自动化任务由 App 持有：点「创建」会进入新会话，自动化页会卸载，任务不能跟着丢
   const [automationTasks, setAutomationTasks] = useState<AutomationTask[]>(INITIAL_AUTOMATION_TASKS);
+  // 任务状态一变，会话里的自动化卡片要跟着变（Figma 9908:45451）：
+  // 任务被删 → 卡片留在原地转「已删除」（标题加删除线、不再可点）；暂停/结束同理回写。
+  // 列表页、会话详情栏、创建流程三处都改任务，统一从 applyTasks 走，卡片状态就不会漏同步。
+  const automationTasksRef = useRef<AutomationTask[]>(automationTasks);
+  automationTasksRef.current = automationTasks;
+  const applyTasks = (updater: AutomationTask[] | ((current: AutomationTask[]) => AutomationTask[])) => {
+    const next = typeof updater === "function" ? updater(automationTasksRef.current) : updater;
+    automationTasksRef.current = next;
+    setAutomationTasks(next);
+    // 卡片可能挂在当前会话（messages）里，也可能躺在其它历史会话（history[].messages）里
+    const syncCards = (list: Message[]): Message[] => {
+      if (!list.some(message => message.automation)) return list;
+      let changed = false;
+      const mapped = list.map(message => {
+        const card = message.automation;
+        if (!card) return message;
+        const task = next.find(item => item.id === card.taskId);
+        const status = (task ? task.status : "已删除") as AutomationCardStatus;
+        if (card.status === status) return message;
+        changed = true;
+        return { ...message, automation: { ...card, status } };
+      });
+      return changed ? mapped : list;
+    };
+    setMessages(syncCards);
+    setHistory(current => (
+      current.some(item => item.messages.some(message => message.automation))
+        ? current.map(item => {
+          const messages = syncCards(item.messages);
+          return messages === item.messages ? item : { ...item, messages };
+        })
+        : current
+    ));
+  };
   // 会话里点自动化卡片 → 打开右侧 320 详情栏（Figma 9787:71282 / 9925:54837）
   const [chatAutomationId, setChatAutomationId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectItem[]>([]);
@@ -4952,7 +5032,7 @@ export default function App() {
     window.setTimeout(() => handleSend(retryText, target.attachments), 0);
   };
 
-  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = []) => {
+  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = [], options?: { automationRun?: boolean }) => {
     const text = (suggestion ?? input).trim();
     if (!text) return;
     if (sentAttachments.some(attachment => attachment.status !== "ready")) return;
@@ -4962,6 +5042,15 @@ export default function App() {
     setInput("");
     clearDraftAttachments(false);
     setPptGeneration(false);
+    // 「创建自动化任务」→ 直接进自动化创建流程（与自动化页「创建」同一链路），
+    // 周期条件从文案里解析；任务结果回写本会话（不另开新会话）。
+    // automationRun：自动化任务「立即执行」发的消息 —— 任务文案里常带「创建自动化任务」字样，
+    // 不能再被意图识别拦回去重新创建，必须当普通消息执行。
+    if (!options?.automationRun && isAutomationIntent(text)) {
+      const parsed = parseAutomationSchedule(text);
+      handleLaunchAutomationChat({ schedule: parsed.schedule, prompt: text, newSessionEachRun: false, title: parsed.title, goal: parsed.goal });
+      return;
+    }
     const historyTitle = text || sentAttachments[0]?.name || "附件会话";
     // create a history entry when starting a brand-new conversation
     const isNewConversation = activeHistoryId === null;
@@ -4980,8 +5069,14 @@ export default function App() {
     //   「模拟失败」→ 红色感叹号 + 发送失败/重试；「模拟提示」→ info 图标。
     // 二者作为独立消息展示，不进入 AI 流程；其余普通提问保持原样。
     const demoState: Message["sendState"] = text.includes("模拟失败") ? "failed" : text.includes("模拟提示") ? "info" : undefined;
+    // 新一轮消息进来前，先把之前的消息标记成「历史态」（instant）：
+    // 旧回答不该再播一次打字 / 卡片入场，否则新消息一落地，上面的 AI 回复看起来像重新加载了一遍。
+    // 仍在执行中的 process（thinking）跳过，避免把它切成"恢复进度"态。
+    const freezePrevious = (list: Message[]): Message[] => list.map(m => (
+      m.instant || (m.role === "process" && m.thinking) ? m : { ...m, instant: true }
+    ));
     if (demoState) {
-      const appendUser: (list: Message[]) => Message[] = prev => [...prev, { role: "user", text, attachments: sentAttachments, sendState: demoState }];
+      const appendUser: (list: Message[]) => Message[] = prev => [...freezePrevious(prev), { role: "user", text, attachments: sentAttachments, sendState: demoState }];
       if (isNewConversation) setMessages(appendUser); else applyToConversation(convId, appendUser);
       return;
     }
@@ -4990,7 +5085,7 @@ export default function App() {
       ? { role: "process", text: "", thinking: true, variant: "requirement" }
       : { role: "process", text: "", thinking: true, variant: "requirement", preset: buildQueryProcess(processText) };
     {
-      const appendRun: (list: Message[]) => Message[] = prev => [...prev, { role: "user", text, attachments: sentAttachments }, initialProcess];
+      const appendRun: (list: Message[]) => Message[] = prev => [...freezePrevious(prev), { role: "user", text, attachments: sentAttachments }, initialProcess];
       if (isNewConversation) setMessages(appendRun); else applyToConversation(convId, appendRun);
     }
 
@@ -5114,16 +5209,22 @@ export default function App() {
     setActiveProjectId(null);
     setSelectedProjectId(null);
   };
+  // 「立即执行」复用真实发送流程：handleSend 每次渲染重建，用 ref 拿最新一份，
+  // 避免切换会话后闭包里的 activeHistoryId 还是旧值
+  const sendRunRef = useRef<(text?: string, attachments?: ChatAttachment[], options?: { automationRun?: boolean }) => void>(() => {});
+  sendRunRef.current = handleSend;
   // 新建自动化任务弹窗点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
   // 由 AI 承接并完成创建。排期条件转成自然语言写进 AI 的过程与回复里。
-  const handleLaunchAutomationChat = ({ schedule, prompt, attachments }: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[] }) => {
+  const handleLaunchAutomationChat = ({ schedule, prompt, attachments, newSessionEachRun, title: titleOverride, goal: goalOverride }: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[]; newSessionEachRun: boolean; title?: string; goal?: string }) => {
     const summary = summarizeSchedule(schedule);
     const when = describeSchedule(schedule);
-    const title = prompt.split("\n")[0].trim() || "未命名自动化任务";
+    const title = titleOverride?.trim() || prompt.split("\n")[0].trim() || "未命名自动化任务";
+    // 「就」的内容：卡片副标题与任务详情用；从聊天文案进来时已剥掉「创建…／每天…」这类前缀
+    const goal = goalOverride?.trim() || prompt;
     const runId = ++activeRunId.current;
     const taskId = `automation-${Date.now()}`;
     // 图标不写死：按标题 + 「就」的内容去图标词表里分词匹配（icons.kubai.design）
-    const icon = resolveAutomationIcon(`${title} ${prompt}`);
+    const icon = resolveAutomationIcon(`${title} ${goal}`);
 
     // 离开自动化页 → 新会话
     setMobileNavigationOpen(false);
@@ -5174,7 +5275,7 @@ export default function App() {
           role: "ai",
           text: `已创建自动化任务「${title}」，${when} 自动执行。\n任务已启用，你可以在「自动化任务」里暂停、修改或查看执行记录。`,
           // 卡片就展示在回复下方，点它打开右侧详情（Figma 9925:54837）
-          automation: { taskId, title, cycle: summary.cycle, description: summary.description, icon },
+          automation: { taskId, title, cycle: summary.cycle, description: summary.description, icon, status: "已启用", schedule, prompt: goal },
           // 卡片下方的延展问题（Figma 9925:54837「延展问题」模块）
           followUps: [
             "这个任务的执行记录在哪里查看？",
@@ -5184,7 +5285,7 @@ export default function App() {
         });
         return next;
       });
-      setAutomationTasks(current => [
+      applyTasks(current => [
         {
           id: taskId,
           title,
@@ -5192,13 +5293,71 @@ export default function App() {
           description: summary.description,
           status: "已启用",
           schedule,
-          prompt,
+          prompt: goal,
           icon,
+          // 运行记录先铺一组示例（Figma 9908:45451），「立即执行」会再插新的
+          records: buildRunRecords(goal, schedule.time),
+          // 执行方式：勾选了「每次执行都开启新会话」→ 每次执行开新对话；
+          // 否则写回本会话（sourceConversationId）。会话被删时当次执行也开新对话。
+          newSessionEachRun,
+          sourceConversationId: id,
           ...(attachments?.length ? { attachments } : {}),
         },
         ...current,
       ]);
     }, 6200);
+  };
+
+  // 「立即执行」= 把任务内容当作一条消息发进落点会话，走真实的执行流程（发送 → 过程 → 回复），
+  // 不是再生成一张任务卡片。落点由执行方式决定：
+  //   勾选「每次执行都开启新会话」→ 每次执行都新开一个对话；
+  //   未勾选 → 写回创建本任务的会话（sourceConversationId）；
+  //   未勾选但那个会话已被删除 → 当次也新开一个对话兜底。
+  // 执行时会切到落点会话，直观看到任务真的跑了起来。
+  const handleRunAutomationTask = (task: AutomationTask) => {
+    const gotoConversation = (id: number) => {
+      setMobileNavigationOpen(false);
+      setStage("idle");
+      setProjectListOpen(false);
+      setAutomationOpen(false);
+      setArchiveOpen(false);
+      setLibraryOpen(false);
+      clearDraftAttachments(true);
+      setInput("");
+      setActiveProjectId(history.find(i => i.id === id)?.projectId ?? null);
+      setSelectedProjectId(null);
+      setActiveHistoryId(id);
+    };
+    const sourceExists = task.sourceConversationId !== undefined && history.some(item => item.id === task.sourceConversationId);
+    if (!task.newSessionEachRun && sourceExists && task.sourceConversationId !== undefined) {
+      const convId = task.sourceConversationId;
+      if (activeHistoryIdRef.current !== convId) {
+        // 切到创建会话：已有消息按历史处理（instant 不重播动画），任务消息接着往下发
+        const base = history.find(i => i.id === convId)?.messages ?? [];
+        gotoConversation(convId);
+        setMessages(base.map(m => ({ ...m, instant: true })));
+      }
+      // 正在看的就是创建会话：什么都不用动，消息直接续在后面
+    } else {
+      // 新开一个对话：标题取任务名，任务内容将作为首条消息发出
+      const id = nextHistoryId.current++;
+      setHistory(h => [{ id, title: task.title.slice(0, 20), createdAt: Date.now(), messages: [] }, ...h]);
+      gotoConversation(id);
+      setActiveProjectId(null);
+      setMessages([]);
+    }
+    applyTasks(current => current.map(item => item.id === task.id
+      ? {
+        ...item,
+        records: [makeRunRecord(item.prompt), ...(item.records ?? [])],
+        status: item.schedule.cycle === "仅一次" ? "已结束" : item.status,
+      }
+      : item));
+    toast.success("任务已开始执行", { id: "automation-task-status" });
+    // 等上面的切换（activeHistoryId）提交后再走真实发送流程；
+    // automationRun：跳过「创建自动化任务」意图识别（任务文案常含「创建」字样，不能又被拦去新建）；
+    // 附件随任务一起发出去：任务「就」里挂的文件就是这次执行的输入
+    window.setTimeout(() => sendRunRef.current(task.prompt, task.attachments ?? [], { automationRun: true }), 80);
   };
 
   // Figma 9625:49728：左侧导航「自动化任务」→ 自动化任务页（与项目页互斥，复用同一套组件/响应式）
@@ -5271,23 +5430,38 @@ export default function App() {
 
   useEffect(() => { setChatAutomationId(null); }, [activeHistoryId]);
 
+  // 会话页详情栏的删除确认（与自动化任务页同款弹窗，Figma 9877:63376）：
+  // 任务从列表移除，会话里的卡片留着转「已删除」（Figma 9908:45451），applyTasks 负责回写
+  const [deleteAutomationTaskId, setDeleteAutomationTaskId] = useState<string | null>(null);
+  const deleteAutomationTask = deleteAutomationTaskId ? automationTasks.find(item => item.id === deleteAutomationTaskId) ?? null : null;
+  const confirmDeleteAutomationTask = () => {
+    if (deleteAutomationTaskId === null) return;
+    const id = deleteAutomationTaskId;
+    setDeleteAutomationTaskId(null);
+    applyTasks(current => current.filter(item => item.id !== id));
+    setChatAutomationId(null);
+    toast.success("自动化任务已删除", { id: "automation-task-status" });
+  };
+
   const handleChatAutomationOperate = (label: string, task: AutomationTask) => {
     if (label === "删除") {
-      setAutomationTasks(current => current.filter(item => item.id !== task.id));
-      setChatAutomationId(null);
-      // 任务删掉后，会话里的卡片一并移除，避免点开是空的
-      setMessages(prev => prev.map(message => message.automation?.taskId === task.id ? { ...message, automation: undefined } : message));
-      toast.success("自动化任务已删除", { id: "automation-task-status" });
+      // 先弹风险确认（Figma 9877:63376），确认后才真正删除
+      setDeleteAutomationTaskId(task.id);
       return;
     }
     if (label === "暂停") {
-      setAutomationTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已暂停" } : item));
+      applyTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已暂停" } : item));
       toast.success("任务已暂停", { id: "automation-task-status" });
       return;
     }
     if (label === "启用") {
-      setAutomationTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已启用" } : item));
+      applyTasks(current => current.map(item => item.id === task.id ? { ...item, status: "已启用" } : item));
       toast.success("任务已开启", { id: "automation-task-status" });
+      return;
+    }
+    // 立即执行：与自动化页同一套——插运行记录 + 执行结果写进落点会话（创建会话 or 新开会话）
+    if (label === "立即执行") {
+      handleRunAutomationTask(task);
     }
   };
   const activeTaskProject = projects.find(project => project.id === activeTask?.projectId);
@@ -5421,7 +5595,7 @@ export default function App() {
           <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} onCreateProject={() => setLibraryCreateProjectOpen(true)} />
         </div>
         {libraryOpen ? null : automationOpen
-          ? <AutomationView tasks={automationTasks} onTasksChange={setAutomationTasks} onLaunchChat={handleLaunchAutomationChat} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
+          ? <AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
           : archiveOpen
           ? <ArchiveView
               projects={projects}
@@ -5574,6 +5748,12 @@ export default function App() {
           onOpenChange={open => { if (!open) setDeleteProjectId(null); }}
           onConfirm={handleConfirmDeleteProject}
         />
+        <DeleteTaskDialog
+          open={deleteAutomationTask !== null}
+          taskTitle={deleteAutomationTask?.title ?? ""}
+          onOpenChange={next => { if (!next) setDeleteAutomationTaskId(null); }}
+          onConfirm={confirmDeleteAutomationTask}
+        />
         {dragActive && (
           <div className="pointer-events-none absolute inset-0 z-[100] flex items-center justify-center bg-white/80 backdrop-blur-[1px]">
             <div className="flex flex-col items-center gap-[8px] rounded-[16px] border-2 border-dashed border-[#1e63f5] px-[40px] py-[32px] text-center text-[16px] text-[rgba(0,0,0,0.88)]">
@@ -5592,9 +5772,9 @@ export default function App() {
           onOperate={handleChatAutomationOperate}
           onChange={patch => {
             const targetId = chatAutomationTask.id;
-            setAutomationTasks(current => current.map(item => item.id === targetId ? { ...item, ...patch } : item));
-            // 卡片上的标题/周期跟着详情栏的修改同步，避免两处不一致
-            if (patch.title || patch.cycle || patch.description) {
+            applyTasks(current => current.map(item => item.id === targetId ? { ...item, ...patch } : item));
+            // 卡片上的标题/周期/内容跟着详情栏的修改同步，避免两处不一致
+            if (patch.title || patch.cycle || patch.description || patch.schedule || patch.prompt) {
               setMessages(prev => prev.map(message => message.automation?.taskId === targetId
                 ? {
                   ...message,
@@ -5603,6 +5783,8 @@ export default function App() {
                     title: patch.title ?? message.automation.title,
                     cycle: patch.cycle ?? message.automation.cycle,
                     description: patch.description ?? message.automation.description,
+                    schedule: patch.schedule ?? message.automation.schedule,
+                    prompt: patch.prompt ?? message.automation.prompt,
                   },
                 }
                 : message));
