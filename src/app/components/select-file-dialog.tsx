@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog";
 import { OperationMenu } from "./operation-menu";
-import { FILE_FORMATS, formatByExtension, matchFileFilters } from "./file-filter";
+import { FILE_FORMATS, FilterResetRow, formatByExtension, matchFileFilters } from "./file-filter";
 import type { FileFormat, TimeFilter } from "./file-filter";
 import { OUTLOOK_EMAILS, OUTLOOK_NARROW_BREAKPOINT, OutlookEmailList, emailBlob, emailDate, emailFileName, emailSearchText } from "./outlook-emails";
 import type { OutlookEmail } from "./outlook-emails";
@@ -275,6 +275,10 @@ export function SelectFileDialog({ initialTab, onClose, onConfirm }: {
                   </button>
                 );
               })}
+              {/* Figma 9773:69397：非默认筛选生效时出现重置入口；搜索词有独立清空按钮，不计入 */}
+              {(formats.length > 0 || timeFilter !== null || cloudKind !== "all") && (
+                <FilterResetRow onReset={() => { setFormats([]); setTimeFilter(null); setCloudKind("all"); }} />
+              )}
             </div>
           </OperationMenu>
         )}

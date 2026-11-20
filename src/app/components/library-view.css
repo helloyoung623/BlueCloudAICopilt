@@ -29,9 +29,12 @@
 }
 
 /* 页头（标题 + 搜索 + 筛选）复用项目页共享 ListPageHeader，样式与交互以项目页为准 */
-.library-filter-trigger { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: 4px; }
+.library-filter-trigger { position: relative; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: 4px; }
 .library-filter-trigger:hover { background: #f2f2f2; }
 .library-filter-trigger.library-filter-active { background: #ebf4ff; }
+/* 生效字段数角标：只出现在支持筛选且有条件的层级，数字按字段（格式/时间/状态/上传人）计 */
+.library-filter-badge { position: absolute; top: -4px; right: -4px; display: flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #1e63f5; color: #fff; font-size: 10px; line-height: 16px; font-weight: 500; }
+.library-filter-title { padding: 4px 8px 0; font-size: 14px; font-weight: 500; line-height: 22px; letter-spacing: 0.014px; color: rgba(0, 0, 0, 0.88); }
 
 /* 列表向右延伸抵消 .library-view 的右内边距 → 滚动条贴视口最右缘 */
 .library-list { display: flex; flex: 1; flex-direction: column; min-height: 0; margin-right: -24px; overflow: hidden; container: library-list / inline-size; }

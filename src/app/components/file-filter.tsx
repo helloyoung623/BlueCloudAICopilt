@@ -12,7 +12,7 @@ import "./library-view.css";
 // 文件筛选：资料库与项目「来源 / 产物」共用同一套字段与交互
 // 字段（Figma 10045:64279）：状态（仅来源：已启用 / 停用）+ 格式（文档 / 表格 / 其他）
 //   + 上传人（仅来源：我 / 其他人）+ 更新时间（近 7 天 / 近 30 天 / 自定义区间）
-export type FileFormat = "文档" | "表格" | "其他";
+export type FileFormat = "文档" | "表格" | "文件夹" | "其他";
 // 与 project-files 的 SourceStatus 同一口径，只是不带业务前缀
 export type FileStatus = "enabled" | "disabled";
 export const FILE_STATUS_OPTIONS: { value: FileStatus; label: string }[] = [
@@ -31,6 +31,8 @@ export const EMPTY_UPLOADER_FILTER: UploaderFilter = { mine: false, members: [] 
 export const SELF_OWNER = "我";
 
 export const FILE_FORMATS: FileFormat[] = ["文档", "表格", "其他"];
+// 附件面板的「格式」多一项「文件夹」（Figma 10069:64630）：云盘树里文件夹/站点也是可选条目
+export const CLOUD_FORMATS: FileFormat[] = ["文档", "表格", "文件夹", "其他"];
 
 // 「选择成员」里头像胶囊的底色：按名字做稳定映射，同一个人每次都是同一个颜色
 const OWNER_COLORS = ["#1e63f5", "#00bfc4", "#00c853", "#ff2442", "#ffcc00", "#9254ff"];
@@ -228,13 +230,35 @@ function DateRangeSheet({ value, open, onClose, onSelect }: {
   );
 }
 
+// 菜单底部「重置筛选项」行（Figma 9773:69397）：分隔线 + 刷新图标 + 文字。
+// 三套下拉筛选面板（资料库 / 项目来源产物 / 选择文件 / 附件）共用，
+// 由调用方按需渲染 —— 只有任一筛选项生效时才出现。
+export function FilterResetRow({ onReset }: { onReset: () => void }) {
+  return <>
+    <div aria-hidden className="mx-[8px] my-[4px] h-[1px] bg-[#f2f2f2]" />
+    <button type="button" role="menuitem" onClick={onReset}
+      className="flex h-[44px] w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#f2f2f2]">
+      <img src="/assets/msg-refresh.svg" alt="" className="size-[16px] shrink-0" />
+      <span>重置筛选项</span>
+    </button>
+  </>;
+}
+
 // 筛选按钮 + 菜单 + 日期浮层/抽屉，资料库与项目「来源 / 产物」共用，
 // 保证字段、选中态、hover、点击响应与键盘行为完全一致。
-export function FileFilterButton({ active = true, selectedFormats, onFormatsChange, timeFilter, onTimeFilterChange, statuses, onStatusesChange, uploader, onUploaderChange, uploaderOptions, ariaLabel = "筛选" }: {
+export function FileFilterButton({ active = true, selectedFormats, onFormatsChange, formatOptions = FILE_FORMATS, timeFilter, onTimeFilterChange, statuses, onStatusesChange, uploader, onUploaderChange, uploaderOptions, ariaLabel = "筛选", onOpenChange, menuTitle, showCount = false }: {
   // 页面切走后传 false，自动收起菜单与日期层，避免浮层残留在隐藏页面上
   active?: boolean;
   selectedFormats: FileFormat[];
   onFormatsChange: (next: FileFormat[]) => void;
+  // 格式分组的选项，默认资料库/项目的「文档/表格/其他」；附件面板传含「文件夹」的 CLOUD_FORMATS
+  formatOptions?: FileFormat[];
+  // 菜单开合回调：外层 Popover 需要据此拦截 Esc，先关筛选菜单而不是关掉整个面板
+  onOpenChange?: (open: boolean) => void;
+  // 菜单标题：SharePoint 站点内显示「筛选 · {站点名}」，提示条件只作用于当前站点
+  menuTitle?: string;
+  // 有生效条件时在图标右上角显示角标，数字=生效字段个数（附件面板各层级使用）
+  showCount?: boolean;
   timeFilter: TimeFilter;
   onTimeFilterChange: (next: TimeFilter) => void;
   // 「状态」这一组只有项目「来源」需要（文件有启用 / 停用态）；不传 onStatusesChange 时整组不渲染
@@ -267,6 +291,9 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
   const hasUploader = Boolean(uploader && onUploaderChange);
   const hasStatus = Boolean(statuses && onStatusesChange);
   const hasFilters = hasActiveFileFilters(selectedFormats, timeFilter, uploader, statuses);
+  // 角标数按「字段」计而不是按选项个数计：格式/更新时间/状态/上传人各算一个字段
+  const activeFieldCount = Number(selectedFormats.length > 0) + Number(timeFilter !== null)
+    + Number(Boolean(statuses?.length)) + Number(isUploaderFilterActive(uploader));
   // 展开「选择成员」：与「自定义」日期一致，点击触发、点击外部或 Esc 收起，
   // 打开期间保持显示（支持连续多选，选完一个人不会自动消失）。
   // 搜索框默认就是激活态（Figma 9421:107428 Status=激活）：先置 focused 让下划线/放大镜立刻变蓝，
@@ -300,6 +327,9 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
     closeCalendar();
     closeOwnerPicker();
   }, [active]);
+
+  // 菜单开合同步给外层：附件面板嵌在 Popover 里，需要知道筛选菜单是否展开来决定 Esc 的归属
+  useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
 
   useEffect(() => {
     if (!open) return;
@@ -347,6 +377,17 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
     closeCalendar();
   };
 
+  // 「重置筛选项」：把本面板负责的所有筛选字段一次性还原到默认值。
+  // 状态/上传人这两组是可选的（资料库/产物不传），没有就不重置。
+  const resetFilters = () => {
+    onFormatsChange([]);
+    onTimeFilterChange(null);
+    if (onStatusesChange) onStatusesChange([]);
+    if (onUploaderChange) onUploaderChange(EMPTY_UPLOADER_FILTER);
+    closeCalendar();
+    closeOwnerPicker();
+  };
+
   useEffect(() => {
     if (!calendarOpen || !calendarAnchor) return;
     const onResize = () => {
@@ -363,8 +404,9 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
     <button ref={buttonRef} type="button" aria-label={ariaLabel} aria-expanded={open} aria-haspopup="dialog" onClick={() => {
       setOpen(current => !current);
       closeCalendar();
-    }} className={`library-filter-trigger ${hasFilters ? "library-filter-active" : ""}`}>
+    }}       className={`library-filter-trigger ${hasFilters ? "library-filter-active" : ""}`}>
       <img src={hasFilters ? "/assets/88901.svg" : "/assets/filter-btn.svg"} alt="" />
+      {showCount && activeFieldCount > 0 && <span aria-hidden className="library-filter-badge">{activeFieldCount}</span>}
     </button>
     {open && <OperationMenu
       ref={menuRef}
@@ -374,14 +416,17 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
       role="dialog"
       aria-label={ariaLabel}
       className="library-surface library-filter-menu"
-      // 点菜单里其它任何选项（状态 / 格式 / 我 / 时间）都收起「选择成员」面板，
-      // 只保留摘要行（点击它是继续编辑成员）不被误关
+      // 点菜单里其它任何选项（状态 / 格式 / 我 / 时间）都收起「选择成员」面板与日期浮层，
+      // 只保留「自定义」时间行本身（点它是打开/编辑日期）和上传人摘要行（点它是继续编辑成员）不被误关。
+      // 两个浮层都挂在 body 上，点它们内部不会冒泡到菜单，所以这里只处理菜单内的点击。
       onClickCapture={event => {
         if (!(event.target instanceof Element)) return;
-        if (event.target.closest(".library-value-row")) return;
+        if (event.target.closest(".library-time-row")) return;
         closeOwnerPicker();
+        closeCalendar();
       }}
     >
+      {menuTitle && <div className="library-filter-title">{menuTitle}</div>}
       {/* 状态（Figma 10045:64279）：已启用 / 停用，多选；表头「状态」列的同一份口径 */}
       {hasStatus && statuses && onStatusesChange && <>
         <div className="library-filter-heading">状态</div>
@@ -390,7 +435,7 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
         </button>)}
       </>}
       <div className="library-filter-heading">格式</div>
-      {FILE_FORMATS.map(item => <button key={item} type="button" role="checkbox" aria-checked={selectedFormats.includes(item)} onClick={() => onFormatsChange(selectedFormats.includes(item) ? selectedFormats.filter(value => value !== item) : [...selectedFormats, item])} className="library-filter-item">
+      {formatOptions.map(item => <button key={item} type="button" role="checkbox" aria-checked={selectedFormats.includes(item)} onClick={() => onFormatsChange(selectedFormats.includes(item) ? selectedFormats.filter(value => value !== item) : [...selectedFormats, item])} className="library-filter-item">
         {item}{selectedFormats.includes(item) && <img src="/assets/ecd73.svg" alt="" />}
       </button>)}
       {hasUploader && uploader && onUploaderChange && <>
@@ -433,7 +478,7 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
       }} className="library-filter-item">
         近 {days}天{timeFilter?.kind === "recent" && timeFilter.days === days && <img src="/assets/ecd73.svg" alt="" />}
       </button>)}
-      <div className="library-value-row" data-selected={timeFilter?.kind === "custom" || undefined} data-editing={calendarOpen || undefined}>
+      <div className="library-value-row library-time-row" data-selected={timeFilter?.kind === "custom" || undefined} data-editing={calendarOpen || undefined}>
         <button type="button" aria-label={timeFilter?.kind === "custom" ? `自定义时间 ${displayDate(timeFilter.from)} 至 ${displayDate(timeFilter.to)}` : "自定义时间"} onClick={event => openCalendar(event.currentTarget)} className="library-filter-item library-value-text">
           <span className="truncate">{timeFilter?.kind === "custom" ? `${displayDate(timeFilter.from)} ~ ${displayDate(timeFilter.to)}` : "自定义"}</span>
         </button>
@@ -445,6 +490,8 @@ export function FileFilterButton({ active = true, selectedFormats, onFormatsChan
           </div>
         </> : <img aria-hidden src="/assets/fb6a4.svg" alt="" className="library-value-check" />}
       </div>
+      {/* Figma 9773:69397：任一筛选项生效后，菜单底部出现「重置筛选项」，点击一次性清空 */}
+      {hasFilters && <FilterResetRow onReset={resetFilters} />}
     </OperationMenu>}
     {open && ownerPickerOpen && uploader && onUploaderChange && (
       <OperationMenu

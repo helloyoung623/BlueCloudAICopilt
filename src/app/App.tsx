@@ -5009,9 +5009,10 @@ export default function App() {
         image,
         ...(image ? { previewUrl: URL.createObjectURL(file) } : {}),
         status: "uploading",
-        // 来源角标 / 自定义副标题（Outlook 邮件副标题=发件人）
+        // 来源角标 / 自定义副标题（Outlook 邮件副标题=发件人）/ 云盘条目唯一来源
         ...(meta?.badge ? { badge: meta.badge } : {}),
         ...(meta?.subtitle ? { subtitle: meta.subtitle } : {}),
+        ...(meta?.origin ? { origin: meta.origin } : {}),
       };
     });
 
@@ -5019,8 +5020,10 @@ export default function App() {
     const virtuals = files.flatMap((file, index): ChatAttachment[] => {
       const virtual = readVirtualFile(file);
       if (!virtual) return [];
-      // 去重：同名已存在则不再添加
-      if (attachmentsRef.current.some(item => item.name === file.name)) return [];
+      // 去重：有来源标识时按来源+条目判重（不同站点同名文件夹互不冲突）；否则沿用同名去重
+      if (attachmentsRef.current.some(item => virtual.origin
+        ? item.origin === virtual.origin
+        : item.name === file.name)) return [];
       if (attachmentsRef.current.length + added.length >= MAX_ATTACHMENTS) return [];
       const extension = getAttachmentExtension(file.name);
       return [{
@@ -5034,6 +5037,7 @@ export default function App() {
         icon: virtual.icon,
         subtitle: virtual.subtitle,
         ...(virtual.badge ? { badge: virtual.badge } : {}),
+        ...(virtual.origin ? { origin: virtual.origin } : {}),
       }];
     });
 

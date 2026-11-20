@@ -18,6 +18,8 @@ export type ChatAttachment = {
   subtitle?: string;
   // 图标右下角来源角标：OneDrive / SharePoint / Outlook，站点等虚拟条目无角标
   badge?: string;
+  // 云盘条目的唯一来源（来源 + 层级条目 id）：不同站点的同名文件互不冲突，勾选状态按它判定
+  origin?: string;
 };
 
 export const MAX_ATTACHMENTS = 10;
@@ -52,6 +54,7 @@ export type AttachmentMeta = {
   icon?: string;
   subtitle?: string;
   badge?: string;
+  origin?: string;
 };
 export function stampFileMeta(file: File, meta: AttachmentMeta) {
   Object.defineProperty(file, META_MARK, { value: meta, configurable: true });
@@ -61,17 +64,18 @@ export function readFileMeta(file: File): AttachmentMeta | null {
   return ((file as unknown as Record<string, unknown>)[META_MARK] as AttachmentMeta) ?? null;
 }
 // 云盘站点/文件夹等虚拟条目：无真实内容，跳过格式校验直接 ready。
-export function makeVirtualFile(name: string, icon: string, subtitle: string, badge?: string) {
+export function makeVirtualFile(name: string, icon: string, subtitle: string, badge?: string, origin?: string) {
   return stampFileMeta(new File([new Uint8Array(1)], name, { type: "application/octet-stream" }), {
     virtual: true,
     icon,
     subtitle,
     badge,
+    origin,
   });
 }
 export function readVirtualFile(file: File) {
   const meta = readFileMeta(file);
-  return meta?.virtual ? { icon: meta.icon, subtitle: meta.subtitle, badge: meta.badge } : null;
+  return meta?.virtual ? { icon: meta.icon, subtitle: meta.subtitle, badge: meta.badge, origin: meta.origin } : null;
 }
 
 export function getAttachmentValidationError(file: File): "format" | "size" | "empty" | null {
