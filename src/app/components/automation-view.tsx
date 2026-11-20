@@ -42,28 +42,47 @@ const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "�
 // 排期条件（弹窗与右侧详情栏共用）
 // state 化后：创建出来的任务能把用户填的周期条件原样带到列表与详情栏里。
 // ---------------------------------------------------------------------------
+// 周几 / 日期都是多选：chip 里选一个或多个，卡片副标题与会话文案按「、」拼起来。
+// 每周与「自定义·周」共用 weekdays；每月用 monthDays；「自定义·月」单独一份 customMonthDays。
 export type ScheduleState = {
   cycle: Cycle;
-  weekday: string;
-  monthDay: string;
+  weekdays: string[];
+  monthDays: string[];
   yearMonth: number;
   yearDay: string;
   time: string;
   customInterval: number;
   customUnit: CustomUnit;
-  customMonthDay: string;
+  customMonthDays: string[];
 };
-const DEFAULT_SCHEDULE: ScheduleState = {
-  cycle: "每天",
-  weekday: "周六",
-  monthDay: "15号",
-  yearMonth: 11,
-  yearDay: "5号",
-  time: "18:00",
-  customInterval: 1,
-  customUnit: "天",
-  customMonthDay: "1号",
-};
+const pad2 = (value: number) => String(value).padStart(2, "0");
+
+// 排期默认值一律拉系统当前时间：时刻 = 当前 HH:MM，周几 = 今天，几号 = 今天，
+// 每年 = 当前月/日。每次打开新建弹窗都重新取，保证预填的是「此刻」而不是写死值。
+export function buildDefaultSchedule(now = new Date()): ScheduleState {
+  const monthDay = `${now.getDate()}号`;
+  return {
+    cycle: "每天",
+    // JS getDay(): 0=周日…6=周六；WEEKDAYS 以周一开头，故 (day+6)%7
+    weekdays: [WEEKDAYS[(now.getDay() + 6) % 7]],
+    monthDays: [monthDay],
+    yearMonth: now.getMonth() + 1,
+    yearDay: monthDay,
+    time: `${pad2(now.getHours())}:${pad2(now.getMinutes())}`,
+    customInterval: 1,
+    customUnit: "天",
+    customMonthDays: [monthDay],
+  };
+}
+
+// 结束时间「指定时间」的预填日期 = 今天 + 1 个月（必须落在未来，否则任务一建即过期）。
+// 用 Date(year, month+1, day) 让月末自动归一（如 1/31 → 3/3），再取回合法日期。
+function buildDefaultEndDate(now = new Date()): CalendarDate {
+  const next = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+  return { year: next.getFullYear(), month: next.getMonth() + 1, day: next.getDate() };
+}
+
+const joinChoices = (values: string[]) => values.join("、");
 
 // 把排期条件压成卡片副标题里的「周期 · 说明」两段文本
 export function summarizeSchedule(schedule: ScheduleState): { cycle: string; description: string } {
@@ -72,17 +91,17 @@ export function summarizeSchedule(schedule: ScheduleState): { cycle: string; des
     case "仅一次":
       return { cycle: schedule.cycle, description: `${schedule.yearMonth}月${schedule.yearDay} ${time}` };
     case "每周":
-      return { cycle: schedule.cycle, description: `${schedule.weekday} ${time}` };
+      return { cycle: schedule.cycle, description: `${joinChoices(schedule.weekdays)} ${time}` };
     case "每月":
-      return { cycle: schedule.cycle, description: `${schedule.monthDay} ${time}` };
+      return { cycle: schedule.cycle, description: `${joinChoices(schedule.monthDays)} ${time}` };
     case "每年":
       return { cycle: schedule.cycle, description: `${schedule.yearMonth}月${schedule.yearDay} ${time}` };
     case "自定义": {
       const every = `每 ${schedule.customInterval} ${schedule.customUnit}`;
       // 分 / 小时只到单位为止（Figma 10000:58940），没有具体时刻
       if (schedule.customUnit === "分" || schedule.customUnit === "小时") return { cycle: schedule.cycle, description: every };
-      if (schedule.customUnit === "周") return { cycle: schedule.cycle, description: `${every} ${schedule.weekday} ${time}` };
-      if (schedule.customUnit === "月") return { cycle: schedule.cycle, description: `${every} ${schedule.customMonthDay} ${time}` };
+      if (schedule.customUnit === "周") return { cycle: schedule.cycle, description: `${every} ${joinChoices(schedule.weekdays)} ${time}` };
+      if (schedule.customUnit === "月") return { cycle: schedule.cycle, description: `${every} ${joinChoices(schedule.customMonthDays)} ${time}` };
       return { cycle: schedule.cycle, description: `${every} ${time}` };
     }
     default:
@@ -120,9 +139,9 @@ export function describeSchedule(schedule: ScheduleState): string {
     case "每天":
       return `每天 ${time}`;
     case "每周":
-      return `每${schedule.weekday} ${time}`;
+      return `每${joinChoices(schedule.weekdays)} ${time}`;
     case "每月":
-      return `每月${schedule.monthDay} ${time}`;
+      return `每月${joinChoices(schedule.monthDays)} ${time}`;
     case "每年":
       return `每年${schedule.yearMonth}月${schedule.yearDay} ${time}`;
     case "仅一次":
@@ -130,8 +149,8 @@ export function describeSchedule(schedule: ScheduleState): string {
     case "自定义": {
       const every = `每 ${schedule.customInterval} ${schedule.customUnit}`;
       if (schedule.customUnit === "分" || schedule.customUnit === "小时") return every;
-      if (schedule.customUnit === "周") return `${every}的${schedule.weekday} ${time}`;
-      if (schedule.customUnit === "月") return `${every}的${schedule.customMonthDay} ${time}`;
+      if (schedule.customUnit === "周") return `${every}的${joinChoices(schedule.weekdays)} ${time}`;
+      if (schedule.customUnit === "月") return `${every}的${joinChoices(schedule.customMonthDays)} ${time}`;
       return `${every} ${time}`;
     }
     default:
@@ -437,6 +456,83 @@ function SelectChip({ options, value, onChange, width = 120, forceBelow = false,
   );
 }
 
+// 多选 chip：周几 / 日期用。样式与 SelectChip 一致（灰底 chip + 下拉白卡 + 蓝色对勾，
+// 字重不改），唯一差别是最大宽度 268px：多选很多日期时不能撑出容器，超出省略，
+// 完整内容走 title / aria-label。逻辑：点选项只切换勾选、面板不收起，可一次选多个；
+// chip 文本按「、」拼接。
+function MultiSelectChip({ options, values, onChange, ariaLabel, width = 120, forceBelow = false, maxHeight }: {
+  options: readonly string[];
+  values: string[];
+  onChange: (values: string[]) => void;
+  ariaLabel: string;
+  width?: number;
+  forceBelow?: boolean;
+  maxHeight?: number;
+}) {
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  useDismissOnOutside(anchor, setAnchor);
+  const unlockScroll = useUnlockScrollInDialog();
+  const selected = values.filter(value => options.includes(value));
+  const label = selected.length ? joinChoices(selected) : "请选择";
+  const toggle = (option: string) => {
+    if (selected.includes(option)) {
+      // 至少保留一项，否则排期条件会变成空文案
+      if (selected.length === 1) return;
+      onChange(selected.filter(value => value !== option));
+    } else {
+      // 按 options 的顺序落库，保证「周一、周三」的展示顺序稳定
+      onChange(options.filter(value => value === option || selected.includes(value)));
+    }
+  };
+  return (
+    <Fragment>
+      <button
+        type="button"
+        aria-label={`${ariaLabel}：${selected.length ? joinChoices(selected) : "未选择"}`}
+        title={selected.length ? joinChoices(selected) : undefined}
+        onClick={event => setAnchor(current => current ? null : event.currentTarget)}
+        className="flex h-[32px] max-w-[268px] shrink-0 cursor-pointer items-center justify-center gap-[8px] rounded-[4px] bg-[#f7f7f7] px-[8px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#e6e6e6]"
+      >
+        <span className="min-w-0 truncate whitespace-nowrap">{label}</span>
+        <img src="/assets/automation-down-small.svg" alt="" className="size-[16px] shrink-0" />
+      </button>
+      {anchor && <OperationMenu
+        anchor={anchor}
+        gap={8}
+        forceBelow={forceBelow}
+        className="flex flex-col rounded-[12px] border border-[#f2f2f2] bg-white p-[4px] px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+        style={{ width }}
+        onClick={event => event.stopPropagation()}
+        onPointerDown={event => event.stopPropagation()}
+      >
+        <div
+          ref={unlockScroll}
+          className={`flex flex-col gap-[2px] py-[4px] ${maxHeight != null ? "-mr-[8px] pr-[8px]" : ""}`}
+          style={maxHeight != null ? { maxHeight, overflowY: "auto" } : undefined}
+        >
+          {options.map(option => {
+            const checked = selected.includes(option);
+            return (
+              <button
+                key={option}
+                type="button"
+                role="checkbox"
+                aria-checked={checked}
+                onClick={() => toggle(option)}
+                className={`flex h-[44px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] hover:bg-[#f2f2f2] ${checked ? "bg-white text-[rgba(0,0,0,0.88)]" : "text-[rgba(0,0,0,0.88)]"}`}
+                style={{ fontWeight: checked ? 500 : 400 }}
+              >
+                <span className="min-w-0 flex-1 truncate">{option}</span>
+                {checked && <img src="/assets/automation-check.svg" alt="" className="size-[16px] shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      </OperationMenu>}
+    </Fragment>
+  );
+}
+
 // 时间选择器（Figma 9988:58658 Time picker，实例见 9783:70644）：
 // 128×256 白底 r8、投影 0 0 8 rgba(0,0,0,.08)；内容左右各 16px，时/分两列各占 48；
 // 行高 48、可见 5 行，选中值固定在中间槽位（上下各 1px rgba(0,0,0,.1) 细线），
@@ -654,8 +750,9 @@ function TimezoneSelect({ value, onChange }: { value: string; onChange: (value: 
 // 排期条件 chip 组（弹窗 9665:49114 与右侧详情栏 9787:71282 共用）
 //   分/小时 → 自定义 每 1 小时（10000:58940，到单位 chip 为止）
 //   天    → 自定义 每 1 天 于 18:00（9891:71448）
-//   周    → 自定义 每 1 周 于 [周六] 的 18:00（9891:72000）
-//   月    → 自定义 每 1 月 于 [1号]  的 18:00（9891:72961）
+//   周    → 自定义 每 1 周 于 [周几（多选）] 的 18:00（9891:72000）
+//   月    → 自定义 每 1 月 于 [日期（多选）] 的 18:00（9891:72961）
+// 「每周 / 每月」后面的周几、日期以及「自定义」里的周/月均为多选；四个入口共用本节。
 // ============================================================================
 function ScheduleEditor({ schedule, onChange }: {
   schedule: ScheduleState;
@@ -688,13 +785,13 @@ function ScheduleEditor({ schedule, onChange }: {
       {cycle === "每天" && timeChip}
 
       {cycle === "每周" && <>
-        <SelectChip options={WEEKDAYS} value={schedule.weekday} onChange={weekday => onChange({ weekday })} width={120} />
+        <MultiSelectChip options={WEEKDAYS} values={schedule.weekdays} onChange={weekdays => onChange({ weekdays })} ariaLabel="选择周几" />
         {tail(true)}
       </>}
 
       {cycle === "每月" && <>
-        {/* 31 天单列长列表：固定在下方、最高 320px 可滚动 */}
-        <SelectChip options={DAYS} value={schedule.monthDay} onChange={monthDay => onChange({ monthDay })} width={120} forceBelow maxHeight={320} />
+        {/* 31 天单列长列表：固定在下方、最高 320px 可滚动，可勾选多天 */}
+        <MultiSelectChip options={DAYS} values={schedule.monthDays} onChange={monthDays => onChange({ monthDays })} ariaLabel="选择日期" forceBelow maxHeight={320} />
         {tail(true)}
       </>}
 
@@ -723,8 +820,8 @@ function ScheduleEditor({ schedule, onChange }: {
         {schedule.customUnit !== "分" && schedule.customUnit !== "小时" && <>
           <span className={muted}>于</span>
           {/* 周：追加星期 chip；月：追加日期 chip（31 天列表固定下方、最高 320 可滚动） */}
-          {schedule.customUnit === "周" && <SelectChip options={WEEKDAYS} value={schedule.weekday} onChange={weekday => onChange({ weekday })} width={120} />}
-          {schedule.customUnit === "月" && <SelectChip options={DAYS} value={schedule.customMonthDay} onChange={customMonthDay => onChange({ customMonthDay })} width={120} forceBelow maxHeight={320} />}
+          {schedule.customUnit === "周" && <MultiSelectChip options={WEEKDAYS} values={schedule.weekdays} onChange={weekdays => onChange({ weekdays })} ariaLabel="选择周几" />}
+          {schedule.customUnit === "月" && <MultiSelectChip options={DAYS} values={schedule.customMonthDays} onChange={customMonthDays => onChange({ customMonthDays })} ariaLabel="选择日期" forceBelow maxHeight={320} />}
           {tail(schedule.customUnit === "周" || schedule.customUnit === "月")}
         </>}
       </>}
@@ -736,17 +833,19 @@ function ScheduleEditor({ schedule, onChange }: {
 // 高级设置（Figma 9783:70644 / 9904:38056 / 9904:38242）
 // 结束时间（三选一）+ 执行方式（复选框）+ 时区下拉；弹窗与详情栏共用
 // ============================================================================
-function AdvancedSettings({ newSession, onNewSessionChange }: {
+function AdvancedSettings({ newSession, onNewSessionChange, executionTime }: {
   // 「每次执行都开启新会话」由外部（弹窗 / 详情栏）持有：弹窗创建时要带上，详情栏编辑时要回写任务
   newSession: boolean;
   onNewSessionChange: (value: boolean) => void;
+  // 「当」的执行时刻：指定时间的截止时刻默认跟它一致（都是当前时间派生）
+  executionTime: string;
 }) {
   const [endMode, setEndMode] = useState<EndMode>("永不");
-  const [endDate, setEndDate] = useState<CalendarDate>({ year: 2025, month: 7, day: 8 });
+  const [endDate, setEndDate] = useState<CalendarDate>(() => buildDefaultEndDate());
   const [endDateAnchor, setEndDateAnchor] = useState<HTMLButtonElement | null>(null);
   useDismissOnOutside(endDateAnchor, setEndDateAnchor);
-  // 指定时间的时刻（Figma 9904:38056 右侧 18:00 框）：与「当」用同一个时间滚轮
-  const [endTime, setEndTime] = useState("18:00");
+  // 指定时间的时刻（Figma 9904:38056 右侧框）：与「当」用同一个时间滚轮，默认跟执行时刻一致
+  const [endTime, setEndTime] = useState(executionTime);
   const [repeatTimes, setRepeatTimes] = useState<number>(10);
   const [timezone, setTimezone] = useState<string>(TIMEZONES[0]);
   return (
@@ -854,7 +953,7 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
   // newSessionEachRun：高级设置里「每次执行都开启新会话」的勾选结果，随任务保存
   onCreate: (schedule: ScheduleState, prompt: string, attachments: ChatAttachment[], newSessionEachRun: boolean) => void;
 }) {
-  const [schedule, setSchedule] = useState<ScheduleState>(DEFAULT_SCHEDULE);
+  const [schedule, setSchedule] = useState<ScheduleState>(() => buildDefaultSchedule());
   const [prompt, setPrompt] = useState("");
   // 「就」里的 + 与输入框同一套面板：菜单 → 文件选择/云盘面板 → 附件卡片
   const { attachments, addFiles, removeAttachment, clearAttachments } = useDraftAttachments();
@@ -865,6 +964,8 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
 
   useEffect(() => {
     if (open) {
+      // 每次打开都重新取系统当前时间作为预填值（时刻 / 周几 / 几号）
+      setSchedule(buildDefaultSchedule());
       setPrompt("");
       setAdvOpen(false);
       setNewSessionEachRun(false);
@@ -971,7 +1072,7 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
             </button>
           </div>
 
-          {advOpen && <AdvancedSettings newSession={newSessionEachRun} onNewSessionChange={setNewSessionEachRun} />}
+          {advOpen && <AdvancedSettings newSession={newSessionEachRun} onNewSessionChange={setNewSessionEachRun} executionTime={schedule.time} />}
         </div>
 
         {/* 操作区：padding 24px, flex-end, gap 24px, 上边框 */}
@@ -1631,6 +1732,7 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
                 <AdvancedSettings
                   newSession={draft.newSessionEachRun ?? false}
                   onNewSessionChange={value => patchDraft({ newSessionEachRun: value })}
+                  executionTime={draft.schedule.time}
                 />
               )}
             </div>

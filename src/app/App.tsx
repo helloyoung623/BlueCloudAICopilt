@@ -42,7 +42,7 @@ import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
-import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
+import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -93,9 +93,19 @@ const isAutomationIntent = (t: string) => t.includes("自动化任务") && /(创
 //   → 每天 09:00；任务名「每天早上汇总未读邮件」；任务内容「汇总未读邮件」
 const parseAutomationSchedule = (t: string): { schedule: ScheduleState; title: string; goal: string } => {
   // 执行周期：只有明确写了「每周X」才算每周（注意别把「每天早上」的「每天」误判成周日）
-  const weekdayMatch = t.match(/每周([一二三四五六日天])/);
-  const cycle: ScheduleState["cycle"] = weekdayMatch ? "每周" : "每天";
-  const weekday = weekdayMatch ? `周${weekdayMatch[1].replace("天", "日")}` : "周六";
+  // 周几与日期都是多选：「每周一三五」→ 周一/周三/周五；「每月1号、15号」→ 1号/15号
+  const WEEKDAY_ORDER = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const weekdayMatch = t.match(/每周([一二三四五六日天、，,\s]+)/);
+  const weekdays = weekdayMatch
+    ? [...new Set([...weekdayMatch[1].matchAll(/[一二三四五六日天]/g)].map(match => `周${match[0].replace("天", "日")}`))]
+      .sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b))
+    : [];
+  const cycle: ScheduleState["cycle"] = weekdays.length ? "每周" : "每天";
+  const monthDays = [...new Set([...t.matchAll(/(\d{1,2})\s*[号日]/g)]
+    .map(match => Number(match[1]))
+    .filter(day => day >= 1 && day <= 31))]
+    .sort((a, b) => a - b)
+    .map(day => `${day}号`);
   // 执行时刻：优先取明确的 HH:MM；否则按 早/午/晚 推断
   const timeMatch = t.match(/([01]?\d|2[0-3]):([0-5]\d)/);
   const time = timeMatch ? timeMatch[0] : t.includes("晚上") ? "20:00" : t.includes("中午") ? "12:00" : "09:00";
@@ -103,9 +113,13 @@ const parseAutomationSchedule = (t: string): { schedule: ScheduleState; title: s
   const after = t.split(/自动化任务/)[1]?.replace(/^[，,。：:\s]+/, "").trim();
   const title = after || t;
   // 任务内容：把开头的时间描述剥掉（卡片副标题已有「每天 09:00」，避免重复）
-  const goal = title.replace(/^((每天|每日|每周[一二三四五六日天]?|每月|每年|工作日|早上|上午|中午|下午|晚上|凌晨)[，,、\s]*)+/, "").trim() || title;
+  const rawGoal = title.replace(/^((每天|每日|每周[一二三四五六日天、，,\s]*|每月(?:[0-9]{1,2}\s*[号日][、，,\s]*)*|每年|工作日|早上|上午|中午|下午|晚上|凌晨)[，,、\s]*)+/, "");
+  // 时间已在副标题里展示，「就」的内容里再留一遍就成了「09:00 · 09:00 汇总…」
+  const goal = rawGoal.replace(/^\s*(?:[0-2]?\d:[0-5]\d)[，,、\s]*/, "").trim() || title;
+  // 没在话里指定的周几 / 几号 / 年月，兜底用系统当前时间（与新建弹窗的预填规则一致）
+  const fallback = buildDefaultSchedule();
   return {
-    schedule: { cycle, weekday, monthDay: "15号", yearMonth: 11, yearDay: "5号", time, customInterval: 1, customUnit: "天", customMonthDay: "1号" },
+    schedule: { cycle, weekdays: weekdays.length ? weekdays : fallback.weekdays, monthDays: monthDays.length ? monthDays : fallback.monthDays, yearMonth: fallback.yearMonth, yearDay: fallback.yearDay, time, customInterval: 1, customUnit: "天", customMonthDays: fallback.customMonthDays },
     title,
     goal,
   };
@@ -1484,7 +1498,7 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, mobile = false }: {
+function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
   onSearch: () => void;
   mobile?: boolean;
   history: HistoryItem[];
@@ -1492,6 +1506,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   projects: ProjectItem[];
   setProjects: React.Dispatch<React.SetStateAction<ProjectItem[]>>;
   onRequestDeleteProject?: (id: number) => void;
+  // 移交项目统一先弹确认（Figma 9244:31238），由 App 层持有弹窗
+  onRequestTransfer: (projectId: number, member: string) => void;
   // 删除任务（会话）统一先弹确认（Figma 459:38570），由 App 层持有弹窗
   onRequestDeleteTask: (id: number) => void;
   onClose: () => void;
@@ -1514,6 +1530,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   const [hoverProjectId, setHoverProjectId] = useState<number | null>(null);
   const [projectMenuId, setProjectMenuId] = useState<number | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  // 侧栏项目菜单「编辑项目信息」：与项目卡片/项目详情共用 CreateProjectDialog 编辑态
+  const [sidebarEditProjectId, setSidebarEditProjectId] = useState<number | null>(null);
   const [profileHovered, setProfileHovered] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -1531,6 +1549,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   const memoryPanelRef = useRef<HTMLDivElement>(null);
   const memoryPanelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const standaloneHistory = history.filter(item => item.projectId === undefined && !item.archived);
+  // 归档项目从侧栏「项目」分组移除（归档页仍可查看/取消归档），与项目列表页口径一致
+  const visibleSidebarProjects = projects.filter(project => !project.archived);
   const openMemoryPanel = () => {
     if (memoryPanelTimer.current) clearTimeout(memoryPanelTimer.current);
     setMemoryPanelOpen(true);
@@ -1578,6 +1598,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   }, [activeId, history]);
 
   const menuTask = menuId === null ? null : history.find(item => item.id === menuId) ?? null;
+  const menuProject = projectMenuId === null ? null : projects.find(item => item.id === projectMenuId) ?? null;
   const closeContextMenu = () => {
     setMenuId(null);
     setProjectMenuId(null);
@@ -1691,7 +1712,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
       </div>
 
       {/* projects */}
-      {projects.length > 0 && (
+      {visibleSidebarProjects.length > 0 && (
       <div className="shrink-0 w-[216px] pb-[16px] flex flex-col items-start">
         <div className="group relative m-0 flex w-full items-center p-0">
           <button
@@ -1710,7 +1731,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
               <path d={projectsExpanded ? "M4 6L8 10L12 6" : "M6 4L10 8L6 12"} stroke="currentColor" strokeWidth="1.333" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
-          {(!projectsExpanded || projects.length > 0) && (
+          {(!projectsExpanded || visibleSidebarProjects.length > 0) && (
             <button
               type="button"
               aria-label="新建项目"
@@ -1721,7 +1742,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
             </button>
           )}
         </div>
-        {projectsExpanded && projects.length === 0 && (
+        {projectsExpanded && visibleSidebarProjects.length === 0 && (
           <div className="flex w-full flex-col items-start p-[8px]">
             <button
               type="button"
@@ -1734,9 +1755,9 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
             </button>
           </div>
         )}
-        {projectsExpanded && projects.length > 0 && (
+        {projectsExpanded && visibleSidebarProjects.length > 0 && (
           <div className="flex w-full flex-col items-start">
-            {projects.map(project => {
+            {visibleSidebarProjects.map(project => {
               const projectTasks = history.filter(item => item.projectId === project.id && !item.archived);
               const isActiveProjectContext = activeProjectId === project.id;
               const isActiveProjectHome = isActiveProjectContext && activeId === null;
@@ -1969,41 +1990,48 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
       {standaloneHistory.length === 0 && <div className="flex-1" />}
 
       {/* context menu — fixed to escape overflow clip */}
-      {projectMenuId !== null && (
-        <OperationMenu anchor={menuAnchor} ref={menuRef} className="w-[192px] rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]">
-          <div className="flex flex-col py-[4px]">
-            {[
-              {
-                label: projects.find(item => item.id === projectMenuId)?.pinned ? "取消置顶" : "置顶此项目",
-                icon: svgSidebar.p3170f400,
-                action: () => setProjects(items => items.map(item => item.id === projectMenuId ? { ...item, pinned: !item.pinned } : item)),
-              },
-              { label: "编辑名称", icon: svgSidebar.p20221d00, action: () => undefined },
-              {
-                label: "删除",
-                icon: svgSidebar.p2ffde100,
-                action: () => {
-                  // 统一走确认弹窗：由 App 层弹「确定要删除此项目吗？」再执行删除
-                  if (onRequestDeleteProject) {
-                    onRequestDeleteProject(projectMenuId);
-                    return;
-                  }
-                  setProjects(items => items.filter(item => item.id !== projectMenuId));
-                  setHistory(items => items.filter(item => item.projectId !== projectMenuId));
-                },
-              },
-            ].map(item => (
-              <button key={item.label} type="button" onClick={() => { item.action(); closeContextMenu(); }}
-                className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]">
-                <svg width="16" height="16" viewBox="0 0 13.3333 13.3333" fill="none" className="shrink-0">
-                  <path d={item.icon} fill="black" fillOpacity="0.26" />
-                </svg>
-                <span className="whitespace-nowrap text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </OperationMenu>
+      {/* 侧栏项目菜单与项目页卡片菜单共用 ProjectActionsMenu，操作项保持一致（编辑项目信息/移交项目/归档/删除） */}
+      {menuProject && menuAnchor && (
+        <ProjectActionsMenu
+          project={menuProject}
+          anchor={menuAnchor}
+          innerRef={menuRef}
+          onClose={closeContextMenu}
+          onEdit={() => { setSidebarEditProjectId(menuProject.id); closeContextMenu(); }}
+          onTransfer={member => onRequestTransfer(menuProject.id, member)}
+          onArchive={() => {
+            const projectId = menuProject.id;
+            setProjects(items => items.map(item => item.id === projectId ? { ...item, archived: true } : item));
+            setHistory(items => items.map(item => item.projectId === projectId ? { ...item, archived: true } : item));
+            showArchiveToast(() => {
+              setProjects(items => items.map(item => item.id === projectId ? { ...item, archived: false } : item));
+              setHistory(items => items.map(item => item.projectId === projectId ? { ...item, archived: false } : item));
+            });
+            onOpenProjects();
+          }}
+          onDelete={() => {
+            // 统一走确认弹窗：由 App 层弹「确定要删除此项目吗？」再执行删除
+            if (onRequestDeleteProject) {
+              onRequestDeleteProject(menuProject.id);
+              return;
+            }
+            setProjects(items => items.filter(item => item.id !== menuProject.id));
+            setHistory(items => items.filter(item => item.projectId !== menuProject.id));
+          }}
+        />
       )}
+
+      {/* 侧栏「编辑项目信息」弹窗：编辑态预填当前项目，保存后 toast 反馈 */}
+      <CreateProjectDialog
+        open={sidebarEditProjectId !== null}
+        onOpenChange={open => { if (!open) setSidebarEditProjectId(null); }}
+        onCreate={() => {}}
+        editProject={sidebarEditProjectId === null ? null : projects.find(item => item.id === sidebarEditProjectId) ?? null}
+        onEdit={updates => {
+          setProjects(items => items.map(item => item.id === sidebarEditProjectId ? { ...item, name: updates.name, description: updates.description } : item));
+          toast.success("项目信息已更新");
+        }}
+      />
 
       {menuTask && (
         <TaskOperationsMenu
@@ -2901,6 +2929,152 @@ function TransferConfirmDialog({ member, onCancel, onConfirm }: {
   );
 }
 
+// 项目操作菜单：项目页卡片与侧栏「···」共用同一份操作项（编辑项目信息 / 移交项目 / 归档 / 删除），
+// 保证两处的字段、图标、移交子菜单与确认弹窗完全一致
+function ProjectActionsMenu({ project, anchor, gap = 0, onClose, onEdit, onArchive, onDelete, onTransfer, innerRef }: {
+  project: ProjectItem;
+  anchor: HTMLElement | null;
+  // 卡片内锚定用 0，仅菜单按钮（menuOnly）场景留 8px 视觉间隙
+  gap?: number;
+  onClose: () => void;
+  onEdit: () => void;
+  onArchive: () => void;
+  onDelete: () => void;
+  onTransfer?: (member: string) => void;
+  // 侧栏外点关闭依赖此 ref 判断「点击是否在菜单内」，卡片场景由自身 cardRef 兜底、可不传
+  innerRef?: React.Ref<HTMLDivElement>;
+}) {
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [memberSearch, setMemberSearch] = useState("");
+  const [memberSearchFocused, setMemberSearchFocused] = useState(false);
+  const closeTransferTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transferTriggerRef = useRef<HTMLButtonElement>(null);
+  const members = TRANSFER_MEMBERS.filter(member => member.includes(memberSearch.trim()));
+
+  useEffect(() => () => {
+    if (closeTransferTimer.current) clearTimeout(closeTransferTimer.current);
+  }, []);
+
+  const openTransfer = () => {
+    if (closeTransferTimer.current) clearTimeout(closeTransferTimer.current);
+    setTransferOpen(true);
+  };
+  const deferCloseTransfer = () => {
+    closeTransferTimer.current = setTimeout(() => setTransferOpen(false), 140);
+  };
+  const closeMenus = () => {
+    onClose();
+    setTransferOpen(false);
+  };
+
+  return (
+    <OperationMenu anchor={anchor}
+      ref={innerRef}
+      role="menu"
+      aria-label="项目操作"
+      gap={gap}
+      onKeyDown={event => {
+        if (event.key === "Escape") { closeMenus(); anchor?.focus(); }
+      }}
+      className="w-[192px] overflow-visible rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+    >
+      <div className="flex w-full flex-col py-[4px]">
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => { onEdit(); closeMenus(); }}
+          className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]"
+        >
+          <img src="/assets/e2b81.svg" alt="" className="shrink-0" />
+          <span className="font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">编辑项目信息</span>
+        </button>
+        <div className="relative" onMouseEnter={openTransfer} onMouseLeave={deferCloseTransfer}>
+          <button
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={transferOpen}
+            ref={transferTriggerRef}
+            onClick={openTransfer}
+            className={`flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left ${transferOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f7f7f7]"}`}
+          >
+            <img src="/assets/65325.svg" alt="" className="shrink-0" />
+            <span className="min-w-0 flex-1 font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">移交项目</span>
+            <img src="/assets/fb6a4.svg" alt="" className="shrink-0" />
+          </button>
+          {transferOpen && (
+            <OperationMenu submenu anchor={transferTriggerRef.current}
+              role="menu"
+              onMouseEnter={openTransfer}
+              onMouseLeave={deferCloseTransfer}
+              className="w-[208px] overflow-hidden rounded-[8px] bg-white shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+            >
+              <div className="bg-white px-[16px] py-[4px]">
+                <label className="flex h-[32px] items-center gap-[8px] border-b border-[#1e63f5]">
+                  <img src={memberSearchFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"} alt="" className="size-[16px] shrink-0" />
+                  <input
+                    autoFocus
+                    value={memberSearch}
+                    onChange={event => setMemberSearch(event.target.value)}
+                    onFocus={() => setMemberSearchFocused(true)}
+                    onBlur={() => setMemberSearchFocused(false)}
+                    placeholder="搜索"
+                    className="min-w-0 flex-1 bg-transparent font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
+                  />
+                  {memberSearch && (
+                    <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setMemberSearch("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
+                      <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
+                    </button>
+                  )}
+                </label>
+              </div>
+              <div className="max-h-[480px] overflow-y-auto px-[8px]">
+                {members.map((member, index) => (
+                  <button
+                    key={`${member}-${index}`}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { onTransfer?.(member); closeMenus(); }}
+                    className="flex w-[192px] cursor-pointer items-center rounded-[8px] px-[8px] py-[10px] hover:bg-[#f7f7f7]"
+                  >
+                    <span className="flex h-[24px] max-w-[144px] items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px]">
+                      <span className="flex size-[20px] shrink-0 items-center justify-center rounded-full bg-[#1e63f5] font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(255,255,255,0.98)]">
+                        {getAvatarInitial(member)}
+                      </span>
+                      <span className="truncate font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.6)]">
+                        {member}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+                {members.length === 0 && <p className="px-[8px] py-[10px] text-[14px] text-[rgba(0,0,0,0.38)]">没有匹配的成员</p>}
+              </div>
+            </OperationMenu>
+          )}
+        </div>
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => { onArchive(); closeMenus(); }}
+          className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]"
+        >
+          <img src="/assets/ae0d0.svg" alt="" className="shrink-0" />
+          <span className="font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">归档</span>
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => { onDelete(); closeMenus(); }}
+          className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]"
+        >
+          <img src="/assets/5ff6b.svg" alt="" className="shrink-0" />
+          <span className="font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">删除</span>
+        </button>
+      </div>
+    </OperationMenu>
+  );
+}
+
 function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfer, menuOnly = false }: {
   project: ProjectItem;
   onOpen: () => void;
@@ -2912,49 +3086,19 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
 }) {
   const [hovered, setHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [transferOpen, setTransferOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
-  const [memberSearch, setMemberSearch] = useState("");
-  const [memberSearchFocused, setMemberSearchFocused] = useState(false);
-  const [confirmMember, setConfirmMember] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
-  const closeTransferTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const transferTriggerRef = useRef<HTMLButtonElement>(null);
-  const members = TRANSFER_MEMBERS.filter(member => member.includes(memberSearch.trim()));
-
-  useEffect(() => () => {
-    if (closeTransferTimer.current) clearTimeout(closeTransferTimer.current);
-  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
     const closeOnOutsideClick = (event: MouseEvent) => {
       if (!cardRef.current?.contains(event.target as Node)) {
         setMenuOpen(false);
-        setTransferOpen(false);
       }
     };
     document.addEventListener("mousedown", closeOnOutsideClick);
     return () => document.removeEventListener("mousedown", closeOnOutsideClick);
   }, [menuOpen]);
-
-  const openTransfer = () => {
-    if (closeTransferTimer.current) clearTimeout(closeTransferTimer.current);
-    setTransferOpen(true);
-  };
-  const deferCloseTransfer = () => {
-    closeTransferTimer.current = setTimeout(() => setTransferOpen(false), 140);
-  };
-  const closeMenus = () => {
-    setMenuOpen(false);
-    setTransferOpen(false);
-  };
-
-  const menuItems = [
-    { label: "重命名", icon: "/assets/e2b81.svg", action: onRename },
-    { label: "归档", icon: "/assets/ae0d0.svg", action: onArchive },
-    { label: "删除", icon: "/assets/5ff6b.svg", action: onDelete },
-  ];
 
   return (
     <div ref={cardRef} className="relative min-w-0">
@@ -2962,7 +3106,6 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
         <button type="button" aria-label="项目操作" aria-haspopup="menu" aria-expanded={menuOpen} onClick={event => {
           setMenuAnchor(event.currentTarget);
           setMenuOpen(open => !open);
-          setTransferOpen(false);
         }} className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]">
           <img src="/assets/f8bb9.svg" alt="" />
         </button>
@@ -3003,7 +3146,6 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
               event.stopPropagation();
               setMenuAnchor(event.currentTarget);
               setMenuOpen(open => !open);
-              setTransferOpen(false);
             }}
             className="flex size-[24px] shrink-0 cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[rgba(0,0,0,0.06)]"
           >
@@ -3013,109 +3155,17 @@ function ProjectCard({ project, onOpen, onRename, onArchive, onDelete, onTransfe
       </div>}
 
       {menuOpen && (
-        <OperationMenu anchor={menuAnchor}
-          role="menu"
-          aria-label="项目操作"
+        <ProjectActionsMenu
+          project={project}
+          anchor={menuAnchor}
           gap={menuOnly ? 8 : 0}
-          onKeyDown={event => {
-            if (event.key === "Escape") { closeMenus(); menuAnchor?.focus(); }
-          }}
-          className="w-[192px] overflow-visible rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]"
-        >
-          <div className="flex w-full flex-col py-[4px]">
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => { onRename(); closeMenus(); }}
-              className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]"
-            >
-              <img src="/assets/e2b81.svg" alt="" className="shrink-0" />
-              <span className="font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">编辑项目信息</span>
-            </button>
-            <div className="relative" onMouseEnter={openTransfer} onMouseLeave={deferCloseTransfer}>
-              <button
-                type="button"
-                role="menuitem"
-                aria-haspopup="menu"
-                aria-expanded={transferOpen}
-                ref={transferTriggerRef}
-                onClick={openTransfer}
-                className={`flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left ${transferOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f7f7f7]"}`}
-              >
-                <img src="/assets/65325.svg" alt="" className="shrink-0" />
-                <span className="min-w-0 flex-1 font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">移交项目</span>
-                <img src="/assets/fb6a4.svg" alt="" className="shrink-0" />
-              </button>
-              {transferOpen && (
-                <OperationMenu submenu anchor={transferTriggerRef.current}
-                  role="menu"
-                  onMouseEnter={openTransfer}
-                  onMouseLeave={deferCloseTransfer}
-                  className="w-[208px] overflow-hidden rounded-[8px] bg-white shadow-[0_0_12px_rgba(0,0,0,0.08)]"
-                >
-                  <div className="bg-white px-[16px] py-[4px]">
-                    <label className="flex h-[32px] items-center gap-[8px] border-b border-[#1e63f5]">
-                      <img src={memberSearchFocused ? "/assets/search-dialog-search.svg" : "/assets/search-dialog-search-default.svg"} alt="" className="size-[16px] shrink-0" />
-                      <input
-                        autoFocus
-                        value={memberSearch}
-                        onChange={event => setMemberSearch(event.target.value)}
-                        onFocus={() => setMemberSearchFocused(true)}
-                        onBlur={() => setMemberSearchFocused(false)}
-                        placeholder="搜索"
-                        className="min-w-0 flex-1 bg-transparent font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
-                      />
-                      {memberSearch && (
-                        <button type="button" aria-label="清空搜索" onMouseDown={event => event.preventDefault()} onClick={() => setMemberSearch("")} className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center">
-                          <img src="/assets/f802d.svg" alt="" className="size-[12px]" />
-                        </button>
-                      )}
-                    </label>
-                  </div>
-                  <div className="max-h-[480px] overflow-y-auto px-[8px]">
-                    {members.map((member, index) => (
-                      <button
-                        key={`${member}-${index}`}
-                        type="button"
-                        role="menuitem"
-                        onClick={() => { setConfirmMember(member); closeMenus(); }}
-                        className="flex w-[192px] cursor-pointer items-center rounded-[8px] px-[8px] py-[10px] hover:bg-[#f7f7f7]"
-                      >
-                        <span className="flex h-[24px] max-w-[144px] items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px]">
-                          <span className="flex size-[20px] shrink-0 items-center justify-center rounded-full bg-[#1e63f5] font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(255,255,255,0.98)]">
-                            {getAvatarInitial(member)}
-                          </span>
-                          <span className="truncate font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.6)]">
-                            {member}
-                          </span>
-                        </span>
-                      </button>
-                    ))}
-                    {members.length === 0 && <p className="px-[8px] py-[10px] text-[14px] text-[rgba(0,0,0,0.38)]">没有匹配的成员</p>}
-                  </div>
-                </OperationMenu>
-              )}
-            </div>
-            {menuItems.slice(1).map(item => (
-              <button
-                key={item.label}
-                type="button"
-                role="menuitem"
-                onClick={() => { item.action(); closeMenus(); }}
-                className="flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] py-[11px] text-left hover:bg-[#f7f7f7]"
-              >
-                <img src={item.icon} alt="" className="shrink-0" />
-                <span className="font-['PingFang_SC:Regular'] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </OperationMenu>
+          onClose={() => setMenuOpen(false)}
+          onEdit={onRename}
+          onArchive={onArchive}
+          onDelete={onDelete}
+          onTransfer={onTransfer}
+        />
       )}
-      <TransferConfirmDialog
-        member={confirmMember}
-        onCancel={() => setConfirmMember(null)}
-        onConfirm={() => { if (confirmMember) onTransfer?.(confirmMember); setConfirmMember(null); }}
-      />
     </div>
   );
 }
@@ -3329,7 +3379,6 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
   const [memberSearch, setMemberSearch] = useState("");
   const [memberSearchFocused, setMemberSearchFocused] = useState(false);
   const [transferSubmenuOpen, setTransferSubmenuOpen] = useState(false);
-  const [confirmTransfer, setConfirmTransfer] = useState<{ id: number; member: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const transferTriggerRef = useRef<HTMLButtonElement>(null);
   const closeTransferTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3509,7 +3558,7 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
                         key={`${member}-${index}`}
                         type="button"
                         role="menuitem"
-                        onClick={() => { setConfirmTransfer({ id: menuProject.id, member }); closeMenus(); }}
+                        onClick={() => { onTransferProject(menuProject.id, member); closeMenus(); }}
                         className="flex w-[192px] cursor-pointer items-center rounded-[8px] px-[8px] py-[10px] hover:bg-[#f7f7f7]"
                       >
                         <span className="flex h-[24px] max-w-[144px] items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px]">
@@ -3562,11 +3611,6 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
         onCreate={() => {}}
         editProject={editingProject}
         onEdit={updates => { if (editingProject) onEditProject(editingProject.id, updates); setEditingProject(null); }}
-      />
-      <TransferConfirmDialog
-        member={confirmTransfer?.member ?? null}
-        onCancel={() => setConfirmTransfer(null)}
-        onConfirm={() => { if (confirmTransfer) onTransferProject(confirmTransfer.id, confirmTransfer.member); setConfirmTransfer(null); }}
       />
     </main>
   );
@@ -4720,6 +4764,10 @@ export default function App() {
   const [libraryCreateProjectOpen, setLibraryCreateProjectOpen] = useState(false);
   // 删除项目统一先弹确认窗（侧栏「···」、项目列表、项目详情、归档页共用）
   const [deleteProjectId, setDeleteProjectId] = useState<number | null>(null);
+  // 移交项目统一先弹确认窗（Figma 9244:31238）：由 App 层持有，避免弹窗随操作菜单一起卸载。
+  // 侧栏「···」、项目卡片、项目详情、项目列表、归档页五个入口都先走这里，确定后才真正移交。
+  const [transferConfirm, setTransferConfirm] = useState<{ projectId: number; member: string } | null>(null);
+  const requestTransfer = (projectId: number, member: string) => setTransferConfirm({ projectId, member });
   // 删除任务（会话）统一确认弹窗（Figma 459:38570）
   const [deleteChatTaskId, setDeleteChatTaskId] = useState<number | null>(null);
   const [activeHistoryId, setActiveHistoryId] = useState<number | null>(null);
@@ -5692,6 +5740,7 @@ export default function App() {
           onSelectProject={handleSelectProject}
           onRequestDeleteProject={handleRequestDeleteProject}
           onRequestDeleteTask={handleRequestDeleteChatTask}
+          onRequestTransfer={requestTransfer}
           onSearch={() => setSearchOpen(true)}
         />
   );
@@ -5743,10 +5792,7 @@ export default function App() {
               showPanelToggle={!detailCompact}
               onTogglePanel={() => setProjectConfigurationOpen(open => !open)}
               onEdit={updates => setProjects(current => current.map(project => project.id === activeProject.id ? { ...project, name: updates.name, description: updates.description } : project))}
-              onTransfer={owner => {
-                setProjects(current => current.map(project => project.id === activeProject.id ? { ...project, owner } : project));
-                toast.success(`本地示例：项目已移交给${owner}`);
-              }}
+              onTransfer={owner => requestTransfer(activeProject.id, owner)}
               onArchive={() => {
                 const projectId = activeProject.id;
                 setProjects(current => current.map(project => project.id === projectId ? { ...project, archived: true } : project));
@@ -5796,10 +5842,7 @@ export default function App() {
                 setProjects(current => current.map(project => project.id === id ? { ...project, name: updates.name, description: updates.description } : project));
                 toast.success("项目信息已更新");
               }}
-              onTransferProject={(id, member) => {
-                setProjects(current => current.map(project => project.id === id ? { ...project, owner: member } : project));
-                toast.success(`本地示例：项目已移交给${member}`);
-              }}
+              onTransferProject={requestTransfer}
               onDeleteProject={handleRequestDeleteProject}
               onSelectTask={id => { setArchiveOpen(false); handleSelectHistory(id); }}
               onUnarchiveTask={id => {
@@ -5829,10 +5872,7 @@ export default function App() {
                 });
               }}
               onDeleteProject={handleRequestDeleteProject}
-              onTransferProject={(id, member) => {
-                setProjects(current => current.map(project => project.id === id ? { ...project, owner: member } : project));
-                toast.success(`本地示例：项目已移交给${member}`);
-              }}
+              onTransferProject={requestTransfer}
             />
           : messages.length > 0
             ? <ChatView
@@ -6010,6 +6050,19 @@ export default function App() {
       />
     </div>
     <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
+    {/* Figma 9244:31238：选人后统一在 App 层弹确认窗，点确定才真正移交 */}
+    <TransferConfirmDialog
+      member={transferConfirm?.member ?? null}
+      onCancel={() => setTransferConfirm(null)}
+      onConfirm={() => {
+        if (transferConfirm) {
+          const { projectId, member } = transferConfirm;
+          setProjects(current => current.map(project => project.id === projectId ? { ...project, owner: member } : project));
+          toast.success(`本地示例：项目已移交给${member}`);
+        }
+        setTransferConfirm(null);
+      }}
+    />
     {/* 导入面板只在「项目」「资料库」两个导航内出现；切到其他页面仅隐藏，记录与进度保留 */}
     {importTasks && (libraryOpen || projectListOpen || activeProjectId !== null) && (
       <ImportTaskPanel
