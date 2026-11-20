@@ -2,7 +2,7 @@
   "title": "21V",
   "description": "Transforms design files into accurate, editable web layouts to streamline development and ensure design fidelity for designers and developers.",
   "robots": {
-    "index": false
+    "index": true
   },
   "icons": {
     "icon": "/.figma/make/favicon.png"
