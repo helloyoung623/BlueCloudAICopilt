@@ -131,7 +131,7 @@ export function ProjectMembersDialog({ members, onClose, onSave }: {
               {matches.map(member => {
                 const selected = draft.some(item => item.id === member.id);
                 return (
-                  <button key={member.id} type="button" aria-label={`选择${member.name}`} aria-pressed={selected} onClick={() => setDraft(current => selected ? current.filter(item => item.id !== member.id) : [...current, member])} className="flex h-[44px] w-full items-center justify-between rounded-[8px] px-[8px] py-[10px] hover:bg-[#f7f7f7]">
+                  <button key={member.id} type="button" aria-label={`选择${member.name}`} aria-pressed={selected} onClick={() => setDraft(current => selected ? current.filter(item => item.id !== member.id) : [...current, { ...member, role: "使用者" }])} className="flex h-[44px] w-full items-center justify-between rounded-[8px] px-[8px] py-[10px] hover:bg-[#f7f7f7]">
                     <ProjectMemberTag member={member} />
                     {selected && <img src="/assets/ecd73.svg" alt="" />}
                   </button>
@@ -161,7 +161,10 @@ export function ProjectMembersDialog({ members, onClose, onSave }: {
       {roleMenu && (
         <OperationMenu ref={roleMenuRef} role="menu" anchor={roleMenu.anchor} className="w-[168px] rounded-[12px] border border-[#f2f2f2] bg-white p-[8px] shadow-[0_0_12px_rgba(0,0,0,0.08)]">
           {(["管理员", "使用者"] as const).map(role => (
-            <button key={role} type="button" role="menuitem" onClick={() => { setDraft(current => current.map(member => member.id === roleMenu.id ? { ...member, role } : member)); setRoleMenu(null); }} className="w-full rounded-[8px] px-[8px] py-[11px] text-left text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)] hover:bg-[#f7f7f7]">{role}</button>
+            <button key={role} type="button" role="menuitemradio" aria-checked={draft.find(member => member.id === roleMenu.id)?.role === role} onClick={() => { setDraft(current => current.map(member => member.id === roleMenu.id ? { ...member, role } : member)); setRoleMenu(null); }} className="flex w-full items-center justify-between rounded-[8px] px-[8px] py-[11px] text-left text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)] hover:bg-[#f7f7f7]">
+              {role}
+              {draft.find(member => member.id === roleMenu.id)?.role === role && <img src="/assets/ecd73.svg" alt="" />}
+            </button>
           ))}
         </OperationMenu>
       )}

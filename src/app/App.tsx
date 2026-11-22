@@ -2881,7 +2881,7 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
   );
 }
 
-const TRANSFER_MEMBERS = ["吴易奚", "吴易奚", "吴易奚", "吴易奚", "孙雨薇"];
+const TRANSFER_MEMBERS = ["李文博", "王磊", "张晓彤", "刘洋", "陈思远", "赵敏"];
 
 // Figma 9244:31238「移交项目」确认弹窗：选择人员后先确认，点确定才真正移交
 function TransferConfirmDialog({ member, onCancel, onConfirm }: {
