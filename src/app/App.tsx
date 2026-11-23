@@ -15,6 +15,8 @@ import imgStyle2 from "@/imports/需求确认-1/f49f63a62b02589f759f36fc0961c670
 import imgStyle3 from "@/imports/需求确认-1/9b2936619dc23e46dde47ce229cadb09c1b911ab.png";
 import { PptPanel, PptResultMessage } from "./components/ppt-result";
 import { RadarArcLoader } from "./components/radar-arc-loader";
+import { RichText, RICH_TEXT_CSS } from "./components/rich-text";
+import { OneDriveCard, OutlookCard, RESULT_CARD_CSS, type OneDriveFile, type OutlookMail, type QuotePayload } from "./components/result-cards";
 import { ArtifactFileCard, TaskArtifactsButton } from "./components/task-artifacts";
 import type { LocatedTaskArtifact, TaskArtifact } from "./components/task-artifacts";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./components/ui/dialog";
@@ -25,7 +27,7 @@ import { AddContentMenu } from "./components/add-content-menu";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
-import { AttachmentTray, MessageAttachments, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, readFileMeta, readVirtualFile } from "./components/attachment-tray";
+import { AttachmentTray, MessageAttachments, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, makeVirtualFile, readFileMeta, readVirtualFile } from "./components/attachment-tray";
 import type { ChatAttachment } from "./components/attachment-tray";
 import { AttachmentPicker } from "./components/attachment-picker";
 import type { AttachmentSource } from "./components/attachment-picker";
@@ -51,6 +53,14 @@ type ProcessPreset = { goal: string; running: string; actions: { label: string; 
 type Message = {
   role: "user" | "ai" | "process" | "result";
   text: string;
+  // AI 回答富文本（Figma 2759:15863）：html 为不可信源，渲染前经白名单解析；
+  // plainText 供「复制」使用；text 仍是打字机用的短引导语，必须非空以推进 revealed。
+  html?: string;
+  plainText?: string;
+  animateRich?: boolean;
+  // 搜索结果卡片（Figma OneDrive 7297:71832 / Outlook 7287:69977）
+  oneDriveFiles?: OneDriveFile[];
+  outlookMails?: OutlookMail[];
   attachments?: ChatAttachment[];
   thinking?: boolean;
   variant?: ProcessVariant;
@@ -152,6 +162,49 @@ const DEFAULT_FOLLOW_UPS = [
   "帮我总结一下这段内容的要点",
   "能不能再展开讲讲？",
   "有没有相关的其他案例？",
+];
+
+// 富文本示例（Figma 2759:15863「HTML」）：发「富文本示例」触发展示，覆盖全部标签。
+// 末尾两条是安全探针：script 与 onerror 必须被白名单过滤，不得执行。
+const RICH_TEXT_SAMPLE_LEAD = "已为你整理相关内容，要点如下：";
+const RICH_TEXT_SAMPLE_HTML = [
+  "<h1>蓝云 AI 富文本样式一览</h1>",
+  "<p>这是一段<strong>加粗</strong>与<del>删除线</del>混排的正文，还有行内代码 <code>const answer = true</code> 以及一个<a href=\"https://example.com\">示例链接</a>。</p>",
+  "<h2>标题层级</h2><h3>第三级</h3><h4>第四级</h4><h5>第五级</h5><h6>第六级</h6>",
+  "<hr>",
+  "<blockquote><p>引用块内部的正文仍使用正文样式，首段没有额外的上边距。</p><p>第二段引用。</p></blockquote>",
+  "<h2>列表</h2>",
+  "<ol><li>一级数字项<ol><li>二级字母项<ol><li>三级罗马项<ol><li>四级数字项</li></ol></li></ol></li></ol></li><li>另一个一级项</li></ol>",
+  "<ul><li>无序项一</li><li>无序项二</li></ul>",
+  "<h2>数据表</h2>",
+  "<table><thead><tr><th>项目</th><th>状态</th><th data-align=\"right\">数量</th></tr></thead><tbody><tr><td>文档</td><td>已完成</td><td>128</td></tr><tr><td>表格</td><td>进行中</td><td>16</td></tr></tbody></table>",
+  "<h2>代码块</h2>",
+  "<pre><code class=\"language-js\">// 这是注释\nfunction greet(name) {\n  const greeting = \"hello\";\n  const count = 42;\n  return greeting + name + count;\n}\nconsole.log(greet(\"蓝云\"));</code></pre>",
+  "<p>插图示例：</p><img src=\"/assets/b7105.png\" alt=\"示例图片\" width=\"320\">",
+  "<script>window.__ACRT_XSS__ = 1</script>",
+  "<img src=\"x\" onerror=\"window.__ACRT_XSS__ = 2\" alt=\"安全探针\">",
+].join("\n");
+const RICH_TEXT_SAMPLE_PLAIN = [
+  "蓝云 AI 富文本样式一览",
+  "这是一段加粗与删除线混排的正文，还有行内代码 const answer = true 以及一个示例链接。",
+  "标题层级 / 第三级 / 第四级 / 第五级 / 第六级",
+  "引用块内部的正文仍使用正文样式，首段没有额外的上边距。第二段引用。",
+  "列表：1. 一级数字项  a. 二级字母项  i. 三级罗马项  1. 四级数字项  2. 另一个一级项；无序项一、无序项二。",
+  "数据表：项目 / 状态 / 数量；文档 / 已完成 / 128；表格 / 进行中 / 16。",
+  "代码块：// 这是注释 / function greet(name) / const greeting = hello / const count = 42 / return greeting + name + count / console.log(greet(蓝云))。",
+  "插图示例。",
+].join("\n");
+
+// 搜索结果卡片示例（Figma 7279:64072 / 6103:19374）：发「文件卡片」/「邮件卡片」触发
+const ONE_DRIVE_SAMPLE: OneDriveFile[] = [
+  { name: "2026 产品规划资料库", meta: "张三于 7 月 1 日修改 · 36 MB", kind: "site", highlight: "包含年度 roadmap、产品路线图与评审纪要" },
+  { name: "Q3 销售预测.xlsx", meta: "李四于 7 月 3 日修改 · 1.2 MB", kind: "xlsx", highlight: "汇总华东、华南区域 Q3 营收与成本预测" },
+  { name: "产品战略发布会.pptx", meta: "王五于 7 月 2 日修改 · 8.4 MB", kind: "pptx", highlight: "包含新产品定位、发布节奏与关键里程碑" },
+];
+const OUTLOOK_SAMPLE: OutlookMail[] = [
+  { sender: "陈思远", title: "关于 2026 产品路线图评审的会议纪要", body: "附件是本周评审的最终版路线图，请查收并确认 Q3 里程碑。", time: "2026年7月3日 10:24", flagged: true, highlight: "请在本周五前确认 Q3 里程碑", avatarColor: 0 },
+  { sender: "林悦", title: "Q3 销售预测数据已更新", body: "华东与华南区域数据已合并，请查看附件中的预测表。", time: "2026年7月2日 16:08", highlight: "华东区域预测较上季度增长 12%", avatarColor: 1 },
+  { sender: "王建国", title: "产品发布会物料最终确认", body: "主视觉和演示文稿已定稿，麻烦确认后安排上传。", time: "2026年7月1日 09:41", avatarColor: 2 },
 ];
 
 // build an execution process whose copy reflects the user's actual request
@@ -4021,15 +4074,15 @@ const AUTOMATION_CARD_CSS = `
 @keyframes ac-title{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes ac-sub{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes ac-sweep{0%{opacity:0;transform:translateX(-90%) skewX(-14deg)}22%{opacity:1}80%{opacity:.9}100%{opacity:0;transform:translateX(340%) skewX(-14deg)}}
-@keyframes ac-actions{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
+@keyframes ac-auto-actions{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
 .ac-bg{animation:ac-bg .24s cubic-bezier(.33,1,.68,1) both}
 .ac-icon{animation:ac-icon .30s cubic-bezier(.22,1.25,.42,1) .16s both;transform-origin:left center}
 .ac-title{animation:ac-title .24s cubic-bezier(.33,1,.68,1) .30s both}
 .ac-sub{animation:ac-sub .24s cubic-bezier(.33,1,.68,1) .40s both}
 .ac-sweep{animation:ac-sweep .78s cubic-bezier(.4,0,.2,1) .60s both}
-.ac-actions{animation:ac-actions .22s cubic-bezier(.33,1,.68,1) both}
+.ac-auto-actions{animation:ac-auto-actions .22s cubic-bezier(.33,1,.68,1) both}
 @media (prefers-reduced-motion: reduce){
-  .ac-bg,.ac-icon,.ac-title,.ac-sub,.ac-actions{animation:none;opacity:1;transform:none}
+  .ac-bg,.ac-icon,.ac-title,.ac-sub,.ac-auto-actions{animation:none;opacity:1;transform:none}
   .ac-sweep{animation:none;opacity:0}
 }
 /* 历史消息：卡片直接呈现，不重播入场与扫光（切换对话回来时不应像重新加载） */
@@ -4153,21 +4206,23 @@ function UserMessageText({ text }: { text: string }) {
   );
 }
 
-function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp, onEditMessage, onDeleteMessage, onRetryMessage, onProcessProgress }: {
+function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp, onQuote, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress }: {
   msg: Message; index: number; isLastAi?: boolean; instant?: boolean; advance: (i: number) => void;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   onDownloadArtifact: (artifact: TaskArtifact) => void;
   onOpenAutomation?: (taskId: string) => void;
   onFollowUp?: (text: string) => void;
+  onQuote?: (payload: QuotePayload) => void;
   onEditMessage?: (index: number) => void;
   onDeleteMessage?: (index: number) => void;
   onRetryMessage?: (index: number) => void;
+  onRegenerateMessage?: (index: number) => void;
   onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
 }) {
   // messages without a running typewriter advance the reveal pointer on mount;
   // process messages advance via onGoalDone once their goal finishes typing
-  // 重新生成：重挂 Typewriter 重新打字；复制：短暂提示已复制
-  const [regenKey, setRegenKey] = useState(0);
+  // 重新生成：重新走一次 AI 执行流程（由会话层处理），不是把同一段文字再打一遍
+  // 复制：短暂提示已复制
   // 历史消息 instant=true 直接显示全文；点「重新生成」时临时关掉以重播打字
   const [localInstant, setLocalInstant] = useState(Boolean(instant));
   useEffect(() => { setLocalInstant(Boolean(instant)); }, [instant]);
@@ -4177,7 +4232,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   const handleCopy = () => {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
-    navigator.clipboard?.writeText(msg.text ?? "")?.catch(() => setCopied(false));
+    navigator.clipboard?.writeText(msg.plainText ?? msg.text ?? "")?.catch(() => setCopied(false));
   };
   // 正文打完字后再让自动化卡片入场，保证「先文字、后卡片」的阅读顺序
   // 历史消息（instant）视为已打完，避免挂载时被重置为 false 导致操作项永不出现
@@ -4196,6 +4251,8 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   }, [msg.automation?.taskId, textDone, instant]);
   const autoAdvance = msg.role === "user" || msg.role === "result" || (msg.role === "ai" && Boolean(msg.thinking));
   useEffect(() => { if (autoAdvance) advance(index); }, [autoAdvance, advance, index]);
+  // 富文本消息仍用短引导语打字：打完才切换为富文本，revealed 链路保持原样
+  const handleTextDone = () => { setTextDone(true); advance(index); };
 
   if (msg.role === "user") {
     const hasSendState = msg.sendState === "failed" || msg.sendState === "info";
@@ -4275,7 +4332,18 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
         </div>
       ) : (
         <div className="flex w-full flex-col gap-[12px]">
-          <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter key={regenKey} instant={localInstant} text={msg.text ?? ""} onDone={() => { setTextDone(true); advance(index); }} /></p>
+          {msg.html && textDone ? (
+            <RichText html={msg.html} animate={Boolean(msg.animateRich && !localInstant)} />
+          ) : (
+            <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter instant={localInstant} text={msg.text ?? ""} onDone={handleTextDone} /></p>
+          )}
+          {/* 搜索结果卡片（Figma OneDrive 7297:71832 / Outlook 7287:69977）：引用回填输入框 */}
+          {textDone && msg.oneDriveFiles && msg.oneDriveFiles.length > 0 && (
+            <OneDriveCard files={msg.oneDriveFiles} onQuote={onQuote} />
+          )}
+          {textDone && msg.outlookMails && msg.outlookMails.length > 0 && (
+            <OutlookCard mails={msg.outlookMails} onQuote={onQuote} />
+          )}
           {/* 自动化卡片（Figma 9925:54896）：#F7F7F7 底、r8、p8、g8，32 图标 + 标题/副标题 */}
           {msg.automation && textDone && (
             <AutomationCard automation={msg.automation} onOpen={onOpenAutomation} instant={localInstant} />
@@ -4286,22 +4354,26 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
             </div>
           )}
           {/* 回答下方的操作项（Figma MessageActions）：重新生成 / 复制 / 来源。
-              所有 AI 回答都渲染：最新一条常显，历史回答默认隐藏、hover 整条消息时淡入 */}
+              所有 AI 回答都有复制/来源；「重新生成」只在最后一条消息是 AI 回答时出现，
+              新一轮一开始（用户消息/执行过程已追加）立即从旧回答上消失 */}
           {actionsShown && (
             <div
               // 历史消息（重新进入/切换对话）不播入场动画：仅保留 hover 的 opacity 过渡
               style={{ animation: localInstant ? "none" : undefined }}
+              // 操作项距回答统一 12px（容器 gap），卡片回答与其它回答一致
               className={`ac-actions flex items-center gap-[8px] transition-opacity ${isLastAi ? "" : "opacity-0 group-hover/ai:opacity-100"}`}
             >
-              <button
-                type="button"
-                aria-label="重新生成"
-                title="重新生成"
-                onClick={() => { setTextDone(false); setLocalInstant(false); setRegenKey(key => key + 1); }}
-                className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
-              >
-                <img src="/assets/msg-refresh.svg" alt="" className="size-[16px]" />
-              </button>
+              {isLastAi && (
+                <button
+                  type="button"
+                  aria-label="重新生成"
+                  title="重新生成"
+                  onClick={() => onRegenerateMessage?.(index)}
+                  className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
+                >
+                  <img src="/assets/msg-refresh.svg" alt="" className="size-[16px]" />
+                </button>
+              )}
               <button
                 type="button"
                 aria-label="复制"
@@ -4341,12 +4413,13 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onEditMessage, onDeleteMessage, onRetryMessage, onProcessProgress }: {
+function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress }: {
   conversationId: number | null;
   messages: Message[];
   input: string;
   onInputChange: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
+  onQuote?: (payload: QuotePayload) => void;
   attachments: ChatAttachment[];
   onAddFiles: (files: File[]) => void;
   onRemoveAttachment: (id: string) => void;
@@ -4362,6 +4435,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
   onEditMessage?: (index: number) => void;
   onDeleteMessage?: (index: number) => void;
   onRetryMessage?: (index: number) => void;
+  onRegenerateMessage?: (index: number) => void;
   onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -4416,12 +4490,12 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
     if (prev === "process" && cur === "ai") return "mt-[12px]";
     return "mt-[32px]";
   };
-  // 只有位于消息流末尾的 AI 回答（即当前最新一轮、后面没有任何更新消息）操作项常显；
-  // 一旦用户发了新消息/新一轮处理中，旧回答都降为 hover 显示
+  // 操作项常显、推荐问题、「重新生成」都只看「最后一条消息」：
+  // 用户一发新消息，旧回答立即降为 hover 显示、推荐问题和重新生成按钮都消失。
   const lastAiIndex = messages.length - 1;
   return (
     <div className="flex-1 min-h-0 bg-white flex flex-col">
-      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}@keyframes followUpIn{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}`}</style>
+      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}@keyframes followUpIn{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}${RICH_TEXT_CSS}${RESULT_CARD_CSS}`}</style>
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto">
         <div className="conversation-gutter min-h-full pt-[16px]">
           <div className="conversation-content mx-auto w-full">
@@ -4436,7 +4510,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, atta
                 }
                 return (
                   <div key={rowKey} data-message-index={i} className={`flex w-full flex-col ${spacingBefore(i)}`}>
-                    <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onProcessProgress={onProcessProgress} />
+                    <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} onQuote={onQuote} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onRegenerateMessage={onRegenerateMessage} onProcessProgress={onProcessProgress} />
                   </div>
                 );
               })}
@@ -5199,21 +5273,67 @@ export default function App() {
     window.setTimeout(() => handleSend(retryText, target.attachments), 0);
   };
 
-  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = [], options?: { automationRun?: boolean }) => {
+  // 卡片「引用」：与「加号」上传的附件完全同款——真实文件类型图标 / 文件名 /「类型 · 大小」副标题 / 来源角标。
+  // 已引用（origin 命中）不再重复添加，toast 提示「已引用」；移除附件后引用按钮自动复位。
+  const handleQuoteAttachment = (payload: QuotePayload) => {
+    if (attachmentsRef.current.some(item => item.origin === payload.key)) {
+      toast.info("已引用");
+      return;
+    }
+    if (attachmentsRef.current.length >= MAX_ATTACHMENTS) {
+      toast.error(`最多上传 ${MAX_ATTACHMENTS} 个文件`);
+      return;
+    }
+    const extension = getAttachmentExtension(payload.name);
+    const icon = payload.icon ?? getAttachmentIcon(extension);
+    const file = makeVirtualFile(payload.name, icon, payload.subtitle, payload.badge, payload.key);
+    const attachment: ChatAttachment = {
+      id: `quote-${payload.key}-${Date.now()}`,
+      file,
+      name: payload.name,
+      size: 1,
+      extension,
+      image: false,
+      status: "ready",
+      icon,
+      subtitle: payload.subtitle,
+      badge: payload.badge,
+      origin: payload.key,
+    };
+    replaceAttachments([...attachmentsRef.current, attachment]);
+  };
+  // 重新生成：删除当前回答，从对应的提问重新走一次 AI 执行流程；
+  // 不再重挂打字机把同一段文字再打一遍。
+  const handleRegenerateMessage = (index: number) => {
+    const target = messages[index];
+    if (target?.role !== "ai") return;
+    let query = "";
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages[i].role === "user") { query = messages[i].text; break; }
+    }
+    if (!query) return;
+    handleSend(query, [], { regenerateFrom: index });
+  };
+
+  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = [], options?: { automationRun?: boolean; regenerateFrom?: number }) => {
     const text = (suggestion ?? input).trim();
     if (!text) return;
     if (sentAttachments.some(attachment => attachment.status !== "ready")) return;
+    const isRegenerate = typeof options?.regenerateFrom === "number";
     const targetProjectId = activeProjectId ?? selectedProjectId;
-    const shouldGeneratePpt = pptGeneration || isPPTIntent(text);
+    const shouldGeneratePpt = !isRegenerate && (pptGeneration || isPPTIntent(text));
     const runId = ++activeRunId.current;
-    setInput("");
-    clearDraftAttachments(false);
-    setPptGeneration(false);
+    // 重新生成不应清空用户正在编辑的草稿
+    if (!isRegenerate) {
+      setInput("");
+      clearDraftAttachments(false);
+      setPptGeneration(false);
+    }
     // 「创建自动化任务」→ 直接进自动化创建流程（与自动化页「创建」同一链路），
     // 周期条件从文案里解析；任务结果回写本会话（不另开新会话）。
     // automationRun：自动化任务「立即执行」发的消息 —— 任务文案里常带「创建自动化任务」字样，
     // 不能再被意图识别拦回去重新创建，必须当普通消息执行。
-    if (!options?.automationRun && isAutomationIntent(text)) {
+    if (!isRegenerate && !options?.automationRun && isAutomationIntent(text)) {
       const parsed = parseAutomationSchedule(text);
       handleLaunchAutomationChat({ schedule: parsed.schedule, prompt: text, newSessionEachRun: false, title: parsed.title, goal: parsed.goal });
       return;
@@ -5247,12 +5367,33 @@ export default function App() {
       if (isNewConversation) setMessages(appendUser); else applyToConversation(convId, appendUser);
       return;
     }
+    // 富文本示例：跳过 15s 执行过程，直接给出一条覆盖全部标签的 AI 回答
+    if (text.includes("富文本示例")) {
+      const appendRich: (list: Message[]) => Message[] = prev => [
+        ...freezePrevious(prev),
+        { role: "user", text, attachments: sentAttachments },
+        { role: "ai", text: RICH_TEXT_SAMPLE_LEAD, html: RICH_TEXT_SAMPLE_HTML, plainText: RICH_TEXT_SAMPLE_PLAIN, animateRich: true, followUps: DEFAULT_FOLLOW_UPS },
+      ];
+      if (isNewConversation) setMessages(appendRich); else applyToConversation(convId, appendRich);
+      return;
+    }
+    // 搜索结果卡片示例：和普通提问一样先跑执行过程，结束后再返回 OneDrive / Outlook 卡片
+    const cardDemo = text.includes("邮件卡片") ? "outlook" : text.includes("文件卡片") ? "onedrive" : null;
     const processText = text || "处理上传的文件";
     const initialProcess: Message = shouldGeneratePpt
       ? { role: "process", text: "", thinking: true, variant: "requirement" }
       : { role: "process", text: "", thinking: true, variant: "requirement", preset: buildQueryProcess(processText) };
     {
-      const appendRun: (list: Message[]) => Message[] = prev => [...freezePrevious(prev), { role: "user", text, attachments: sentAttachments }, initialProcess];
+      const appendRun: (list: Message[]) => Message[] = prev => {
+        // 重新生成：截掉旧回答（及其后的消息），从对应提问重新挂执行过程
+        if (isRegenerate) {
+          const base = prev.slice(0, options!.regenerateFrom!).map(m => (
+            m.instant || (m.role === "process" && m.thinking) ? m : { ...m, instant: true }
+          ));
+          return [...base, initialProcess];
+        }
+        return [...freezePrevious(prev), { role: "user", text, attachments: sentAttachments }, initialProcess];
+      };
       if (isNewConversation) setMessages(appendRun); else applyToConversation(convId, appendRun);
     }
 
@@ -5269,6 +5410,16 @@ export default function App() {
         });
         // panel appears after AI summary is shown
         setTimeout(() => { if (activeHistoryIdRef.current === convId && runIdByConversation.current.get(convId) === runId) setStage("requirement"); }, 400);
+      } else if (cardDemo) {
+        applyToConversation(convId, prev => {
+          const next = [...prev];
+          const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+          if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
+          next.push(cardDemo === "outlook"
+            ? { role: "ai", text: "查到了以下邮件，共 3 封。", outlookMails: OUTLOOK_SAMPLE, followUps: DEFAULT_FOLLOW_UPS }
+            : { role: "ai", text: "在 OneDrive 里找到 3 个相关文件。", oneDriveFiles: ONE_DRIVE_SAMPLE, followUps: DEFAULT_FOLLOW_UPS });
+          return next;
+        });
       } else {
         applyToConversation(convId, prev => {
           const next = [...prev];
@@ -5885,6 +6036,7 @@ export default function App() {
               input={input}
               onInputChange={setInput}
               onSend={handleSend}
+              onQuote={handleQuoteAttachment}
               attachments={attachments}
               onAddFiles={handleAddFiles}
               onRemoveAttachment={handleRemoveAttachment}
@@ -5905,6 +6057,7 @@ export default function App() {
               onEditMessage={handleEditMessage}
               onDeleteMessage={handleDeleteMessage}
               onRetryMessage={handleRetryMessage}
+              onRegenerateMessage={handleRegenerateMessage}
               onProcessProgress={handleProcessProgress}
             />
           : activeProject
