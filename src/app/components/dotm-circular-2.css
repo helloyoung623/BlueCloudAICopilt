@@ -1,0 +1,88 @@
+.dotm-c2 {
+  --dotm-cycle: 1500ms;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-rows: repeat(5, minmax(0, 1fr));
+  color: currentColor;
+}
+
+.dotm-c2-dot {
+  display: block;
+  border-radius: 999px;
+  background: currentColor;
+  will-change: opacity;
+}
+
+.dotm-c2-ring {
+  animation: dotm-c2-ring calc(var(--dotm-cycle) * var(--dotm-speed, 1)) steps(12, end) infinite;
+  animation-delay: calc(var(--dotm-order, 0) * 0.0833333333 * var(--dotm-cycle) * var(--dotm-speed, 1));
+}
+
+/* 12 步：每步 1/12 周期，点亮 → 衰减 → 再点亮，形成顺时针绕圈 */
+@keyframes dotm-c2-ring {
+  0%,
+  8.333333% {
+    opacity: var(--dotm-peak, 1);
+  }
+
+  8.333333%,
+  16.666667% {
+    opacity: calc(0.6 * var(--dotm-peak, 1) + 0.4 * var(--dotm-mid, 0.42));
+  }
+
+  16.666667%,
+  25% {
+    opacity: calc(0.5 * var(--dotm-mid, 0.42) + 0.5 * var(--dotm-base, 0.12));
+  }
+
+  25%,
+  33.333333% {
+    opacity: calc(0.3 * var(--dotm-mid, 0.42) + 0.7 * var(--dotm-base, 0.12));
+  }
+
+  33.333333%,
+  41.666667% {
+    opacity: var(--dotm-peak, 1);
+  }
+
+  41.666667%,
+  50% {
+    opacity: calc(0.6 * var(--dotm-peak, 1) + 0.4 * var(--dotm-mid, 0.42));
+  }
+
+  50%,
+  58.333333% {
+    opacity: calc(0.5 * var(--dotm-mid, 0.42) + 0.5 * var(--dotm-base, 0.12));
+  }
+
+  58.333333%,
+  66.666667% {
+    opacity: calc(0.3 * var(--dotm-mid, 0.42) + 0.7 * var(--dotm-base, 0.12));
+  }
+
+  66.666667%,
+  75% {
+    opacity: var(--dotm-peak, 1);
+  }
+
+  75%,
+  83.333333% {
+    opacity: calc(0.6 * var(--dotm-peak, 1) + 0.4 * var(--dotm-mid, 0.42));
+  }
+
+  83.333333%,
+  91.666667% {
+    opacity: calc(0.5 * var(--dotm-mid, 0.42) + 0.5 * var(--dotm-base, 0.12));
+  }
+
+  91.666667%,
+  100% {
+    opacity: calc(0.3 * var(--dotm-mid, 0.42) + 0.7 * var(--dotm-base, 0.12));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dotm-c2-ring {
+    animation: none !important;
+  }
+}

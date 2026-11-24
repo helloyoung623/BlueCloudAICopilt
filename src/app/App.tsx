@@ -14,6 +14,7 @@ import imgStyle1 from "@/imports/需求确认-1/29d4a489057188d7298a9a9f8b923d2d
 import imgStyle2 from "@/imports/需求确认-1/f49f63a62b02589f759f36fc0961c6709a8e1bdf.png";
 import imgStyle3 from "@/imports/需求确认-1/9b2936619dc23e46dde47ce229cadb09c1b911ab.png";
 import { PptPanel, PptResultMessage } from "./components/ppt-result";
+import { DotmCircular2 } from "./components/dotm-circular-2";
 import { RadarArcLoader } from "./components/radar-arc-loader";
 import { RichText, RICH_TEXT_CSS, plainTextToHtml } from "./components/rich-text";
 import { OneDriveCard, OutlookCard, RESULT_CARD_CSS, type OneDriveFile, type OutlookMail, type QuotePayload } from "./components/result-cards";
@@ -1616,6 +1617,16 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [pendingTaskMoveId, setPendingTaskMoveId] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // 12px 白色安全区：只要侧栏不是停在顶部（已经有内容滚到「新任务」下方）就常驻，
+  // 不做「停止滚动后消失」的计时，回到顶部才收起，避免内容被切成半行贴在按钮下面。
+  const [sidebarScrolled, setSidebarScrolled] = useState(false);
+  const handleSidebarScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const next = el.scrollTop > 1;
+    setSidebarScrolled(current => (current === next ? current : next));
+  };
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const profileTriggerRef = useRef<HTMLButtonElement>(null);
   const memoryRowRef = useRef<HTMLButtonElement>(null);
@@ -1670,24 +1681,29 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
       if (current.has(activeTask.projectId!)) return current;
       return new Set(current).add(activeTask.projectId!);
     });
-  }, [activeId, history]);
+    // 只在切换任务时自动展开所属项目；history 变化（执行中不断写入）不再强制展开，
+    // 否则运行中手动折叠的项目会被立刻撑开，项目行的 loading / 未读就没机会显示
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   const menuTask = menuId === null ? null : history.find(item => item.id === menuId) ?? null;
   const menuProject = projectMenuId === null ? null : projects.find(item => item.id === projectMenuId) ?? null;
   // 状态图标常驻 24px 位置；hover / 菜单展开时「...」直接盖在同一位置上，行内布局不移动（Figma 5053:14694）
-  const renderTaskStatus = (taskId: number) => {
-    if (runningTaskIds.has(taskId)) {
+  const renderStatusIcon = (isRunning: boolean, isUnread: boolean) => {
+    if (isRunning) {
       return (
         <span aria-label="AI 执行中" className="flex size-[24px] items-center justify-center">
-          <RadarArcLoader size={16} />
+          <DotmCircular2 className="text-[rgba(0,0,0,0.88)]" size={16} dotSize={2.5} speed={1.8} opacityBase={0.12} opacityMid={0.42} opacityPeak={1} />
         </span>
       );
     }
-    if (unreadTaskIds.has(taskId)) {
+    if (isUnread) {
       return <img src="/assets/task-unread.svg" alt="未查看" aria-label="未查看" className="size-[24px]" />;
     }
     return null;
   };
+  const renderTaskStatus = (taskId: number) =>
+    renderStatusIcon(runningTaskIds.has(taskId), unreadTaskIds.has(taskId));
   const renderTaskTrailing = (taskId: number, pinned: boolean, isHover: boolean, hasMenu: boolean) => (
     <span className="relative flex size-[24px] shrink-0 items-center justify-center bg-[inherit]">
       {renderTaskStatus(taskId) ?? (pinned ? (
@@ -1729,8 +1745,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
 
   return (
     <div className={`relative w-[240px] shrink-0 self-stretch border-r border-[#f2f2f2] bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}>
-      {/* head —— Figma 9625:49728 Sidebar/head 240x296（新增「自动化任务」后菜单下移 40px） */}
-      <div className="relative h-[296px] w-full shrink-0 bg-white">
+      {/* head —— 只有 logo / 搜索 / 新任务固定；新任务以下全部进入下方滚动区 */}
+      <div className="relative h-[124px] w-full shrink-0 bg-white">
         <div className="absolute left-[calc(50%-15.8px)] top-[52px] h-[16px] w-[160.403px] -translate-x-1/2">
           <img alt="世纪互联办公智能体" className="absolute inset-0 block size-full max-w-none" src="/assets/9d907.svg" />
         </div>
@@ -1777,67 +1793,79 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
             新任务
           </span>
         </button>
-        {/* 项目 */}
-        <button
-          type="button"
-          onClick={onOpenProjects}
-          className={`absolute left-[12px] top-[124px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
-            projectListOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
-          }`}
-        >
-          <span className="relative size-[16px] shrink-0">
-            <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/6bcaa.svg" />
-          </span>
-          <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${projectListOpen ? "font-medium" : "font-normal"}`}>
-            项目
-          </span>
-        </button>
-        {/* 自动化任务 —— Figma 9625:49728 Sidebar/head：y=164，选中态 #F7F7F7/r8，图标「时间范围-线」9625:49605 */}
-        <button
-          type="button"
-          onClick={onOpenAutomation}
-          className={`absolute left-[12px] top-[164px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
-            automationOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
-          }`}
-        >
-          <span className="relative size-[16px] shrink-0">
-            <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/automation-nav-clock.svg" />
-          </span>
-          <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${automationOpen ? "font-medium" : "font-normal"}`}>
-            自动化任务
-          </span>
-        </button>
-        {/* 资料库 —— Figma 9625:49728：y=204 */}
-        <button
-          type="button"
-          onClick={onOpenLibrary}
-          className={`absolute left-[12px] top-[204px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${libraryOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"}`}
-        >
-          <span className="relative size-[16px] shrink-0">
-            <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/f7258.svg" />
-          </span>
-          <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${libraryOpen ? "font-medium" : "font-normal"}`}>
-            资料库
-          </span>
-        </button>
-        {/* 会议助手 —— Figma 9625:49728：y=244 */}
-        <button
-          type="button"
-          className="absolute left-[12px] top-[244px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors hover:bg-[#f2f2f2]"
-        >
-          <span className="relative size-[16px] shrink-0">
-            <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/bacdf.svg" />
-          </span>
-          <span className="min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
-            会议助手
-          </span>
-        </button>
       </div>
+
+      {/* 滚动后常驻的 12px 白色安全区：盖住「新任务」按钮下方被切半行的内容；只做遮罩、不参与布局 */}
+      {sidebarScrolled && (
+        <div aria-hidden className="pointer-events-none absolute left-0 right-0 top-[124px] z-[15] h-[12px] bg-white" />
+      )}
+
+      {/* 滚动区域：新任务以下所有内容（导航 / 项目 / 任务）整体滚动；容器铺满 240px，滚动条贴侧栏最右侧 */}
+      <div ref={scrollRef} onScroll={handleSidebarScroll} className="sidebar-scroll flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-[12px]">
+        {/* 导航项相对滚动区顶部 0/40/80/120，与原 head 内 y=124/164/204/244 对齐 */}
+        <div className="relative h-[172px] w-full shrink-0">
+          {/* 项目 */}
+          <button
+            type="button"
+            onClick={onOpenProjects}
+            className={`absolute left-0 top-0 flex h-[40px] w-full cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
+              projectListOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
+            }`}
+          >
+            <span className="relative size-[16px] shrink-0">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/6bcaa.svg" />
+            </span>
+            <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${projectListOpen ? "font-medium" : "font-normal"}`}>
+              项目
+            </span>
+          </button>
+          {/* 自动化任务 —— Figma 9625:49728：选中态 #F7F7F7/r8，图标「时间范围-线」9625:49605 */}
+          <button
+            type="button"
+            onClick={onOpenAutomation}
+            className={`absolute left-0 top-[40px] flex h-[40px] w-full cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
+              automationOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
+            }`}
+          >
+            <span className="relative size-[16px] shrink-0">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/automation-nav-clock.svg" />
+            </span>
+            <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${automationOpen ? "font-medium" : "font-normal"}`}>
+              自动化任务
+            </span>
+          </button>
+          {/* 资料库 */}
+          <button
+            type="button"
+            onClick={onOpenLibrary}
+            className={`absolute left-0 top-[80px] flex h-[40px] w-full cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${libraryOpen ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"}`}
+          >
+            <span className="relative size-[16px] shrink-0">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/f7258.svg" />
+            </span>
+            <span className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${libraryOpen ? "font-medium" : "font-normal"}`}>
+              资料库
+            </span>
+          </button>
+          {/* 会议助手 */}
+          <button
+            type="button"
+            className="absolute left-0 top-[120px] flex h-[40px] w-full cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors hover:bg-[#f2f2f2]"
+          >
+            <span className="relative size-[16px] shrink-0">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/bacdf.svg" />
+            </span>
+            <span className="min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+              会议助手
+            </span>
+          </button>
+        </div>
 
       {/* projects */}
       {visibleSidebarProjects.length > 0 && (
-      <div className="shrink-0 w-[216px] pb-[16px] flex flex-col items-start">
-        <div className="group relative m-0 flex w-full items-center p-0">
+      <div className="shrink-0 w-full pb-[16px] flex flex-col items-start">
+        {/* 分组标题吸顶：滚到「新任务」下方时固定，项目列表从标题底下滚过 */}
+        <div className="group sticky top-0 z-20 m-0 flex w-full items-center bg-white p-0">
           <button
             type="button"
             aria-expanded={projectsExpanded}
@@ -1903,6 +1931,11 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
               const isProjectExpanded = expandedProjectIds.has(project.id);
               const isProjectHover = hoverProjectId === project.id;
               const hasProjectMenu = projectMenuId === project.id;
+              // 项目折叠时，子任务的 loading / 未读状态上浮到项目行；展开后状态回到各自任务行
+              const projectHasRunningTask = projectTasks.some(task => runningTaskIds.has(task.id));
+              const projectHasUnreadTask = projectTasks.some(task => unreadTaskIds.has(task.id));
+              const showProjectStatus =
+                !isProjectExpanded && !isProjectHover && !hasProjectMenu && (projectHasRunningTask || projectHasUnreadTask);
               return (
                 <div key={project.id} className="w-full">
                   <div
@@ -1942,7 +1975,12 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
                     <span className="min-w-0 flex-1 truncate text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
                       {project.name}
                     </span>
-                    {project.pinned && !isProjectHover && !hasProjectMenu && (
+                    {showProjectStatus && (
+                      <span className="flex size-[24px] shrink-0 items-center justify-center bg-[inherit]">
+                        {renderStatusIcon(projectHasRunningTask, projectHasUnreadTask)}
+                      </span>
+                    )}
+                    {project.pinned && !showProjectStatus && !isProjectHover && !hasProjectMenu && (
                       <div className="flex size-[24px] shrink-0 items-center justify-center">
                         <svg width="12" height="13" viewBox="0 0 12 12.6667" fill="none">
                           <path d={svgSidebar.p3170f400} fill="black" fillOpacity="0.26" />
@@ -2042,8 +2080,9 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
 
       {/* tasks */}
       {standaloneHistory.length > 0 && (
-      <div className="flex min-h-0 w-[216px] flex-1 flex-col items-start">
-        <div className="group relative flex w-full shrink-0 items-center p-0">
+      <div className="flex w-full flex-col items-start">
+        {/* 分组标题吸顶：升到顶部时把「项目」标题顶走，任务列表从其下方滚过 */}
+        <div className="group sticky top-0 z-20 flex w-full shrink-0 items-center bg-white p-0">
           <button
             type="button"
             aria-expanded={tasksExpanded}
@@ -2062,7 +2101,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           </button>
         </div>
 
-        {tasksExpanded && <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto">
+        {tasksExpanded && <div className="flex w-full flex-col">
           {standaloneHistory.length === 0 ? (
             <p className="p-[12px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.26)]">暂无任务</p>
           ) : standaloneHistory.map(item => {
@@ -2090,7 +2129,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
         </div>}
       </div>
       )}
-      {standaloneHistory.length === 0 && <div className="flex-1" />}
+      </div>
 
       {/* context menu — fixed to escape overflow clip */}
       {/* 侧栏项目菜单与项目页卡片菜单共用 ProjectActionsMenu，操作项保持一致（编辑项目信息/移交项目/归档/删除） */}

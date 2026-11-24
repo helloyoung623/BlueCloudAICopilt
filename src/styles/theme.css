@@ -139,6 +139,12 @@
     background-color: transparent;
   }
 
+  /* 侧栏滚动条更窄（6px），仍贴侧栏最右侧 */
+  .sidebar-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
   body {
     @apply bg-background text-foreground;
   }
