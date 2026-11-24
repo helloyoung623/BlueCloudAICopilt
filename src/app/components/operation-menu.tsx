@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 type OperationMenuProps = HTMLAttributes<HTMLDivElement> & {
   anchor: HTMLElement | null;
   submenu?: boolean;
+  // 子面板与锚点的垂直对齐：默认顶部对齐；连接器子菜单按设计稿底边对齐
+  submenuAlign?: "top" | "bottom";
   gap?: number;
   // "start"：面板左上角对锚点左下角；"end"：面板右上角对锚点右下角；
   // "auto"：优先 start，右侧视口放不下时自动退为 end（Figma 9883:63692 筛选面板定位规则）
@@ -22,15 +24,17 @@ export function getSubmenuPlacement(
   height: number,
   viewportWidth: number,
   viewportHeight: number,
+  align: "top" | "bottom" = "top",
 ) {
   const padding = 8;
   const gap = 4;
   const availableHeight = Math.max(0, viewportHeight - padding * 2);
+  const top = align === "bottom" ? anchor.bottom - height : anchor.top;
   if (parent.right + gap + width <= viewportWidth - padding) {
-    return { side: "right", left: parent.right + gap, top: anchor.top, availableHeight };
+    return { side: "right", left: parent.right + gap, top, availableHeight };
   }
   if (parent.left - gap - width >= padding) {
-    return { side: "left", left: parent.left - gap - width, top: anchor.top, availableHeight };
+    return { side: "left", left: parent.left - gap - width, top, availableHeight };
   }
   const above = Math.max(0, anchor.top - gap - padding);
   if (height <= above) {
@@ -41,7 +45,7 @@ export function getSubmenuPlacement(
 }
 
 export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
-  ({ anchor, submenu = false, gap = 0, align = "start", forceBelow = false, maxHeight, children, style, onMouseDown, ...props }, forwardedRef) => {
+  ({ anchor, submenu = false, submenuAlign = "top", gap = 0, align = "start", forceBelow = false, maxHeight, children, style, onMouseDown, ...props }, forwardedRef) => {
     const menuRef = useRef<HTMLDivElement | null>(null);
     const [position, setPosition] = useState<CSSProperties>({ visibility: "hidden" });
 
@@ -62,7 +66,7 @@ export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
         const width = Math.min(menu.offsetWidth, window.innerWidth - padding * 2);
         const parent = anchor.closest("[data-operation-menu]");
         const placement = submenu
-          ? getSubmenuPlacement(rect, parent?.getBoundingClientRect() ?? rect, width, height, window.innerWidth, viewportHeight)
+          ? getSubmenuPlacement(rect, parent?.getBoundingClientRect() ?? rect, width, height, window.innerWidth, viewportHeight, submenuAlign)
           : null;
         const available = placement?.availableHeight ?? (opensAbove ? above : below);
         // 应用 maxHeight 上限：取可用空间与指定上限的较小值
@@ -93,7 +97,7 @@ export const OperationMenu = forwardRef<HTMLDivElement, OperationMenuProps>(
         window.removeEventListener("resize", update);
         window.removeEventListener("scroll", update, true);
       };
-    }, [anchor, submenu, gap, align, forceBelow, maxHeight]);
+    }, [anchor, submenu, submenuAlign, gap, align, forceBelow, maxHeight]);
 
     return createPortal(
       <div

@@ -24,6 +24,7 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./components/ui/s
 import { useIsMobile } from "./components/ui/use-mobile";
 import { OperationMenu } from "./components/operation-menu";
 import { AddContentMenu } from "./components/add-content-menu";
+import { ConnectorsView } from "./components/connectors-view";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
@@ -1551,7 +1552,7 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
+function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onOpenConnectors, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, connectorOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
   onSearch: () => void;
   mobile?: boolean;
   history: HistoryItem[];
@@ -1569,10 +1570,13 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   onOpenAutomation: () => void;
   onOpenArchive: () => void;
   onOpenLibrary: () => void;
+  onOpenConnectors: () => void;
   onNewProjectTask: (projectId: number) => void;
   projectListOpen: boolean;
   automationOpen: boolean;
   libraryOpen: boolean;
+  // 连接器页不属于这些导航项：打开时所有导航都不选中
+  connectorOpen: boolean;
   activeId: number | null;
   activeProjectId: number | null;
   onSelect: (id: number) => void;
@@ -1691,7 +1695,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           type="button"
           onClick={onNewChat}
           className={`absolute left-[12px] top-[84px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
-            !projectListOpen && !automationOpen && !libraryOpen && activeId === null && activeProjectId === null ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
+            !projectListOpen && !automationOpen && !libraryOpen && !connectorOpen && activeId === null && activeProjectId === null ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
           }`}
         >
           <span className="relative size-[16px] shrink-0">
@@ -1699,7 +1703,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           </span>
           <span
             className={`min-w-px flex-1 truncate text-left font-['PingFang_SC',sans-serif] text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${
-              !projectListOpen && !automationOpen && !libraryOpen && activeId === null && activeProjectId === null
+              !projectListOpen && !automationOpen && !libraryOpen && !connectorOpen && activeId === null && activeProjectId === null
                 ? "font-medium"
                 : "font-normal"
             }`}
@@ -2168,6 +2172,15 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
             <button
               type="button"
               role="menuitem"
+              onClick={() => { setProfileMenuOpen(false); onOpenConnectors(); }}
+              className="flex h-[44px] w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] hover:bg-[#f7f7f7]"
+            >
+              <img src="/assets/connector-plug.svg" alt="" className="size-[16px] shrink-0" />
+              <span className="whitespace-nowrap font-['PingFang_SC:Regular'] font-normal text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">连接器</span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
               onClick={() => setProfileMenuOpen(false)}
               className="flex h-[44px] w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] hover:bg-[#f7f7f7]"
             >
@@ -2446,7 +2459,7 @@ function SendButton({ canSend, agentRunning = false, onSend, onStop }: {
   );
 }
 
-function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject = false, projectFiles, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning = false, onStop, placeholder = "有问题，尽管问；/调用技能" }: {
+function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject = false, projectFiles, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning = false, onStop, onOpenConnectors, placeholder = "有问题，尽管问；/调用技能" }: {
   value: string;
   onChange: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
@@ -2463,6 +2476,7 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
   onPptPagesChange: (pages: PptPageCount) => void;
   agentRunning?: boolean;
   onStop?: () => void;
+  onOpenConnectors?: () => void;
   placeholder?: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -2555,6 +2569,8 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
           onAddFiles={onAddFiles}
           onSelectSource={setAttachmentSource}
           onOpenChange={open => { if (open) setAttachmentSource(null); }}
+          onOpenConnectors={onOpenConnectors}
+          menuClassName="w-[240px]"
         />
         <div className="shrink-0">
           <PptGenerationToggle selected={pptGeneration} onChange={onPptGenerationChange} borderless />
@@ -2853,7 +2869,7 @@ function suggestInStyle(shift: number, delay: number): CSSProperties {
   } as unknown as CSSProperties;
 }
 
-function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, projects, selectedProjectId, onSelectProject, onCreateProject }: {
+function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, projects, selectedProjectId, onSelectProject, onCreateProject, onOpenConnectors }: {
   input: string;
   onInputChange: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
@@ -2867,6 +2883,7 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
   selectedProjectId: number | null;
   onSelectProject: (id: number | null) => void;
   onCreateProject: (project: Omit<ProjectItem, "id">) => void;
+  onOpenConnectors?: () => void;
 }) {
   const selectedProject = projects.find(project => project.id === selectedProjectId);
   return (
@@ -2923,6 +2940,7 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
               onPptModeChange={onPptModeChange}
               pptPages={pptPages}
               onPptPagesChange={onPptPagesChange}
+              onOpenConnectors={onOpenConnectors}
             />
           </div>
         </div>
@@ -4413,7 +4431,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress }: {
+function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress }: {
   conversationId: number | null;
   messages: Message[];
   input: string;
@@ -4432,6 +4450,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
   agentRunning: boolean; onStop: () => void;
   onOpenAutomation?: (taskId: string) => void;
+  onOpenConnectors?: () => void;
   onEditMessage?: (index: number) => void;
   onDeleteMessage?: (index: number) => void;
   onRetryMessage?: (index: number) => void;
@@ -4547,6 +4566,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
               onPptPagesChange={onPptPagesChange}
               agentRunning={agentRunning}
               onStop={onStop}
+              onOpenConnectors={onOpenConnectors}
             />
         </div>
       </div>
@@ -4833,6 +4853,7 @@ export default function App() {
   const [projectListOpen, setProjectListOpen] = useState(false);
   const [automationOpen, setAutomationOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [connectorOpen, setConnectorOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   // 资料库「上传到项目 → 新建项目」唤起同一个创建项目弹窗
   const [libraryCreateProjectOpen, setLibraryCreateProjectOpen] = useState(false);
@@ -5210,6 +5231,7 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(false);
     setLibraryOpen(false);
+    setConnectorOpen(false);
     clearDraftAttachments(true);
     setInput("");
     setActiveHistoryId(id);
@@ -5245,6 +5267,7 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(false);
     setLibraryOpen(false);
+    setConnectorOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(id);
     setSelectedProjectId(null);
@@ -5488,6 +5511,7 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(false);
     setArchiveOpen(false);
+    setConnectorOpen(false);
     setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(null);
@@ -5522,6 +5546,7 @@ export default function App() {
     setProjectListOpen(true);
     setAutomationOpen(false);
     setArchiveOpen(false);
+    setConnectorOpen(false);
     setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(null);
@@ -5549,6 +5574,7 @@ export default function App() {
     setAutomationOpen(false);
     setProjectListOpen(false);
     setArchiveOpen(false);
+    setConnectorOpen(false);
     setLibraryOpen(false);
     setSelectedProjectId(null);
     setActiveProjectId(null);
@@ -5640,6 +5666,7 @@ export default function App() {
       setProjectListOpen(false);
       setAutomationOpen(false);
       setArchiveOpen(false);
+      setConnectorOpen(false);
       setLibraryOpen(false);
       clearDraftAttachments(true);
       setInput("");
@@ -5701,6 +5728,7 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(false);
     setArchiveOpen(false);
+    setConnectorOpen(false);
     setLibraryOpen(false);
     setChatAutomationId(null);
     clearDraftAttachments(true);
@@ -5740,6 +5768,7 @@ export default function App() {
     setProjectListOpen(false);
     setAutomationOpen(true);
     setArchiveOpen(false);
+    setConnectorOpen(false);
     setLibraryOpen(false);
     setActiveHistoryId(null);
     setActiveProjectId(null);
@@ -5758,6 +5787,25 @@ export default function App() {
     setAutomationOpen(false);
     setArchiveOpen(true);
     setLibraryOpen(false);
+    setConnectorOpen(false);
+    setActiveHistoryId(null);
+    setActiveProjectId(null);
+    setSelectedProjectId(null);
+  };
+  // Figma 10118:87777：输入框 + 菜单 / 头像菜单的「连接器」都进入同一页
+  const handleOpenConnectors = () => {
+    setMobileNavigationOpen(false);
+    activeRunId.current += 1;
+    setMessages([]);
+    clearDraftAttachments(true);
+    setInput("");
+    setPptGeneration(false);
+    setStage("idle");
+    setProjectListOpen(false);
+    setAutomationOpen(false);
+    setArchiveOpen(false);
+    setLibraryOpen(false);
+    setConnectorOpen(true);
     setActiveHistoryId(null);
     setActiveProjectId(null);
     setSelectedProjectId(null);
@@ -5810,7 +5858,7 @@ export default function App() {
   };
 
   // 会话页右侧自动化详情栏：只在会话视图里生效（切走/新建会话自动收起）
-  const chatAutomationTask = chatAutomationId && messages.length > 0 && !automationOpen && !libraryOpen && !archiveOpen && !projectListOpen
+  const chatAutomationTask = chatAutomationId && messages.length > 0 && !automationOpen && !libraryOpen && !archiveOpen && !connectorOpen && !projectListOpen
     ? automationTasks.find(task => task.id === chatAutomationId) ?? null
     : null;
 
@@ -5885,10 +5933,12 @@ export default function App() {
           onOpenAutomation={handleOpenAutomation}
           onOpenArchive={handleOpenArchive}
           onOpenLibrary={handleOpenLibrary}
+          onOpenConnectors={handleOpenConnectors}
           onNewProjectTask={handleNewProjectTask}
           projectListOpen={projectListOpen}
           automationOpen={automationOpen}
           libraryOpen={libraryOpen}
+          connectorOpen={connectorOpen}
           activeId={activeHistoryId}
           activeProjectId={activeProjectId}
           onSelect={handleSelectHistory}
@@ -5934,8 +5984,9 @@ export default function App() {
         }}
         onDrop={handleDrop}
       >
-        {/* 自动化任务页（Figma 9937:57105）没有全局顶栏：详情栏 header 直接贴窗口顶部；移动端保留顶栏以免失去导航入口 */}
-        {automationOpen && !isMobile ? null : (
+        {/* 自动化任务页（Figma 9937:57105）与连接器页（Figma 10118:87777）没有全局顶栏；
+            移动端保留顶栏以免失去导航入口 */}
+        {(automationOpen || connectorOpen) && !isMobile ? null : (
         <ChatHeader
           title={chatTitle}
           projectOverview={activeProject && !activeTask && !projectListOpen ? { name: activeProject.name, onOpenProjects: handleOpenProjects } : undefined}
@@ -5999,13 +6050,15 @@ export default function App() {
               }}
               onTransferProject={requestTransfer}
               onDeleteProject={handleRequestDeleteProject}
-              onSelectTask={id => { setArchiveOpen(false); handleSelectHistory(id); }}
+              onSelectTask={id => { setArchiveOpen(false); setConnectorOpen(false); handleSelectHistory(id); }}
               onUnarchiveTask={id => {
                 setHistory(current => current.map(task => task.id === id ? { ...task, archived: false } : task));
                 toast.success("任务已取消归档");
               }}
               onDeleteTask={handleRequestDeleteChatTask}
             />
+          : connectorOpen
+          ? <ConnectorsView />
           : projectListOpen
           ? <ProjectListView
               projects={projects}
@@ -6054,6 +6107,7 @@ export default function App() {
               agentRunning={messages.some(message => message.role === "process" && Boolean(message.thinking))}
               onStop={handleStop}
               onOpenAutomation={setChatAutomationId}
+              onOpenConnectors={handleOpenConnectors}
               onEditMessage={handleEditMessage}
               onDeleteMessage={handleDeleteMessage}
               onRetryMessage={handleRetryMessage}
@@ -6093,6 +6147,7 @@ export default function App() {
                   onPptModeChange: setPptMode,
                   pptPages,
                   onPptPagesChange: setPptPages,
+                  onOpenConnectors: handleOpenConnectors,
                 }}
               />
           : <HomeView
@@ -6116,6 +6171,7 @@ export default function App() {
                 setProjects(current => [...current, { ...project, id }]);
                 setSelectedProjectId(id);
               }}
+              onOpenConnectors={handleOpenConnectors}
             />
         }
         <CreateProjectDialog
