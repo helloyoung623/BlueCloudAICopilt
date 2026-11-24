@@ -17,7 +17,7 @@ import { PptPanel, PptResultMessage } from "./components/ppt-result";
 import { RadarArcLoader } from "./components/radar-arc-loader";
 import { RichText, RICH_TEXT_CSS, plainTextToHtml } from "./components/rich-text";
 import { OneDriveCard, OutlookCard, RESULT_CARD_CSS, type OneDriveFile, type OutlookMail, type QuotePayload } from "./components/result-cards";
-import { ArtifactFileCard, TaskArtifactsButton } from "./components/task-artifacts";
+import { ArtifactFileCard, SmallTip, TaskArtifactsButton } from "./components/task-artifacts";
 import type { LocatedTaskArtifact, TaskArtifact } from "./components/task-artifacts";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./components/ui/sheet";
@@ -81,6 +81,17 @@ type Message = {
   // 执行过程已展开的步骤进度：切走任务再回来时据此恢复（含最后一批仍处于 loading 的状态）
   progress?: { shown: number; batchStart: number };
 };
+// 一条回答的「延展问题」真正渲染出来才算这轮执行完成；用会话 id + 回答正文 + 推荐问题做 key，
+// 同一会话里重新生成 / 新一轮回答会拿到新 key，避免沿用上一轮「已显示」状态提前清掉 loading。
+function getRecommendationKey(conversationId: number | null, messages: Message[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== "ai") continue;
+    if (!msg.followUps?.length) return null;
+    return `${conversationId ?? "draft"}|${msg.text ?? ""}|${msg.followUps.join("|")}`;
+  }
+  return null;
+}
 type PptStage = "idle" | "requirement" | "outline_generating" | "outline" | "ppt_generating" | "preview";
 type PptMode = "标准" | "PowerPoint";
 type PptPageCount = "智能匹配" | "5～8页" | "8～12页" | "12～18页";
@@ -1552,7 +1563,7 @@ function SearchDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onOpenConnectors, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, connectorOpen, activeId, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
+function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onOpenConnectors, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, connectorOpen, activeId, activeProjectId, runningTaskIds, unreadTaskIds, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
   onSearch: () => void;
   mobile?: boolean;
   history: HistoryItem[];
@@ -1579,6 +1590,9 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   connectorOpen: boolean;
   activeId: number | null;
   activeProjectId: number | null;
+  // Figma 5053:14694 的任务状态图标：AI 执行中 / 已完成未查看
+  runningTaskIds: Set<number>;
+  unreadTaskIds: Set<number>;
   onSelect: (id: number) => void;
   onSelectProject: (id: number) => void;
 }) {
@@ -1597,6 +1611,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [tasksExpanded, setTasksExpanded] = useState(true);
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<number>>(() => new Set());
+  // 项目下任务 >= 10 时默认只显示前 5 条，点「更多」后该项目显示完整任务列表
+  const [expandedTaskProjectIds, setExpandedTaskProjectIds] = useState<Set<number>>(() => new Set());
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [pendingTaskMoveId, setPendingTaskMoveId] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1608,6 +1624,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   const standaloneHistory = history.filter(item => item.projectId === undefined && !item.archived);
   // 归档项目从侧栏「项目」分组移除（归档页仍可查看/取消归档），与项目列表页口径一致
   const visibleSidebarProjects = projects.filter(project => !project.archived);
+  // 「折叠所有项目」只在有项目处于展开态时出现；全部收起或「项目」分组自身收起时隐藏
+  const hasExpandedProjects = projectsExpanded && visibleSidebarProjects.some(project => expandedProjectIds.has(project.id));
   const openMemoryPanel = () => {
     if (memoryPanelTimer.current) clearTimeout(memoryPanelTimer.current);
     setMemoryPanelOpen(true);
@@ -1656,6 +1674,54 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
 
   const menuTask = menuId === null ? null : history.find(item => item.id === menuId) ?? null;
   const menuProject = projectMenuId === null ? null : projects.find(item => item.id === projectMenuId) ?? null;
+  // 状态图标常驻 24px 位置；hover / 菜单展开时「...」直接盖在同一位置上，行内布局不移动（Figma 5053:14694）
+  const renderTaskStatus = (taskId: number) => {
+    if (runningTaskIds.has(taskId)) {
+      return (
+        <span aria-label="AI 执行中" className="flex size-[24px] items-center justify-center">
+          <RadarArcLoader size={16} />
+        </span>
+      );
+    }
+    if (unreadTaskIds.has(taskId)) {
+      return <img src="/assets/task-unread.svg" alt="未查看" aria-label="未查看" className="size-[24px]" />;
+    }
+    return null;
+  };
+  const renderTaskTrailing = (taskId: number, pinned: boolean, isHover: boolean, hasMenu: boolean) => (
+    <span className="relative flex size-[24px] shrink-0 items-center justify-center bg-[inherit]">
+      {renderTaskStatus(taskId) ?? (pinned ? (
+        <svg width="12" height="13" viewBox="0 0 12 12.6667" fill="none">
+          <path d={svgSidebar.p3170f400} fill="black" fillOpacity="0.26" />
+          <path d="M0 0H12V1.33333H0V0Z" fill="black" fillOpacity="0.26" />
+        </svg>
+      ) : null)}
+      {(isHover || hasMenu) && (
+        <span className="absolute inset-0 flex items-center justify-center bg-[inherit]">
+          <button
+            type="button"
+            aria-label="任务更多操作"
+            onClick={event => {
+              event.stopPropagation();
+              if (hasMenu) {
+                setMenuId(null);
+                return;
+              }
+              setMenuAnchor(event.currentTarget);
+              setProjectMenuId(null);
+              setMenuId(taskId);
+              setHoverId(taskId);
+            }}
+            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[rgba(0,0,0,0.06)]"
+          >
+            <svg width="3" height="12" viewBox="0 0 2.66667 12" fill="none">
+              <path d={svgSidebar.p19c91c80} fill="black" fillOpacity="0.38" />
+            </svg>
+          </button>
+        </span>
+      )}
+    </span>
+  );
   const closeContextMenu = () => {
     setMenuId(null);
     setProjectMenuId(null);
@@ -1793,10 +1859,23 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
               type="button"
               aria-label="新建项目"
               onClick={() => setCreateProjectOpen(true)}
-              className="absolute bottom-[7px] left-[188px] right-[4px] top-[3px] flex cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]"
+              className="absolute left-[188px] top-[3px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
             >
               <img src="/assets/project-add.svg" alt="" className="shrink-0" />
             </button>
+          )}
+          {/* Figma 101:1826：有项目展开时，x=156 处出现「折叠所有项目」入口；全部收起后自行消失 */}
+          {hasExpandedProjects && (
+            <SmallTip label="折叠所有项目" side="top">
+              <button
+                type="button"
+                aria-label="折叠所有项目"
+                onClick={() => setExpandedProjectIds(new Set())}
+                className="absolute left-[156px] top-[3px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
+              >
+                <img src="/assets/sidebar-collapse.svg" alt="" className="shrink-0" />
+              </button>
+            </SmallTip>
           )}
         </div>
         {projectsExpanded && visibleSidebarProjects.length === 0 && (
@@ -1816,6 +1895,9 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           <div className="flex w-full flex-col items-start">
             {visibleSidebarProjects.map(project => {
               const projectTasks = history.filter(item => item.projectId === project.id && !item.archived);
+              // 10 条及以上先露 5 条；「更多 / 收起」只在展开的项目下出现
+              const tasksCollapsed = projectTasks.length >= 10 && !expandedTaskProjectIds.has(project.id);
+              const visibleProjectTasks = tasksCollapsed ? projectTasks.slice(0, 5) : projectTasks;
               const isActiveProjectContext = activeProjectId === project.id;
               const isActiveProjectHome = isActiveProjectContext && activeId === null;
               const isProjectExpanded = expandedProjectIds.has(project.id);
@@ -1905,7 +1987,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
                       </>
                     )}
                   </div>
-                  {isProjectExpanded && projectTasks.map(task => {
+                  {isProjectExpanded && visibleProjectTasks.map(task => {
                     const isTaskActive = activeId === task.id;
                     const isTaskHover = hoverId === task.id;
                     const hasTaskMenu = menuId === task.id;
@@ -1929,39 +2011,27 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
                         <span className={`min-w-0 flex-1 truncate text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${isTaskActive ? "font-medium" : "font-normal"}`}>
                           {task.title}
                         </span>
-                        {task.pinned && !isTaskHover && !hasTaskMenu && (
-                          <div className="flex size-[24px] shrink-0 items-center justify-center">
-                            <svg width="12" height="13" viewBox="0 0 12 12.6667" fill="none">
-                              <path d={svgSidebar.p3170f400} fill="black" fillOpacity="0.26" />
-                              <path d="M0 0H12V1.33333H0V0Z" fill="black" fillOpacity="0.26" />
-                            </svg>
-                          </div>
-                        )}
-                        {(isTaskHover || hasTaskMenu) && (
-                          <button
-                            type="button"
-                            aria-label="任务更多操作"
-                            onClick={event => {
-                              event.stopPropagation();
-                              if (hasTaskMenu) {
-                                setMenuId(null);
-                                return;
-                              }
-                              setMenuAnchor(event.currentTarget);
-                              setProjectMenuId(null);
-                              setMenuId(task.id);
-                              setHoverId(task.id);
-                            }}
-                            className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[rgba(0,0,0,0.06)]"
-                          >
-                            <svg width="3" height="12" viewBox="0 0 2.66667 12" fill="none">
-                              <path d={svgSidebar.p19c91c80} fill="black" fillOpacity="0.38" />
-                            </svg>
-                          </button>
-                        )}
+                        {renderTaskTrailing(task.id, task.pinned, isTaskHover, hasTaskMenu)}
                       </div>
                     );
                   })}
+                  {isProjectExpanded && projectTasks.length >= 10 && (
+                    <div className="flex w-full flex-col items-start px-[32px] pb-[8px] pt-[10px]">
+                      <button
+                        type="button"
+                        aria-label={tasksCollapsed ? `展开${project.name}的全部任务` : `收起${project.name}的任务`}
+                        onClick={() => setExpandedTaskProjectIds(current => {
+                          const next = new Set(current);
+                          if (next.has(project.id)) next.delete(project.id);
+                          else next.add(project.id);
+                          return next;
+                        })}
+                        className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
+                      >
+                        {tasksCollapsed ? "更多" : "收起"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -2012,31 +2082,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
                       ${isActive ? "bg-[#f7f7f7]" : isHover ? "bg-[#f2f2f2]" : ""}`}
                   >
                     <p className={`flex-1 min-w-0 text-[14px] leading-[22px] tracking-[0.014px] truncate ${isActive ? "font-medium" : ""} text-[rgba(0,0,0,0.88)]`}>{item.title}</p>
-                    {item.pinned && !isHover && !hasMenu && (
-                      <div className="shrink-0 w-[24px] h-[24px] flex items-center justify-center">
-                        <svg width="12" height="13" viewBox="0 0 12 12.6667" fill="none">
-                          <path d={svgSidebar.p3170f400} fill="black" fillOpacity="0.26" />
-                          <path d="M0 0H12V1.33333H0V0Z" fill="black" fillOpacity="0.26" />
-                        </svg>
-                      </div>
-                    )}
-                    {(isHover || hasMenu) && (
-                      <button
-                        onClick={e => {
-                          e.stopPropagation();
-                          if (hasMenu) { setMenuId(null); return; }
-                          setMenuAnchor(e.currentTarget);
-                          setProjectMenuId(null);
-                          setMenuId(item.id);
-                          setHoverId(item.id);
-                        }}
-                        className="shrink-0 w-[24px] h-[24px] flex items-center justify-center rounded-[4px] hover:bg-[rgba(0,0,0,0.06)] cursor-pointer"
-                      >
-                        <svg width="3" height="12" viewBox="0 0 2.66667 12" fill="none">
-                          <path d={svgSidebar.p19c91c80} fill="black" fillOpacity="0.38" />
-                        </svg>
-                      </button>
-                    )}
+                    {renderTaskTrailing(item.id, item.pinned, isHover, hasMenu)}
                   </div>
                 </div>
               );
@@ -4224,7 +4270,7 @@ function UserMessageText({ text }: { text: string }) {
   );
 }
 
-function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp, onQuote, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress }: {
+function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp, onQuote, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, recommendationKey, onRecommendationsShown }: {
   msg: Message; index: number; isLastAi?: boolean; instant?: boolean; advance: (i: number) => void;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   onDownloadArtifact: (artifact: TaskArtifact) => void;
@@ -4236,6 +4282,8 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   onRetryMessage?: (index: number) => void;
   onRegenerateMessage?: (index: number) => void;
   onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
+  recommendationKey?: string | null;
+  onRecommendationsShown?: (key: string) => void;
 }) {
   // messages without a running typewriter advance the reveal pointer on mount;
   // process messages advance via onGoalDone once their goal finishes typing
@@ -4267,6 +4315,10 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
     const id = window.setTimeout(() => setActionsShown(true), delay);
     return () => window.clearTimeout(id);
   }, [msg.automation?.taskId, textDone, instant]);
+  // 延展问题真的挂到 DOM 上了才通知外层：这一刻才算「问题执行完成」，侧栏 loading 同时消失
+  useEffect(() => {
+    if (recommendationKey && isLastAi && actionsShown) onRecommendationsShown?.(recommendationKey);
+  }, [recommendationKey, isLastAi, actionsShown, onRecommendationsShown]);
   const autoAdvance = msg.role === "user" || msg.role === "result" || (msg.role === "ai" && Boolean(msg.thinking));
   useEffect(() => { if (autoAdvance) advance(index); }, [autoAdvance, advance, index]);
   // 富文本消息仍用短引导语打字：打完才切换为富文本，revealed 链路保持原样
@@ -4433,7 +4485,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress }: {
+function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, onRecommendationsShown }: {
   conversationId: number | null;
   messages: Message[];
   input: string;
@@ -4458,6 +4510,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   onRetryMessage?: (index: number) => void;
   onRegenerateMessage?: (index: number) => void;
   onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
+  onRecommendationsShown?: (key: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // useLayoutEffect：切换会话/新消息时在绘制前就定位到底部，
@@ -4514,6 +4567,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   // 操作项常显、推荐问题、「重新生成」都只看「最后一条消息」：
   // 用户一发新消息，旧回答立即降为 hover 显示、推荐问题和重新生成按钮都消失。
   const lastAiIndex = messages.length - 1;
+  const followUpKey = getRecommendationKey(conversationId, messages);
   return (
     <div className="flex-1 min-h-0 bg-white flex flex-col">
       <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}@keyframes followUpIn{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}${RICH_TEXT_CSS}${RESULT_CARD_CSS}`}</style>
@@ -4531,7 +4585,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
                 }
                 return (
                   <div key={rowKey} data-message-index={i} className={`flex w-full flex-col ${spacingBefore(i)}`}>
-                    <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} onQuote={onQuote} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onRegenerateMessage={onRegenerateMessage} onProcessProgress={onProcessProgress} />
+                    <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} onQuote={onQuote} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onRegenerateMessage={onRegenerateMessage} onProcessProgress={onProcessProgress} recommendationKey={i === lastAiIndex ? followUpKey : null} onRecommendationsShown={onRecommendationsShown} />
                   </div>
                 );
               })}
@@ -5016,6 +5070,48 @@ export default function App() {
       return changed ? next : h;
     });
   }, [messages]);
+
+  // 侧栏任务状态（Figma 5053:14694）：loading 由「仍有 thinking process」或「最新回答的延展问题还没渲染出来」派生。
+  // 即 AI 正文出来了也不算完成，必须等推荐问题真正挂到 DOM 上；未读则由「执行中 → 已完成且当前没在看」推导。
+  const [shownRecommendationKeys, setShownRecommendationKeys] = useState<Set<string>>(() => new Set());
+  const handleRecommendationsShown = useCallback((key: string) => {
+    setShownRecommendationKeys(current => current.has(key) ? current : new Set(current).add(key));
+  }, []);
+  const [unreadTaskIds, setUnreadTaskIds] = useState<Set<number>>(() => new Set());
+  const thinkingTaskRef = useRef<Map<number, boolean>>(new Map());
+  useEffect(() => {
+    const thinkingIds = new Set<number>();
+    const finishedIds: number[] = [];
+    const nextThinking = new Map<number, boolean>();
+    history.forEach(item => {
+      const thinking = item.messages.some(message => message.role === "process" && message.thinking);
+      nextThinking.set(item.id, thinking);
+      if (thinking) thinkingIds.add(item.id);
+      const wasThinking = thinkingTaskRef.current.get(item.id) ?? false;
+      const hasAnswer = item.messages.some(message => message.role === "ai" || message.role === "result");
+      if (wasThinking && !thinking && hasAnswer) finishedIds.push(item.id);
+    });
+    thinkingTaskRef.current = nextThinking;
+    const active = activeHistoryIdRef.current;
+    setUnreadTaskIds(current => {
+      let next = current;
+      const ensureNext = () => { if (next === current) next = new Set(current); };
+      thinkingIds.forEach(id => { if (next.has(id)) { ensureNext(); next.delete(id); } });
+      finishedIds.forEach(id => { if (id !== active && !next.has(id)) { ensureNext(); next.add(id); } });
+      return next;
+    });
+  }, [history]);
+  // 打开任务即视为已查看：覆盖侧栏点选、自动化定位等所有进入会话的路径
+  useEffect(() => {
+    if (activeHistoryId === null) return;
+    setUnreadTaskIds(current => {
+      if (!current.has(activeHistoryId)) return current;
+      const next = new Set(current);
+      next.delete(activeHistoryId);
+      return next;
+    });
+  }, [activeHistoryId]);
+
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const attachmentsRef = useRef<ChatAttachment[]>([]);
   const uploadTimers = useRef(new Map<string, number>());
@@ -5923,6 +6019,21 @@ export default function App() {
     else toast.error("暂不支持上传文件夹");
   };
 
+  // 当前会话的 messages 比 history 回写早一帧，补进去避免 loading 图标延迟出现。
+  // AI 正文出来后仍保持 loading，直到该回答的延展问题真的显示出来（用户定义：那时才算执行完成）。
+  const activeHasThinking = messages.some(message => message.role === "process" && message.thinking);
+  const activeRecommendationKey = getRecommendationKey(activeHistoryId, messages);
+  const recommendationsPending = activeHistoryId !== null
+    && activeRecommendationKey !== null
+    && !activeHasThinking
+    && !shownRecommendationKeys.has(activeRecommendationKey);
+  const sidebarRunningTaskIds = new Set<number>(history
+    .filter(item => item.messages.some(message => message.role === "process" && message.thinking))
+    .map(item => item.id));
+  if (activeHistoryId !== null && (activeHasThinking || recommendationsPending)) {
+    sidebarRunningTaskIds.add(activeHistoryId);
+  }
+
   const sidebar = (
         <Sidebar
           history={history}
@@ -5944,6 +6055,8 @@ export default function App() {
           connectorOpen={connectorOpen}
           activeId={activeHistoryId}
           activeProjectId={activeProjectId}
+          runningTaskIds={sidebarRunningTaskIds}
+          unreadTaskIds={unreadTaskIds}
           onSelect={handleSelectHistory}
           onSelectProject={handleSelectProject}
           onRequestDeleteProject={handleRequestDeleteProject}
@@ -6116,6 +6229,7 @@ export default function App() {
               onRetryMessage={handleRetryMessage}
               onRegenerateMessage={handleRegenerateMessage}
               onProcessProgress={handleProcessProgress}
+              onRecommendationsShown={handleRecommendationsShown}
             />
           : activeProject
             ? <ProjectHomeView
