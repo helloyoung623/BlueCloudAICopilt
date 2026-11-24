@@ -279,6 +279,24 @@ export function RichText({ html, animate }: { html: string; animate?: boolean })
   return <div className={`acrt${animate ? " acrt--animate" : ""}`}>{nodes}</div>;
 }
 
+/**
+ * 把纯文本 AI 回复转成富文本 HTML，使所有回复正文都走同一套 Figma 2759:15863 标签样式。
+ * 单换行 → <br>（保持行距一致），空行 → 段落分隔；内容全部转义，避免把正文里的 & < > " 当标签解析。
+ */
+export function plainTextToHtml(text: string): string {
+  const escape = (s: string) => s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  return text
+    .split(/\n{2,}/)
+    .map(para => para.split("\n").map(escape).join("<br>"))
+    .filter(para => para.length > 0)
+    .map(para => `<p>${para}</p>`)
+    .join("");
+}
+
 export const RICH_TEXT_CSS = `
 @keyframes acrtIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .acrt{

@@ -121,12 +121,11 @@ export function cardTimeLabel(schedule: ScheduleState): string {
 
 // 卡片副标题 = 时间 · 任务内容（已暂停时前缀换成「已暂停」，Figma 9872:63219）。
 // 例：周日 09:00 · 帮我创建一个自动化任务，每天早上汇总未读邮件
-// title：任务名与内容完全一样时（新建弹窗里没单独填名字，名字回退成内容）只留时间，不再重复一遍
-export function cardSubtitle(schedule: ScheduleState, prompt: string, status?: AutomationTab, title?: string): string {
+// 指令始终显示：即便任务名与内容相同（新建弹窗里名字回退成内容）也要带上指令，
+// 否则副标题只剩「周二 13:30」、看起来像漏了内容（用户反馈过）。title 参数保留兼容调用方。
+export function cardSubtitle(schedule: ScheduleState, prompt: string, status?: AutomationTab, _title?: string): string {
   // 「就」里那段话可能是多行的，压成一行交给 CSS 截断，避免卡片被撑高
-  const content = prompt.trim().replace(/\s+/g, " ");
-  const name = (title ?? "").trim().replace(/\s+/g, " ");
-  const detail = content && content !== name ? content : "";
+  const detail = prompt.trim().replace(/\s+/g, " ");
   if (status === "已暂停") return detail ? `已暂停 · ${detail}` : "已暂停";
   const when = cardTimeLabel(schedule);
   return detail ? `${when} · ${detail}` : when;

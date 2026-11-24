@@ -15,7 +15,7 @@ import imgStyle2 from "@/imports/需求确认-1/f49f63a62b02589f759f36fc0961c670
 import imgStyle3 from "@/imports/需求确认-1/9b2936619dc23e46dde47ce229cadb09c1b911ab.png";
 import { PptPanel, PptResultMessage } from "./components/ppt-result";
 import { RadarArcLoader } from "./components/radar-arc-loader";
-import { RichText, RICH_TEXT_CSS } from "./components/rich-text";
+import { RichText, RICH_TEXT_CSS, plainTextToHtml } from "./components/rich-text";
 import { OneDriveCard, OutlookCard, RESULT_CARD_CSS, type OneDriveFile, type OutlookMail, type QuotePayload } from "./components/result-cards";
 import { ArtifactFileCard, TaskArtifactsButton } from "./components/task-artifacts";
 import type { LocatedTaskArtifact, TaskArtifact } from "./components/task-artifacts";
@@ -4350,8 +4350,10 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
         </div>
       ) : (
         <div className="flex w-full flex-col gap-[12px]">
-          {msg.html && textDone ? (
-            <RichText html={msg.html} animate={Boolean(msg.animateRich && !localInstant)} />
+          {/* 打字阶段用纯文本做入场动画；打完后所有 AI 回复统一走 Figma 2759:15863 HTML 标签样式。
+              有 html 的富文本消息直接用 html；其余纯文本转成 <p>/<br> 再交给 RichText 渲染。 */}
+          {textDone ? (
+            <RichText html={msg.html ?? plainTextToHtml(msg.text ?? "")} animate={Boolean(msg.animateRich && !localInstant)} />
           ) : (
             <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter instant={localInstant} text={msg.text ?? ""} onDone={handleTextDone} /></p>
           )}
@@ -5401,7 +5403,8 @@ export default function App() {
       return;
     }
     // 搜索结果卡片示例：和普通提问一样先跑执行过程，结束后再返回 OneDrive / Outlook 卡片
-    const cardDemo = text.includes("邮件卡片") ? "outlook" : text.includes("文件卡片") ? "onedrive" : null;
+    // 首页推荐问题「找出近一周的邮件」也走 Outlook 邮件卡片演示
+    const cardDemo = (text.includes("邮件卡片") || text.includes("找出近一周的邮件")) ? "outlook" : text.includes("文件卡片") ? "onedrive" : null;
     const processText = text || "处理上传的文件";
     const initialProcess: Message = shouldGeneratePpt
       ? { role: "process", text: "", thinking: true, variant: "requirement" }
