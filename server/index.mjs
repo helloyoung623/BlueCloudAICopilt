@@ -55,7 +55,7 @@ function sendJson(res, status, payload) {
 }
 
 function sse(res, event, payload) {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
+  try { res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`) } catch { /* 连接已断开，忽略 */ }
 }
 
 // 让模型只输出 RichText 白名单内的标签：前端所有 AI 正文都走 Figma 2759:15863 的 HTML 样式字典，
@@ -551,8 +551,10 @@ export async function handleChat(req, res) {
     controller.abort(new Error('模型服务响应超时，请稍后重试'))
   }, 45000)
   let closed = false
-  const close = () => { closed = true; controller.abort() }
-  req.on('close', close)
+  const close = () => { if (!closed) { closed = true; controller.abort() } }
+  // 只听 res 的 close：req 的 'close' 在请求体读完（小请求几乎立刻）就触发，
+  // Vercel 运行时下会被误判成客户端断开——后续事件全被吞、连接永远吊着，
+  // 正是线上「无限正在思考」且 45s 超时兜底看似没生效的根因。客户端断开必然伴随 res close。
   res.on('close', close)
 
   // 「立即执行」模式下直接把 create_automation 从工具表里摘掉：
@@ -981,15 +983,14 @@ export async function handleChat(req, res) {
       step++
     }
   } catch (error) {
-    // 客户端主动断开（closed）不用发事件；超时给明确提示，其余原样透传
-    if (!closed && !upstreamTimedOut) {
-      sse(res, 'run.error', { code: 'UPSTREAM_FAILED', message: error?.message ?? '模型调用失败' })
-    } else if (!closed) {
-      sse(res, 'run.error', { code: 'UPSTREAM_TIMEOUT', message: '模型服务响应超时，请稍后重试' })
-    }
+    // 尽力把失败告诉前端：连接真断了写入会被 sse 内部吞掉，不会抛错
+    sse(res, 'run.error', {
+      code: upstreamTimedOut ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_FAILED',
+      message: upstreamTimedOut ? '模型服务响应超时，请稍后重试' : error?.message ?? '模型调用失败',
+    })
   } finally {
     clearTimeout(upstreamGuard)
-    if (!closed) res.end()
+    try { res.end() } catch { /* 已断开 */ }
   }
 }
 
