@@ -543,6 +543,13 @@ export async function handleChat(req, res) {
   sse(res, 'run.start', { runId: body.runId ?? null })
 
   const controller = new AbortController()
+  // 模型请求硬超时：Vercel 函数机房（境外）连 open.bigmodel.cn 可能长期无响应，
+  // 不兜底的话前端会永远停在「正在思考」。到时主动 abort，由主流程 catch 发 run.error。
+  let upstreamTimedOut = false
+  const upstreamGuard = setTimeout(() => {
+    upstreamTimedOut = true
+    controller.abort(new Error('模型服务响应超时，请稍后重试'))
+  }, 45000)
   let closed = false
   const close = () => { closed = true; controller.abort() }
   req.on('close', close)
@@ -974,8 +981,14 @@ export async function handleChat(req, res) {
       step++
     }
   } catch (error) {
-    if (!closed) sse(res, 'run.error', { code: 'UPSTREAM_FAILED', message: error?.message ?? '模型调用失败' })
+    // 客户端主动断开（closed）不用发事件；超时给明确提示，其余原样透传
+    if (!closed && !upstreamTimedOut) {
+      sse(res, 'run.error', { code: 'UPSTREAM_FAILED', message: error?.message ?? '模型调用失败' })
+    } else if (!closed) {
+      sse(res, 'run.error', { code: 'UPSTREAM_TIMEOUT', message: '模型服务响应超时，请稍后重试' })
+    }
   } finally {
+    clearTimeout(upstreamGuard)
     if (!closed) res.end()
   }
 }
