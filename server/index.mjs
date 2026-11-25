@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadModelConfig, validateModelConfig, checkEnvFileSafety } from './env.mjs'
 import { TOOL_SCHEMAS, TOOL_META, executeTool } from './tools.mjs'
 import { verifyAnswer, buildRewritePrompt } from './verify.mjs'
@@ -14,10 +14,16 @@ const PORT = Number(process.env.PORT || 8787)
 const config = loadModelConfig()
 const validation = validateModelConfig(config)
 const safety = checkEnvFileSafety()
-if (!validation.ok || !safety.ok) {
+// 配置不合法不在 import 时退出：独立进程（npm run serve）启动前再检查退出，
+// Serverless（api/chat.mjs）里由 handler 把错误以 500 返回，进程必须保活
+const startupErrors = [...safety.errors, ...validation.errors]
+if (startupErrors.length) {
   console.error('模型配置不合法，请先运行 npm run env:check')
-  console.error([...safety.errors, ...validation.errors].join('\n'))
-  process.exit(1)
+  console.error(startupErrors.join('\n'))
+}
+
+export function getStartupErrors() {
+  return startupErrors
 }
 
 const MIME = {
@@ -508,7 +514,7 @@ async function serveStatic(req, res, urlPath) {
   }
 }
 
-async function handleChat(req, res) {
+export async function handleChat(req, res) {
   let body
   try {
     const chunks = []
@@ -974,6 +980,12 @@ async function handleChat(req, res) {
   }
 }
 
+// 仅在直接运行（node server/index.mjs，即 npm run serve）时启动 HTTP 服务；
+// 被 Serverless（api/*.mjs）import 时跳过，不能在函数环境里 listen
+const isMainProcess = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isMainProcess) {
+  if (startupErrors.length) process.exit(1)
+
 createServer((req, res) => {
   const url = req.url ?? '/'
   if (req.method === 'GET' && url === '/api/health') {
@@ -1022,3 +1034,4 @@ createServer((req, res) => {
   console.log(`BlueCloud AI Copilot 已启动：http://127.0.0.1:${PORT}/`)
   console.log(`模型：${config.model}（key 仅存于服务端）`)
 })
+}
