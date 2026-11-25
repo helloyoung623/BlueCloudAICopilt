@@ -3,6 +3,7 @@ dist/
 build/
 .cache/
 .env*
+!.env.example
 .vite/
 vite.config.*.timestamp-*
 *.tsbuildinfo
@@ -20,3 +21,10 @@ logs/
 /.plugins/
 /.opencode-skills/
 .vercel
+
+# 图标代理的磁盘缓存（运行时生成，不是源码）
+server/.icon-cache/
+server/.kubai-cache/
+
+# 本地部署快照（构建产物，不入库）
+preview-site/

@@ -1,4 +1,4 @@
-import { forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { motion } from "motion/react";
 import svgPaths from "@/imports/默认首页-1/svg-4ly00k0kqz";
@@ -13,12 +13,13 @@ import svgPresentation from "@/imports/Ppt-1/svg-b6redky6le";
 import imgStyle1 from "@/imports/需求确认-1/29d4a489057188d7298a9a9f8b923d2d9c630925.png";
 import imgStyle2 from "@/imports/需求确认-1/f49f63a62b02589f759f36fc0961c6709a8e1bdf.png";
 import imgStyle3 from "@/imports/需求确认-1/9b2936619dc23e46dde47ce229cadb09c1b911ab.png";
-import { PptPanel, PptResultMessage } from "./components/ppt-result";
-import { DotmCircular2 } from "./components/dotm-circular-2";
+import { PptPanel, PptResultMessage } from "./components/ppt-result";import { DotmCircular2 } from "./components/dotm-circular-2";
 import { RadarArcLoader } from "./components/radar-arc-loader";
-import { RichText, RICH_TEXT_CSS, plainTextToHtml } from "./components/rich-text";
+import { HomeBackground } from "./components/home-background";
+import { RichText, RICH_TEXT_CSS, normalizeAiHtml, visibleTextLength, truncateHtmlByVisibleText } from "./components/rich-text";
 import { OneDriveCard, OutlookCard, RESULT_CARD_CSS, type OneDriveFile, type OutlookMail, type QuotePayload } from "./components/result-cards";
 import { ArtifactFileCard, SmallTip, TaskArtifactsButton } from "./components/task-artifacts";
+import { KubaiIcon, kubaiNameFromUrl } from "./components/kubai-icon";
 import type { LocatedTaskArtifact, TaskArtifact } from "./components/task-artifacts";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./components/ui/dialog";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./components/ui/sheet";
@@ -29,6 +30,8 @@ import { ConnectorsView } from "./components/connectors-view";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
+import { UserAvatar } from "./components/user-avatar";
+import { useUserProfile } from "./user-profile";
 import { AttachmentTray, MessageAttachments, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, makeVirtualFile, readFileMeta, readVirtualFile } from "./components/attachment-tray";
 import type { ChatAttachment } from "./components/attachment-tray";
 import { AttachmentPicker } from "./components/attachment-picker";
@@ -44,14 +47,23 @@ import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./compo
 import { Popover, PopoverAnchor } from "./components/ui/popover";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
+import { streamChat, type AgentEvent, type AgentSource } from "./agent-client";
+import { condenseAutomationTitle } from "./automation-title";
 import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
-import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
+import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, useDismissOnOutside, TASK_OPERATIONS, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
 type ProcessVariant = "requirement" | "outline" | "ppt";
-type ProcessPreset = { goal: string; running: string; actions: { label: string; icon: ToolKind }[] };
+// 演示链路的执行过程也走同一套规范：
+//   summary = 外层「行动说明」（一句进行时目标，界面直接显示）
+//   title   = 折叠入口的静态短语（概括这一组动作，不是「显示执行意图」这种功能名）
+//   actions = 内层动作行，label 自带动词、不带「搜索；」这类分类前缀，icon 用 ReAct 图标
+type ProcessPreset = { goal?: string; running: string; summary?: string; title?: string; actions: { label: string; icon: ToolKind }[] };
+// 真 agent 的一轮「行动说明 + 执行意图」：模型每发起一轮工具调用就产生一组，
+// 多轮工具时页面上会出现多个这样的块，和 Figma 的重复结构一致。
+type AgentRound = { summary: string; title?: string; actions: ProcessPreset["actions"]; progress: { shown: number; batchStart: number }; slots?: number[] };
 type Message = {
   role: "user" | "ai" | "process" | "result";
   text: string;
@@ -72,24 +84,52 @@ type Message = {
   // status：卡片态的四种样式 —— 已启用/已暂停/已结束 跟任务状态同步，已删除 是任务被删后卡片留下的状态
   // schedule / prompt：副标题「时间 · 任务内容」的原始两段（9925:54915），
   // 时间从 schedule 实时算，详情栏改了周期或「就」的内容，卡片跟着变
-  automation?: { taskId: string; title: string; cycle: string; description: string; icon: AutomationIcon; status?: AutomationCardStatus; schedule?: ScheduleState; prompt?: string };
+  automation?: { taskId: string; title: string; cycle: string; description: string; icon: AutomationIcon; iconUrl?: string; status?: AutomationCardStatus; schedule?: ScheduleState; prompt?: string };
+  // 本轮已知会生成自动化卡片（工具已建好或从弹窗发起），但卡片还没挂上：
+  // 操作项必须等卡片到位再出现，否则卡片晚到会插到操作项上方把它顶下去。
+  automationPending?: boolean;
   // 自动化卡片下方的延展问题（Figma 9925:54837「延展问题」模块）
   followUps?: string[];
+  // 结果自检结论：正文发出前服务端拿回答跟工具记录对过账，
+  // ok=false 时正文里已经写明哪一项没对上，这里只在回答下方留一行验收说明。
+  verify?: { ok: boolean; retried?: boolean; note?: string };
+  // run.end 已给出最终推荐追问结果（即使为空），用于侧栏「本轮完成」判定，避免无追问时 loading 卡住。
+  followUpsReady?: boolean;
   // 用户消息的发送状态（Figma 9369:50206）：failed=发送失败（红色感叹号），info=信息提示（info 图标）
   sendState?: "failed" | "info";
   // 历史消息标记：从历史会话载入的消息为 true，AI 正文/执行过程直接完整显示，不重播打字动画
   instant?: boolean;
+  // 真实 AI 流式输出中：instant 显示每个字块，正文完成后才落 followUps / 结束过程态
+  streaming?: boolean;
+  // 服务端 answer.end 已到：正文发完（推荐追问还在生成）。操作项据此立刻出现，不等 run.end。
+  bodyDone?: boolean;
+  // 本轮 run 的稳定标识：用于「操作项出现即本轮完成」的判定，避免正文/推荐问题变化导致 key 抖动。
+  runId?: number;
+  streamError?: string;
   // 执行过程已展开的步骤进度：切走任务再回来时据此恢复（含最后一批仍处于 loading 的状态）
   progress?: { shown: number; batchStart: number };
+  // 真 agent：步骤由服务端 tool.call/tool.result 事件驱动，不走本地的逐批揭示定时器
+  controlledProcess?: boolean;
+  // 真 agent 的用户可见推理摘要：位于「正在思考」之后、「显示执行意图」之前
+  summary?: string;
+  // 多轮工具的「行动说明 + 执行意图」分组；有值时优先于单条 summary 渲染
+  rounds?: AgentRound[];
+  // 回答引用的真实来源：只有服务端 run.end 下发非空 sources 时才显示来源徽标，
+  // 纯模型回答（无检索工具）不带此字段，不再显示写死的「9个来源」。
+  sources?: AgentSource[];
+  // 本轮新产生的流式回答：需要逐字打字；历史载入的消息不带此字段，直接全文显示。
+  // 独立于 instant（instant 还控制入场动画等），避免两者语义冲突。
+  needsTypewriter?: boolean;
 };
-// 一条回答的「延展问题」真正渲染出来才算这轮执行完成；用会话 id + 回答正文 + 推荐问题做 key，
-// 同一会话里重新生成 / 新一轮回答会拿到新 key，避免沿用上一轮「已显示」状态提前清掉 loading。
-function getRecommendationKey(conversationId: number | null, messages: Message[]): string | null {
+// 规则（用户 2026-11-25 改）：本轮「操作项出现」即视为任务执行完成，侧栏 loading 立刻结束，
+// 不再等推荐问题渲染（推荐追问在服务端要多生成几秒，会拖住 loading）。
+// key 用「会话 id + 本轮 runId」：runId 在整轮流式过程中稳定，不会因为正文变长 / 推荐问题后到而变 key。
+function getAnswerDoneKey(conversationId: number | null, messages: Message[]): string | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const msg = messages[i];
     if (msg.role !== "ai") continue;
-    if (!msg.followUps?.length) return null;
-    return `${conversationId ?? "draft"}|${msg.text ?? ""}|${msg.followUps.join("|")}`;
+    if (msg.runId === undefined) return `${conversationId ?? "draft"}|${msg.text ?? ""}|${(msg.followUps ?? []).join("|")}`;
+    return `${conversationId ?? "draft"}|run-${msg.runId}`;
   }
   return null;
 }
@@ -107,45 +147,23 @@ type OutlinePage = { id: number; pageLabel: string; title: string; content: Outl
 
 const isPPTIntent = (t: string) => /ppt|演示|幻灯|slide/i.test(t) || t.includes("PPT");
 
-// 聊天里说「创建/生成自动化任务」→ 不走普通问答，直接进自动化创建流程
-// （任务落到「自动化任务」列表，会话里出自动化卡片，与自动化页「创建」入口同一链路）
-const isAutomationIntent = (t: string) => t.includes("自动化任务") && /(创建|新建|设置|添加|生成)/.test(t);
+// 自动化任务不再由前端关键词拦截：是不是「要创建一个定时任务」由模型自己判断，
+// 条件不齐时模型先追问，齐了才调 create_automation 工具。前端只接工具结果落库。
+// 下面三条是任务卡片下方固定的延展问题（与「自动化任务」页创建入口保持一致）。
+const AUTOMATION_FOLLOW_UPS = [
+  "这个任务的执行记录在哪里查看？",
+  "把执行时间改成每天 09:00",
+  "给这个任务设置一个结束时间",
+];
 
-// 从自然语言里解析排期条件、任务名与「就」的内容：
-//   「创建一个自动化任务，每天早上汇总未读邮件」
-//   → 每天 09:00；任务名「每天早上汇总未读邮件」；任务内容「汇总未读邮件」
-const parseAutomationSchedule = (t: string): { schedule: ScheduleState; title: string; goal: string } => {
-  // 执行周期：只有明确写了「每周X」才算每周（注意别把「每天早上」的「每天」误判成周日）
-  // 周几与日期都是多选：「每周一三五」→ 周一/周三/周五；「每月1号、15号」→ 1号/15号
-  const WEEKDAY_ORDER = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-  const weekdayMatch = t.match(/每周([一二三四五六日天、，,\s]+)/);
-  const weekdays = weekdayMatch
-    ? [...new Set([...weekdayMatch[1].matchAll(/[一二三四五六日天]/g)].map(match => `周${match[0].replace("天", "日")}`))]
-      .sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b))
-    : [];
-  const cycle: ScheduleState["cycle"] = weekdays.length ? "每周" : "每天";
-  const monthDays = [...new Set([...t.matchAll(/(\d{1,2})\s*[号日]/g)]
-    .map(match => Number(match[1]))
-    .filter(day => day >= 1 && day <= 31))]
-    .sort((a, b) => a - b)
-    .map(day => `${day}号`);
-  // 执行时刻：优先取明确的 HH:MM；否则按 早/午/晚 推断
-  const timeMatch = t.match(/([01]?\d|2[0-3]):([0-5]\d)/);
-  const time = timeMatch ? timeMatch[0] : t.includes("晚上") ? "20:00" : t.includes("中午") ? "12:00" : "09:00";
-  // 任务名：「自动化任务」后面的内容（去掉标点），没有就回退整句
-  const after = t.split(/自动化任务/)[1]?.replace(/^[，,。：:\s]+/, "").trim();
-  const title = after || t;
-  // 任务内容：把开头的时间描述剥掉（卡片副标题已有「每天 09:00」，避免重复）
-  const rawGoal = title.replace(/^((每天|每日|每周[一二三四五六日天、，,\s]*|每月(?:[0-9]{1,2}\s*[号日][、，,\s]*)*|每年|工作日|早上|上午|中午|下午|晚上|凌晨)[，,、\s]*)+/, "");
-  // 时间已在副标题里展示，「就」的内容里再留一遍就成了「09:00 · 09:00 汇总…」
-  const goal = rawGoal.replace(/^\s*(?:[0-2]?\d:[0-5]\d)[，,、\s]*/, "").trim() || title;
-  // 没在话里指定的周几 / 几号 / 年月，兜底用系统当前时间（与新建弹窗的预填规则一致）
-  const fallback = buildDefaultSchedule();
-  return {
-    schedule: { cycle, weekdays: weekdays.length ? weekdays : fallback.weekdays, monthDays: monthDays.length ? monthDays : fallback.monthDays, yearMonth: fallback.yearMonth, yearDay: fallback.yearDay, time, customInterval: 1, customUnit: "天", customMonthDays: fallback.customMonthDays },
-    title,
-    goal,
-  };
+// 工具返回的自动化任务参数（server/tools.mjs 的 buildAutomation）→ 前端任务卡片结构
+// icon：服务端拿 AI 给的关键词去 icons.kubai.design 检索到的图标（url 走 /api/icon 代理）
+type AgentAutomationOutput = { created: boolean; missing?: string[]; question?: string; automation?: { title: string; goal: string; cycle: string; time: string; weekdays: string[]; monthDays: string[]; icon?: { name: string; url: string; page?: string; matched?: string[] } } };
+
+// 「新建自动化任务」弹窗发起的一轮：seed 给服务端补参数，meta 用来还原任务与卡片。
+type LaunchAutomationPayload = {
+  seed: { title: string; goal: string; cycle?: string; time: string; weekdays: string[]; monthDays: string[] };
+  meta: { title: string; goal: string; schedule: ScheduleState; newSessionEachRun: boolean; attachments?: ChatAttachment[] };
 };
 
 // 「2.9MB / 860KB」这类展示用文案 → 字节数（资料库文件上传到项目时复用）
@@ -170,11 +188,26 @@ const buildTaskArtifacts = (text: string): TaskArtifact[] => {
 };
 const PPT_ARTIFACT_NAME = "信息的分析报告.pptx";
 
-// 最新 AI 回复下方默认展示的延展/推荐问题（Figma「延展问题」模块）
-const DEFAULT_FOLLOW_UPS = [
-  "帮我总结一下这段内容的要点",
-  "能不能再展开讲讲？",
-  "有没有相关的其他案例？",
+// 演示链路的推荐追问：也按「细节深挖 / 场景延伸 / 行动产出」三条生成，不再用万金油模板。
+const RICH_TEXT_FOLLOW_UPS = [
+  "H3 和 H4 视觉上差多少？",
+  "这套样式怎么用在周报里？",
+  "帮我按这套样式写一份周报",
+];
+const PPT_FOLLOW_UPS = [
+  "这套大纲适合什么受众？",
+  "每页需要配什么图表？",
+  "直接把大纲生成完整PPT",
+];
+const OUTLOOK_FOLLOW_UPS = [
+  "这几封邮件需要我回复吗？",
+  "邮件里的附件怎么批量下载？",
+  "帮我把邮件要点整理成表格",
+];
+const ONEDRIVE_FOLLOW_UPS = [
+  "这几个文件内容有什么区别？",
+  "文件里的数据是最新的吗？",
+  "帮我把文件内容整理成摘要文档",
 ];
 
 // 富文本示例（Figma 2759:15863「HTML」）：发「富文本示例」触发展示，覆盖全部标签。
@@ -220,18 +253,32 @@ const OUTLOOK_SAMPLE: OutlookMail[] = [
   { sender: "王建国", title: "产品发布会物料最终确认", body: "主视觉和演示文稿已定稿，麻烦确认后安排上传。", time: "2026年7月1日 09:41", avatarColor: 2 },
 ];
 
-// build an execution process whose copy reflects the user's actual request
-const buildQueryProcess = (query: string): ProcessPreset => {
+// 演示链路的执行过程：和真 agent 同一套文案规矩 —— 行动说明用「正在…」，
+// 折叠入口是概括动作集合的名词短语，动作行自带动词、不出现工具名与分类前缀。
+const buildQueryProcess = (query: string, kind: "outlook" | "onedrive" = "outlook"): ProcessPreset => {
   const topic = query.length > 24 ? `${query.slice(0, 24)}…` : query;
+  if (kind === "onedrive") {
+    return {
+      summary: `正在检索 OneDrive 中与「${topic}」相关的文件`,
+      running: "正在检索文件并整理结果",
+      title: "文件检索与整理",
+      actions: [
+        { label: "检索 OneDrive 中的相关文件", icon: "react-read" },
+        { label: "加载文件摘要与更新时间", icon: "react-read" },
+        { label: "归纳文件的用途与差异", icon: "react-analyze" },
+        { label: "整理成可直接引用的文件清单", icon: "react-summarize" },
+      ],
+    };
+  }
   return {
-    goal: `任务目标：${query}`,
-    running: `围绕「${topic}」检索并整理信息`,
+    summary: `正在检索近一周的邮件并整理关键信息`,
+    running: "正在检索邮件并整理结果",
+    title: "邮件检索与整理",
     actions: [
-      { label: `搜索；检索「${topic}」相关信息`, icon: "search" },
-      { label: "读取；加载匹配到的内容", icon: "read" },
-      { label: "提取；归纳关键信息", icon: "extract" },
-      { label: "分析；梳理结果结构", icon: "analyze" },
-      { label: "汇总；整理输出结果", icon: "summarize" },
+      { label: "检索近一周收到的邮件", icon: "react-read" },
+      { label: "加载邮件正文与附件信息", icon: "react-read" },
+      { label: "归纳邮件中的关键事项", icon: "react-analyze" },
+      { label: "整理成可直接查看的邮件清单", icon: "react-summarize" },
     ],
   };
 };
@@ -1597,6 +1644,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   onSelect: (id: number) => void;
   onSelectProject: (id: number) => void;
 }) {
+  // 底部用户信息：现在来自本地随机档案，接入真实登录后自动换成账号里的名字
+  const profile = useUserProfile();
   const [hoverId, setHoverId] = useState<number | null>(null);
   const [menuId, setMenuId] = useState<number | null>(null);
   const [hoverProjectId, setHoverProjectId] = useState<number | null>(null);
@@ -2334,12 +2383,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           }}
           className="flex h-[32px] flex-1 min-w-0 cursor-pointer items-center gap-[8px] rounded-[8px] px-[12px] py-[4px] text-left"
         >
-          <div className="relative shrink-0 w-[24px] h-[24px] rounded-full bg-[#dcdcdc] border border-white overflow-hidden">
-            <div className="absolute inset-0 flex items-center justify-center">
-              <img src="/assets/a2c1b.svg" alt="" />
-            </div>
-          </div>
-          <span className="min-w-0 w-fit grow-0 basis-auto truncate whitespace-nowrap text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">张三李四王麻子</span>
+          <UserAvatar name={profile.displayName} seed={profile.avatarSeed} size={24} className="shrink-0" />
+          <span className="min-w-0 w-fit grow-0 basis-auto truncate whitespace-nowrap text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">{profile.displayName}</span>
           {(profileHovered || profileMenuOpen) && (
             <img src="/assets/05ead.svg" alt="" className="shrink-0" />
           )}
@@ -2809,7 +2854,7 @@ function ChatHeader({ title, projectBreadcrumb, projectOverview, actions, sideba
   onNewChat?: () => void;
 }) {
   return (
-    <div className="relative z-30 flex h-[48px] min-h-[48px] w-full shrink-0 items-center gap-[8px] bg-white px-[16px] py-0">
+    <div className="relative z-30 flex h-[48px] min-h-[48px] w-full shrink-0 items-center gap-[8px] bg-transparent px-[16px] py-0">
       {mobile ? (
         <>
           <SheetTrigger asChild>
@@ -2971,21 +3016,20 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
   onOpenConnectors?: () => void;
 }) {
   const selectedProject = projects.find(project => project.id === selectedProjectId);
+  // 问候语里的名字：当前是本地随机身份，接入真实登录后自动变成账号名称
+  const profile = useUserProfile();
   return (
-    <div className="flex-1 min-h-0 bg-white flex flex-col overflow-hidden">
-      <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-@keyframes suggestIn{0%{opacity:0;transform:translateY(var(--suggest-shift,14px)) scale(.98)}100%{opacity:1;transform:translateY(0) scale(1)}}
+    // 背景层（点阵 + 开场 shader）已上移到主内容区最外层的 HomeBackground（含顶栏整块），
+    // 这里保持透明让背景透出，自身不再画任何背景。
+    <div className="flex-1 min-h-0 bg-transparent flex flex-col overflow-hidden">
+      <style>{`@keyframes suggestIn{0%{opacity:0;transform:translateY(var(--suggest-shift,14px)) scale(.98)}100%{opacity:1;transform:translateY(0) scale(1)}}
 @media (prefers-reduced-motion: reduce){[data-suggest-in]{animation:none!important;opacity:1!important;transform:none!important}}`}</style>
       <div className="conversation-gutter relative flex-1 min-h-0">
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center overflow-hidden">
-          <div className="w-[756px] h-[400px] rounded bg-gradient-to-r from-[#a3ffff] to-[#1e63f5] opacity-10 blur-[100px]" />
-        </div>
         <div className="conversation-content relative mx-auto flex h-full min-h-0 w-full flex-col items-center pt-[clamp(16px,14vh,160px)] [@media(max-height:520px)]:pt-0">
           {/* 矮窗口（如预览面板约 400px 高）时，欢迎区可压缩滚动，保证底部输入框和发送按钮始终可见 */}
           <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto [@media(max-height:520px)]:hidden">
           <div className="shrink-0 flex items-baseline gap-[8px] pb-[16px]">
-            <span className="text-[46px] font-semibold leading-[56px] text-[rgba(0,0,0,0.88)] tracking-[0.046px]">Hi，xxxx</span>
-            <span className="w-[16px] h-[4px] bg-[rgba(0,0,0,0.88)] self-end mb-[10px]" style={{ animation: "blink 1s step-end infinite" }} />
+            <span className="text-[46px] font-semibold leading-[56px] text-[rgba(0,0,0,0.88)] tracking-[0.046px]">Hi，{profile.displayName}</span>
           </div>
           <div className="flex flex-col items-center w-full">
             <div className="shrink-0 flex items-center gap-[8px] pt-[32px] pb-[20px]" data-suggest-in style={suggestInStyle(8, 0)}>
@@ -2995,7 +3039,7 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
             </div>
             <div className="shrink-0 flex flex-wrap items-center justify-center gap-[12px]">
               {SUGGESTIONS.map((s, i) => (
-                <button key={s} onClick={() => onSend(s)} data-suggest-in style={suggestInStyle(18 + i * 7, 0.08 + i * 0.075)} className="flex items-center gap-[10px] px-[8px] py-[8px] bg-[#f7f7f7] hover:bg-[#f2f2f2] rounded-[8px] transition-colors cursor-pointer">
+                <button key={s} onClick={() => onSend(s)} data-suggest-in style={suggestInStyle(18 + i * 7, 0.08 + i * 0.075)} className="flex items-center gap-[10px] px-[8px] py-[8px] bg-[#f7f7f7] hover:bg-[#e6e6e6] rounded-[8px] transition-colors cursor-pointer">
                   <AIIcon uid={`s${i}`} />
                   <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] whitespace-nowrap font-normal">{s}</span>
                 </button>
@@ -3581,7 +3625,7 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
   );
 
   return (
-    <main className="relative min-h-0 flex-1 overflow-y-auto bg-white px-[16px] min-[800px]:px-[24px]">
+    <main className="relative min-h-0 flex-1 overflow-y-auto bg-transparent px-[16px] min-[800px]:px-[24px]">
       <div className="mx-auto flex min-h-full w-full max-w-[960px] flex-col pb-[40px]">
         <h1 className="flex h-[44px] items-end pb-[16px] pt-[20px] text-[20px] font-medium leading-[28px] tracking-[0.02px] text-[rgba(0,0,0,0.88)]">归档数据</h1>
         <div role="tablist" aria-label="归档数据" className="flex shrink-0 items-center gap-[16px]">
@@ -4193,36 +4237,59 @@ const AUTOMATION_CARD_CSS = `
 .ac-static .ac-sweep{animation:none;opacity:0}
 `;
 
-function AutomationCard({ automation, onOpen, instant = false }: {
+function AutomationCard({ automation, onOpen, onOperate, instant = false }: {
   automation: NonNullable<Message["automation"]>;
   onOpen?: (taskId: string) => void;
+  // hover 操作项（暂停/启用、更多菜单），与自动化任务列表卡片的交互一致
+  onOperate?: (label: string, taskId: string) => void;
   // 历史消息（instant）：不播入场/扫光动画，避免切换对话回来像「重新加载」
   instant?: boolean;
 }) {
+  const [moreAnchor, setMoreAnchor] = useState<HTMLButtonElement | null>(null);
+  useDismissOnOutside(moreAnchor, setMoreAnchor);
   // 卡片四态（Figma 9908:45451）：已启用/已暂停 显示「时间 · 任务内容」；
   // 已结束 只显示「已结束」；已删除 标题加删除线并降到 26% 黑，副标题换成「已删除」且整卡不再可点。
   const deleted = automation.status === "已删除";
   const ended = automation.status === "已结束";
+  const paused = automation.status === "已暂停";
+  // 已删除 / 已结束的卡片不再给操作项（与列表页一致：任务已不可操作）
+  const actionable = !deleted && !ended && Boolean(onOperate);
   // 副标题由 schedule + 「就」的内容拼成（Figma 9925:54915），不再把 cycle 和 description 硬拼
   const subtitle = deleted
     ? " 已删除"
     : ended
       ? " 已结束"
       : automation.schedule
-        ? cardSubtitle(automation.schedule, automation.prompt ?? "", undefined, automation.title)
+        // 已暂停时副标题前缀换成「已暂停 ·」，与任务列表卡片一致
+        ? cardSubtitle(automation.schedule, automation.prompt ?? "", paused ? "已暂停" : undefined, automation.title)
         : `${automation.cycle} · ${automation.description}`;
   return (
     <>
       <style>{AUTOMATION_CARD_CSS}</style>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={deleted ? -1 : 0}
         data-automation-card={automation.taskId}
         data-automation-status={automation.status ?? "已启用"}
-        disabled={deleted}
-        onClick={() => onOpen?.(automation.taskId)}
-        className={`ac-bg relative flex w-full shrink-0 items-center gap-[8px] overflow-hidden rounded-[8px] bg-[#f7f7f7] p-[8px] text-left transition-colors ${deleted ? "cursor-default" : "cursor-pointer hover:bg-[#f2f2f2]"}${instant ? " ac-static" : ""}`}
+        data-kubai-trigger="true"
+        data-menu-open={moreAnchor ? "true" : undefined}
+        aria-disabled={deleted || undefined}
+        onClick={() => { if (!deleted) onOpen?.(automation.taskId); }}
+        onKeyDown={event => {
+          if (deleted) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          onOpen?.(automation.taskId);
+        }}
+        className={`ac-bg group/card relative flex w-full shrink-0 items-center gap-[8px] overflow-hidden rounded-[8px] bg-[#f7f7f7] p-[8px] text-left transition-colors ${deleted ? "cursor-default" : "cursor-pointer hover:bg-[#f2f2f2] data-[menu-open=true]:bg-[#f2f2f2]"}${instant ? " ac-static" : ""}`}
       >
-        <img src={automationIconSrc(automation.icon)} alt="" className="ac-icon size-[32px] shrink-0" />
+        <KubaiIcon
+          name={kubaiNameFromUrl(automation.iconUrl)}
+          src={automation.iconUrl}
+          fallbackSrc={automationIconSrc(automation.icon)}
+          size={32}
+          className="ac-icon"
+        />
         <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
           <span className={`ac-title truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] ${deleted ? "text-[rgba(0,0,0,0.26)] line-through" : "text-[rgba(0,0,0,0.88)]"}`}>
             {automation.title}
@@ -4231,6 +4298,35 @@ function AutomationCard({ automation, onOpen, instant = false }: {
             {subtitle}
           </span>
         </div>
+        {/* 右侧操作项：与自动化任务列表卡片一致（默认隐藏，hover 卡片或菜单展开时显现） */}
+        {actionable && (
+          <div className="flex shrink-0 items-center gap-[8px] opacity-0 transition-opacity group-hover/card:opacity-100 group-data-[menu-open=true]/card:opacity-100">
+            <button
+              type="button"
+              aria-label={paused ? `启用 ${automation.title}` : `暂停 ${automation.title}`}
+              title={paused ? "启用" : "暂停"}
+              onClick={event => {
+                event.stopPropagation();
+                onOperate?.(paused ? "启用" : "暂停", automation.taskId);
+              }}
+              className="flex size-[32px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#e6e6e6]"
+            >
+              <img src={paused ? "/assets/automation-start.svg" : "/assets/automation-pause.svg"} alt="" className="size-[20px]" />
+            </button>
+            <button
+              type="button"
+              aria-label={`更多操作 ${automation.title}`}
+              title="更多"
+              onClick={event => {
+                event.stopPropagation();
+                setMoreAnchor(current => current ? null : event.currentTarget);
+              }}
+              className="flex size-[32px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#e6e6e6]"
+            >
+              <img src="/assets/automation-more.svg" alt="" className="size-[20px]" />
+            </button>
+          </div>
+        )}
         {/* 最后扫过一道高光（只在任务还活着的时候播） */}
         {!deleted && !ended && (
           <span
@@ -4239,7 +4335,35 @@ function AutomationCard({ automation, onOpen, instant = false }: {
             style={{ backgroundImage: "linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.55) 34%, rgba(255,255,255,1) 52%, rgba(255,255,255,0.5) 70%, rgba(255,255,255,0) 100%)" }}
           />
         )}
-      </button>
+      </div>
+      {moreAnchor && (
+        <OperationMenu
+          anchor={moreAnchor}
+          gap={8}
+          align="end"
+          className="flex w-[192px] flex-col rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)]"
+          onClick={event => event.stopPropagation()}
+          onPointerDown={event => event.stopPropagation()}
+        >
+          <div className="flex flex-col gap-[2px] py-[4px]">
+            {TASK_OPERATIONS.map(operation => (
+              <button
+                key={operation.label}
+                type="button"
+                onClick={event => {
+                  event.stopPropagation();
+                  setMoreAnchor(null);
+                  onOperate?.(operation.label, automation.taskId);
+                }}
+                className="flex h-[40px] shrink-0 cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] hover:bg-[#f2f2f2]"
+              >
+                <img src={`/assets/${operation.icon}`} alt="" className="size-[16px] shrink-0" />
+                <span className="whitespace-nowrap">{operation.label}</span>
+              </button>
+            ))}
+          </div>
+        </OperationMenu>
+      )}
     </>
   );
 }
@@ -4309,11 +4433,12 @@ function UserMessageText({ text }: { text: string }) {
   );
 }
 
-function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onFollowUp, onQuote, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, recommendationKey, onRecommendationsShown }: {
+function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onRegeneratePpt, onDownloadArtifact, onOpenAutomation, onAutomationOperate, onFollowUp, onQuote, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, recommendationKey, onRecommendationsShown }: {
   msg: Message; index: number; isLastAi?: boolean; instant?: boolean; advance: (i: number) => void;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   onDownloadArtifact: (artifact: TaskArtifact) => void;
   onOpenAutomation?: (taskId: string) => void;
+  onAutomationOperate?: (label: string, taskId: string) => void;
   onFollowUp?: (text: string) => void;
   onQuote?: (payload: QuotePayload) => void;
   onEditMessage?: (index: number) => void;
@@ -4339,30 +4464,63 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
     window.setTimeout(() => setCopied(false), 1500);
     navigator.clipboard?.writeText(msg.plainText ?? msg.text ?? "")?.catch(() => setCopied(false));
   };
-  // 正文打完字后再让自动化卡片入场，保证「先文字、后卡片」的阅读顺序
-  // 历史消息（instant）视为已打完，避免挂载时被重置为 false 导致操作项永不出现
-  const [textDone, setTextDone] = useState(instant || !msg.text);
-  useEffect(() => { setTextDone(instant || !msg.text); }, [msg.text, instant]);
+  // 富文本打字机：按可见字符数逐字揭示 HTML，既保留 Figma 2759:15863 标签样式（列表圆点/加粗/标题），
+  // 又恢复「打完字才算完成」的链路 —— 卡片、操作项、推荐问题、侧栏 loading 都依赖 textDone。
+  const fullHtml = msg.role === "ai" ? (msg.html ?? normalizeAiHtml(msg.text ?? "")) : "";
+  const targetLen = visibleTextLength(fullHtml);
+  // 只有本轮新产生的流式回答（needsTypewriter）才逐字打字；历史载入的消息直接全文，切回来不重播。
+  const shouldType = Boolean(msg.needsTypewriter);
+  const [revealed, setRevealed] = useState(() => shouldType ? 0 : Number.MAX_SAFE_INTEGER);
+  const [textDone, setTextDone] = useState(!shouldType);
+  // 目标长度与流状态放进 ref：interval 只读 ref，不依赖 revealed，避免每打一次字就重建定时器拖慢节奏。
+  const targetLenRef = useRef(targetLen);
+  targetLenRef.current = targetLen;
+  const streamingRef = useRef(msg.streaming);
+  streamingRef.current = msg.streaming;
+  useEffect(() => {
+    if (!shouldType) { setRevealed(Number.MAX_SAFE_INTEGER); setTextDone(true); return; }
+    const id = window.setInterval(() => {
+      setRevealed(current => Math.min(current + 2, targetLenRef.current));
+    }, 30);
+    return () => window.clearInterval(id);
+  }, [shouldType]);
+  // 正文打完（revealed 追上目标）且流已结束 → 标记完成，驱动操作项/推荐问题/侧栏 loading
+  // bodyDone：服务端 answer.end 已到（正文发完、推荐追问还在生成），此时也算正文完成，
+  // 操作项不必等 run.end（生成追问要好几秒，会跟推荐问题一起冒出来）。
+  const bodyFinished = !msg.streaming || Boolean(msg.bodyDone);
+  useEffect(() => {
+    if (shouldType && revealed >= targetLen && bodyFinished) setTextDone(true);
+  }, [shouldType, revealed, targetLen, bodyFinished]);
+  // 打完字推进全局 revealed 指针（消息逐条显示），只推进一次
+  const doneAdvanced = useRef(false);
+  useEffect(() => {
+    if (textDone && !doneAdvanced.current) { doneAdvanced.current = true; advance(index); }
+  }, [textDone, advance, index]);
   // 卡片内容（底色/图标/标题/副标题/扫光）全部演完，才出现下方操作项
   const [actionsShown, setActionsShown] = useState(Boolean(instant));
+  // 顺序铁律：正文 → 产物（自动化卡片 / OneDrive、Outlook 卡片 / 产物文件）→ 操作项。
+  // 操作项永远最后出现：正文打完不够，还要等所有产物都渲染出来。
+  // 目前只有自动化卡片是异步到达的（从弹窗发起时卡片要等 run.end 兜底生成），
+  // 它没到位就先压住操作项，否则卡片晚到会插到操作项上方把它顶下去。
+  const productsPending = Boolean(msg.automationPending && !msg.automation);
   useEffect(() => {
-    if (!textDone) { setActionsShown(false); return; }
-    // 历史消息（instant）直接显示操作项，不再等卡片扫光/延时淡入
-    if (instant) { setActionsShown(true); return; }
+    // 真实流式输出期间不显示操作项，等正文收束且打字完成后统一出现
+    if (!bodyFinished || !textDone) { setActionsShown(false); return; }
+    // 产物还没到位（自动化卡片待生成）：先不出操作项，等卡片落地再排队
+    if (productsPending) { setActionsShown(false); return; }
+    // 历史消息（无打字标记）直接显示操作项，不再等延时淡入
+    if (instant && !shouldType) { setActionsShown(true); return; }
     // 自动化卡片需等扫光动画演完再显示操作项；普通回答打字结束即可显示
     const delay = msg.automation ? 1400 : 120;
     const id = window.setTimeout(() => setActionsShown(true), delay);
     return () => window.clearTimeout(id);
-  }, [msg.automation?.taskId, textDone, instant]);
+  }, [msg.automation?.taskId, productsPending, textDone, instant, msg.streaming, bodyFinished]);
   // 延展问题真的挂到 DOM 上了才通知外层：这一刻才算「问题执行完成」，侧栏 loading 同时消失
   useEffect(() => {
     if (recommendationKey && isLastAi && actionsShown) onRecommendationsShown?.(recommendationKey);
   }, [recommendationKey, isLastAi, actionsShown, onRecommendationsShown]);
-  const autoAdvance = msg.role === "user" || msg.role === "result" || (msg.role === "ai" && Boolean(msg.thinking));
+  const autoAdvance = msg.role === "user" || msg.role === "result" || (msg.role === "ai" && (Boolean(msg.thinking) || Boolean(msg.streaming)));
   useEffect(() => { if (autoAdvance) advance(index); }, [autoAdvance, advance, index]);
-  // 富文本消息仍用短引导语打字：打完才切换为富文本，revealed 链路保持原样
-  const handleTextDone = () => { setTextDone(true); advance(index); };
-
   if (msg.role === "user") {
     const hasSendState = msg.sendState === "failed" || msg.sendState === "info";
     return (
@@ -4370,65 +4528,75 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
         {/* 附件区（Figma 9369:50206「引用slot → .上传区」）：独立于气泡、位于气泡上方；响应式规则与输入框 AttachmentTray 完全一致 */}
         {msg.attachments && msg.attachments.length > 0 && <MessageAttachments attachments={msg.attachments} />}
         <div className="flex w-full items-center justify-end gap-[12px]">
-          {/* 发送状态图标（Figma 9369:50206）：红色感叹号=发送失败，info=信息提示；位于气泡左侧 */}
+          {/* 发送状态图标（Figma 9369:50206）：红色感叹号=发送失败，info=信息提示；位于气泡左侧。
+              hover 图标才出 SmallTip，失败态点击图标即重试；不再常驻黑色胶囊。 */}
           {hasSendState && (
-            <img
-              src={msg.sendState === "failed" ? "/assets/msg-error-fill.svg" : "/assets/msg-info-fill.svg"}
-              alt={msg.sendState === "failed" ? "发送失败" : "提示"}
-              className="size-[16px] shrink-0"
-            />
+            <SmallTip
+              side="top"
+              label={msg.sendState === "failed" ? (
+                <span className="flex items-center gap-[8px]">
+                  <span>发送失败</span>
+                  <span className="text-[#9cc5ff]">重试</span>
+                </span>
+              ) : "信息提示"}
+            >
+              <button
+                type="button"
+                aria-label={msg.sendState === "failed" ? "发送失败，点击重试" : "信息提示"}
+                onClick={msg.sendState === "failed" ? () => onRetryMessage?.(index) : undefined}
+                className="flex size-[16px] shrink-0 cursor-pointer items-center justify-center"
+              >
+                <img
+                  src={msg.sendState === "failed" ? "/assets/msg-error-fill.svg" : "/assets/msg-info-fill.svg"}
+                  alt=""
+                  className="size-[16px]"
+                />
+              </button>
+            </SmallTip>
           )}
           <div className="user-message relative min-w-0 bg-[#f7f7f7] px-[12px] py-[8px] rounded-tl-[8px] rounded-br-[8px] rounded-bl-[8px]">
             {msg.text && <UserMessageText text={msg.text} />}
           </div>
         </div>
-        {/* 用户消息操作项（Figma 917:11666）：编辑 / 复制 / 删除，hover 气泡时显示，右对齐 */}
-        <div className="flex items-center justify-end gap-[8px] pt-[4px] opacity-0 transition-opacity group-hover/user:opacity-100">
-          <button
-            type="button"
-            aria-label="编辑"
-            title="编辑"
-            onClick={() => onEditMessage?.(index)}
-            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
-          >
-            <img src="/assets/msg-edit.svg" alt="" className="size-[16px]" />
-          </button>
-          <button
-            type="button"
-            aria-label="复制"
-            title={copied ? "已复制" : "复制"}
-            onClick={handleCopy}
-            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
-          >
-            {/* Figma 2459:8219 .copy Icon：默认 copy-line，点击复制后切 success（勾） */}
-            <img src={copied ? "/assets/msg-copy-success.svg" : "/assets/msg-copy-user.svg"} alt="" className="size-[16px]" />
-          </button>
-          <button
-            type="button"
-            aria-label="删除"
-            title="删除"
-            onClick={() => onDeleteMessage?.(index)}
-            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#f2f2f2] hover:opacity-100"
-          >
-            <img src="/assets/msg-delete.svg" alt="" className="size-[16px]" />
-          </button>
+        {/* 用户消息操作项（Figma 917:11666）：编辑 / 复制 / 删除，hover 消息（含状态图标）时显示，右对齐；图标 hover 复用 SmallTip */}
+        <div className="flex items-center justify-end gap-[8px] pt-[12px] opacity-0 transition-opacity group-hover/user:opacity-100">
+          <SmallTip label="编辑" side="top">
+            <button
+              type="button"
+              aria-label="编辑"
+              onClick={() => onEditMessage?.(index)}
+              className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#e6e6e6] hover:opacity-100"
+            >
+              <img src="/assets/msg-edit.svg" alt="" className="size-[16px]" />
+            </button>
+          </SmallTip>
+          <SmallTip label={copied ? "已复制" : "复制"} side="top">
+            <button
+              type="button"
+              aria-label="复制"
+              onClick={handleCopy}
+              className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#e6e6e6] hover:opacity-100"
+            >
+              {/* Figma 2459:8219 .copy Icon：默认 copy-line，点击复制后切 success（勾） */}
+              <img src={copied ? "/assets/msg-copy-success.svg" : "/assets/msg-copy-user.svg"} alt="" className="size-[16px]" />
+            </button>
+          </SmallTip>
+          <SmallTip label="删除" side="top">
+            <button
+              type="button"
+              aria-label="删除"
+              onClick={() => onDeleteMessage?.(index)}
+              className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] opacity-60 transition-colors hover:bg-[#e6e6e6] hover:opacity-100"
+            >
+              <img src="/assets/msg-delete.svg" alt="" className="size-[16px]" />
+            </button>
+          </SmallTip>
         </div>
-        {/* 发送失败提示 + 重试（Figma 截图黑色胶囊），失败态显示 */}
-        {msg.sendState === "failed" && (
-          <button
-            type="button"
-            onClick={() => onRetryMessage?.(index)}
-            className="mt-[4px] flex items-center gap-[8px] rounded-[6px] bg-[rgba(0,0,0,0.88)] px-[10px] py-[5px] text-[12px] leading-[18px] text-white transition-opacity hover:opacity-90"
-          >
-            <span>发送失败</span>
-            <span className="text-[#9cc5ff]">重试</span>
-          </button>
-        )}
       </div>
     );
   }
   if (msg.role === "process") return (
-    <div className="w-full max-w-[768px]"><ExecutionProcess running={Boolean(msg.thinking)} instant={instant} progress={msg.progress} onProgress={p => onProcessProgress?.(index, p)} variant={msg.variant ?? "requirement"} preset={msg.preset} onGoalDone={() => advance(index)} /></div>
+    <div className="w-full max-w-[768px]"><ExecutionProcess running={Boolean(msg.thinking)} instant={instant} progress={msg.progress} controlled={Boolean(msg.controlledProcess)} summary={msg.summary} rounds={msg.rounds} onProgress={p => onProcessProgress?.(index, p)} variant={msg.variant ?? "requirement"} preset={msg.preset} onGoalDone={() => advance(index)} /></div>
   );
   if (msg.role === "result") return (
     <div className="w-full max-w-[768px]"><PptResultMessage onOpen={() => onOpenPpt?.()} onRegenerate={onRegeneratePpt} /></div>
@@ -4441,13 +4609,13 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
         </div>
       ) : (
         <div className="flex w-full flex-col gap-[12px]">
-          {/* 打字阶段用纯文本做入场动画；打完后所有 AI 回复统一走 Figma 2759:15863 HTML 标签样式。
-              有 html 的富文本消息直接用 html；其余纯文本转成 <p>/<br> 再交给 RichText 渲染。 */}
-          {textDone ? (
-            <RichText html={msg.html ?? plainTextToHtml(msg.text ?? "")} animate={Boolean(msg.animateRich && !localInstant)} />
-          ) : (
-            <p className="text-[16px] leading-[26px] text-[rgba(0,0,0,0.88)] whitespace-pre-wrap"><Typewriter instant={localInstant} text={msg.text ?? ""} onDone={handleTextDone} /></p>
-          )}
+          {/* 所有 AI 回复正文统一走 Figma 2759:15863 HTML 标签样式：模型给 HTML 就用 HTML，
+              给 markdown 就归一化成白名单标签（如 1. 2. 3. → <ol><li>）。
+              打字期间按可见字符数截断 HTML 逐字揭示，标签结构始终完整，富文本样式不退化。 */}
+          <RichText html={truncateHtmlByVisibleText(fullHtml, revealed)} animate={Boolean(msg.animateRich && !localInstant)} />
+          {/* 结果自检「核对回答与依据」属于工具执行步骤，统一只出现在上方执行过程里（verify.start 已追加到最后一轮），
+              绝不能再在正文与产物之间插一行，否则会打断「正文 → 产物 → 操作项」的顺序。
+              没通过时服务端已把没对上的地方写在正文开头，这里不重复。 */}
           {/* 搜索结果卡片（Figma OneDrive 7297:71832 / Outlook 7287:69977）：引用回填输入框 */}
           {textDone && msg.oneDriveFiles && msg.oneDriveFiles.length > 0 && (
             <OneDriveCard files={msg.oneDriveFiles} onQuote={onQuote} />
@@ -4457,7 +4625,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
           )}
           {/* 自动化卡片（Figma 9925:54896）：#F7F7F7 底、r8、p8、g8，32 图标 + 标题/副标题 */}
           {msg.automation && textDone && (
-            <AutomationCard automation={msg.automation} onOpen={onOpenAutomation} instant={localInstant} />
+            <AutomationCard automation={msg.automation} onOpen={onOpenAutomation} onOperate={onAutomationOperate} instant={localInstant} />
           )}
           {msg.artifacts && msg.artifacts.length > 0 && (
             <div className="artifact-grid grid w-full gap-[12px]">
@@ -4470,7 +4638,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
           {actionsShown && (
             <div
               // 历史消息（重新进入/切换对话）不播入场动画：仅保留 hover 的 opacity 过渡
-              style={{ animation: localInstant ? "none" : undefined }}
+              style={{ animation: shouldType ? undefined : "none" }}
               // 操作项距回答统一 12px（容器 gap），卡片回答与其它回答一致
               className={`ac-actions flex items-center gap-[8px] transition-opacity ${isLastAi ? "" : "opacity-0 group-hover/ai:opacity-100"}`}
             >
@@ -4494,11 +4662,14 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
               >
                 <img src={copied ? "/assets/msg-copy-success.svg" : "/assets/msg-copy.svg"} alt="" className={copied ? "size-[16px]" : "size-[24px]"} />
               </button>
-              {/* 来源：3 个 20px 圆形来源徽标（重叠 -4）+「N个来源」 */}
-              <div className="flex items-center gap-[4px] px-[4px]">
-                <img src="/assets/msg-sources.svg" alt="" className="h-[20px] w-[52px] shrink-0" />
-                <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)]">9个来源</span>
-              </div>
+              {/* 来源：3 个 20px 圆形来源徽标（重叠 -4）+「N个来源」。
+                  只有消息带真实来源（检索工具 / 搜索卡片）时才显示；纯模型回答不显示。 */}
+              {Boolean(msg.sources?.length) && (
+                <div className="flex items-center gap-[4px] px-[4px]">
+                  <img src="/assets/msg-sources.svg" alt="" className="h-[20px] w-[52px] shrink-0" />
+                  <span className="whitespace-nowrap font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)]">{msg.sources!.length}个来源</span>
+                </div>
+              )}
             </div>
           )}
           {/* 延展问题（Figma 9925:54837 / 9787:71282）：白底、#F2F2F2 描边、r8、p 8/12；hover 变 #F2F2F2 灰底并去描边；短问句贴内容宽，长问句自动撑满换行。仅消息流末尾（最新）AI 回答显示推荐问题，发新消息后旧回答的推荐问题消失 */}
@@ -4509,8 +4680,8 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
                   key={question}
                   type="button"
                   onClick={() => onFollowUp?.(question)}
-                  // 历史消息（重新进入/切换对话）不再重播错峰入场动画，直接呈现
-                  style={{ animation: localInstant ? "none" : `followUpIn 320ms cubic-bezier(0.22,1,0.36,1) ${qi * 110}ms both` }}
+                  // 本轮新回答（含重新生成）播放错峰入场；历史消息直接呈现
+                  style={{ animation: shouldType ? `followUpIn 320ms cubic-bezier(0.22,1,0.36,1) ${qi * 110}ms both` : "none" }}
                   className="w-fit max-w-full cursor-pointer rounded-[8px] border border-[#f2f2f2] bg-white px-[12px] py-[8px] text-left font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] transition-colors hover:border-transparent hover:bg-[#f2f2f2]"
                 >
                   {question}
@@ -4524,7 +4695,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, onRecommendationsShown }: {
+function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onAutomationOperate, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, onRecommendationsShown }: {
   conversationId: number | null;
   messages: Message[];
   input: string;
@@ -4543,6 +4714,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
   agentRunning: boolean; onStop: () => void;
   onOpenAutomation?: (taskId: string) => void;
+  onAutomationOperate?: (label: string, taskId: string) => void;
   onOpenConnectors?: () => void;
   onEditMessage?: (index: number) => void;
   onDeleteMessage?: (index: number) => void;
@@ -4552,16 +4724,49 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   onRecommendationsShown?: (key: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 是否「跟随最新内容」：AI 回答流式增长时自动滚到底，新内容始终可见；
+  // 用户一旦自己往上滚（离底部超过 24px）就停止跟随，不跟用户抢滚动条；
+  // 用户滚回底部（或发新消息、切会话）自动恢复跟随。
+  const FOLLOW_THRESHOLD = 24;
+  const followRef = useRef(true);
+  const prevMessageCountRef = useRef(0);
+  const prevConversationRef = useRef(conversationId);
   // useLayoutEffect：切换会话/新消息时在绘制前就定位到底部，
   // 用 useEffect 会先画出「停在旧滚动位置」的一帧，看起来像内容重新加载了一次。
   // 图标/字体高度在下一帧才最终确定，补一次 rAF 校正，避免停在差十几像素的位置。
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // 消息条数变多 = 真有新消息（用户自己发的或系统插入），这时无论之前在哪都回到底部；
+    // 切会话同理：新会话一律从底部开始看。
+    if (conversationId !== prevConversationRef.current) {
+      prevConversationRef.current = conversationId;
+      followRef.current = true;
+    }
+    if (messages.length > prevMessageCountRef.current) followRef.current = true;
+    prevMessageCountRef.current = messages.length;
+    if (!followRef.current) return;
     el.scrollTop = el.scrollHeight;
-    const id = requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    const id = requestAnimationFrame(() => { if (followRef.current) el.scrollTop = el.scrollHeight; });
     return () => cancelAnimationFrame(id);
-  }, [messages]);
+  }, [messages, conversationId]);
+
+  // 流式回答真正长高的是「消息行内部的打字机」，messages 引用不变，靠上面的 effect 跟不到。
+  // 直接观察内容高度：只要还在跟随（followRef）就把视口贴到最新；用户滚开后被 handleScroll 关掉。
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    const inner = contentRef.current;
+    if (!el || !inner) return;
+    const observer = new ResizeObserver(() => {
+      if (!followRef.current) return;
+      // 内容刚变高这一帧的 scrollHeight 可能还没算完，放到下一帧再贴底，避免永远差几十像素
+      el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => { if (followRef.current) el.scrollTop = el.scrollHeight; });
+    });
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
 
   // 回到底部按钮：距底部超过 80px（即下方还有 >80px 内容被遮住）时显示
   const [showBackToBottom, setShowBackToBottom] = useState(false);
@@ -4570,10 +4775,15 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
     if (!el) return;
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     setShowBackToBottom(distanceToBottom > 80);
-  }, []);
+    // 只在「用户主动滚开」时停跟随：贴底（含程序自己滚到底）都算跟随中，
+    // 这样流式增长时不会被自己的滚动事件误判成用户滚动。
+    followRef.current = distanceToBottom <= FOLLOW_THRESHOLD;
+  }, [FOLLOW_THRESHOLD]);
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (!el) return;
+    followRef.current = true;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
   // reveal messages one at a time: the next message renders only after the
@@ -4606,25 +4816,26 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   // 操作项常显、推荐问题、「重新生成」都只看「最后一条消息」：
   // 用户一发新消息，旧回答立即降为 hover 显示、推荐问题和重新生成按钮都消失。
   const lastAiIndex = messages.length - 1;
-  const followUpKey = getRecommendationKey(conversationId, messages);
+  const answerDoneKey = getAnswerDoneKey(conversationId, messages);
   return (
     <div className="flex-1 min-h-0 bg-white flex flex-col">
       <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}@keyframes followUpIn{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}${RICH_TEXT_CSS}${RESULT_CARD_CSS}`}</style>
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={scrollRef} data-chat-scroll onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto">
         <div className="conversation-gutter min-h-full pt-[16px]">
           <div className="conversation-content mx-auto w-full">
-            <div className="conversation-messages flex flex-col pt-[16px] pb-[56px]">
+            <div ref={contentRef} className="conversation-messages flex flex-col pt-[16px] pb-[56px]">
               {messages.map((msg, i) => {
                 if (i > revealed) return null;
-                // key 带上会话 id：切换会话时强制重挂，避免 React 复用同 index 的旧实例
-                // 把上一条会话的 instant / 打字进度 / 操作项状态带过来（表现为内容重新加载、重新打字）
-                const rowKey = `${conversationId ?? "draft"}-${i}`;
+                // key 带上会话 id + 消息角色：切换会话、以及同一 index 上 process→ai 替换时都强制重挂。
+                // 否则无工具轮里 process 被移除、ai 补到同一 index，React 会复用 process 的 ChatMessageRow
+                // 实例（revealed 仍是 MAX_SAFE_INTEGER），正文就会整段蹦出来而不是逐字打字。
+                const rowKey = `${conversationId ?? "draft"}-${i}-${msg.role}`;
                 if (msg.role === "process" && taskComplete) {
                   return i === firstProcessIndex ? <div key={rowKey} className={`w-full ${spacingBefore(i)}`}><MergedProcess presets={processPresets} /></div> : null;
                 }
                 return (
                   <div key={rowKey} data-message-index={i} className={`flex w-full flex-col ${spacingBefore(i)}`}>
-                    <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onFollowUp={onSend} onQuote={onQuote} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onRegenerateMessage={onRegenerateMessage} onProcessProgress={onProcessProgress} recommendationKey={i === lastAiIndex ? followUpKey : null} onRecommendationsShown={onRecommendationsShown} />
+                    <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onAutomationOperate={onAutomationOperate} onFollowUp={onSend} onQuote={onQuote} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onRegenerateMessage={onRegenerateMessage} onProcessProgress={onProcessProgress} recommendationKey={i === lastAiIndex ? answerDoneKey : null} onRecommendationsShown={onRecommendationsShown} />
                   </div>
                 );
               })}
@@ -4674,9 +4885,22 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
 
 // ── root ──────────────────────────────────────────────────────────────────────
 
-type ToolKind = "search" | "read" | "extract" | "analyze" | "generate" | "check" | "summarize" | "execute" | "fail" | "chevron";
+type ToolKind = "search" | "read" | "extract" | "analyze" | "generate" | "check" | "summarize" | "execute" | "fail" | "chevron"
+  // Figma 10083:64848「任务执行过程_ReAct」整套步骤图标
+  | "memory" | "clarify" | "terminal" | "think" | "skill" | "react-read" | "react-analyze" | "react-generate" | "react-check" | "react-summarize" | "react-execute" | "react-fail";
+
+// Figma ReAct 图标：文件路径映射（SVG 自带 fill-opacity 0.38，与 T2 文字同色）
+const REACT_ICONS: Partial<Record<ToolKind, string>> = {
+  memory: "/assets/react-memory.svg", clarify: "/assets/react-clarify.svg", terminal: "/assets/react-terminal.svg",
+  think: "/assets/react-think.svg", skill: "/assets/react-skill.svg", "react-read": "/assets/react-read.svg",
+  "react-analyze": "/assets/react-analyze.svg", "react-generate": "/assets/react-generate.svg",
+  "react-check": "/assets/react-check.svg", "react-summarize": "/assets/react-summarize.svg",
+  "react-execute": "/assets/react-execute.svg", "react-fail": "/assets/react-fail.svg",
+};
 function TaskIcon({ type, expanded = false }: { type: ToolKind; expanded?: boolean }) {
   const wrap = (content: React.ReactNode) => <span className="relative size-[16px] shrink-0 overflow-hidden">{content}</span>;
+  const reactSrc = REACT_ICONS[type];
+  if (reactSrc) return wrap(<img src={reactSrc} alt="" className="absolute inset-0 size-[16px]" />);
   if (type === "search") return wrap(<svg className="absolute inset-[4.16%_7.02%_7.02%_8.33%]" viewBox="0 0 13.543 14.2102" fill="none" preserveAspectRatio="none"><path d={svgProgress.p3b5d3c00} fill="black" fillOpacity="0.38"/><path d={svgProgress.p313b1700} fill="black" fillOpacity="0.38"/></svg>);
   if (type === "read") return wrap(<svg className="absolute inset-0 size-[16px]" viewBox="0 0 16 16" fill="none" preserveAspectRatio="none"><path d="M8.00027 4.66659C9.45956 4.66666 10.7208 5.45135 11.568 6.15356C12.001 6.51248 12.35 6.86963 12.5908 7.13729C12.7116 7.27155 12.8065 7.38476 12.872 7.46541C12.9047 7.50563 12.9303 7.53807 12.9482 7.56112C12.957 7.57251 12.9639 7.58175 12.969 7.58846C12.9716 7.59184 12.9739 7.5948 12.9755 7.59692L12.9775 7.59953L12.9788 7.60083C12.9788 7.60083 12.9724 7.60585 12.4443 7.99992C12.9724 8.39398 12.9788 8.39901 12.9788 8.39901L12.9775 8.40031L12.9755 8.40291C12.9739 8.40504 12.9716 8.408 12.969 8.41138C12.9639 8.41809 12.957 8.42733 12.9482 8.43872C12.9303 8.46177 12.9047 8.49421 12.872 8.53442C12.8065 8.61508 12.7116 8.72828 12.5908 8.86255C12.35 9.13021 12.001 9.48735 11.568 9.84627C10.7208 10.5485 9.45956 11.3332 8.00027 11.3333C6.54088 11.3333 5.27913 10.5485 4.43191 9.84627C3.9989 9.48734 3.6499 9.13019 3.40913 8.86255C3.28834 8.72829 3.19401 8.61508 3.12853 8.53442C3.09581 8.49413 3.07029 8.46181 3.05235 8.43872C3.04339 8.42719 3.03601 8.41813 3.03087 8.41138C3.0283 8.408 3.02596 8.40504 3.02436 8.40291L3.02241 8.40031L3.02176 8.39966L3.55561 7.99992L3.02176 7.60083L3.02241 7.59953L3.02436 7.59692C3.02596 7.5948 3.0283 7.59184 3.03087 7.58846C3.03601 7.5817 3.04339 7.57265 3.05235 7.56112C3.07029 7.53803 3.09581 7.5057 3.12853 7.46541C3.19401 7.38476 3.28834 7.27155 3.40913 7.13729C3.6499 6.86965 3.9989 6.51249 4.43191 6.15356C5.27913 5.45131 6.54088 4.66659 8.00027 4.66659ZM8.00027 5.99992C7.00512 5.99992 6.04416 6.54857 5.28282 7.17961C4.92706 7.47449 4.63505 7.77126 4.42735 7.99992C4.63505 8.22858 4.92706 8.52535 5.28282 8.82023C6.04416 9.45127 7.00512 9.99992 8.00027 9.99992C8.99529 9.99984 9.95581 9.45118 10.7171 8.82023C11.0728 8.52539 11.3649 8.22857 11.5725 7.99992C11.3649 7.77127 11.0728 7.47445 10.7171 7.17961C9.95581 6.54866 8.99529 6 8.00027 5.99992ZM3.55561 7.99992L3.0211 8.39836C2.84489 8.16196 2.84489 7.83788 3.0211 7.60148L3.55561 7.99992ZM12.9788 7.60083C13.1551 7.83727 13.1551 8.16257 12.9788 8.39901L12.4443 7.99992L12.9788 7.60083Z" fill="black" fillOpacity="0.38"/><path d="M8.44428 8.00011C8.44428 7.75473 8.24563 7.55557 8.00027 7.55545C7.75482 7.55545 7.55561 7.75466 7.55561 8.00011C7.55573 8.24547 7.75489 8.44412 8.00027 8.44412C8.24555 8.44401 8.44416 8.2454 8.44428 8.00011ZM9.77762 8.00011C9.7775 8.98178 8.98193 9.77734 8.00027 9.77746C7.01851 9.77746 6.22239 8.98185 6.22228 8.00011C6.22228 7.01828 7.01844 6.22212 8.00027 6.22212C8.98201 6.22224 9.77762 7.01835 9.77762 8.00011Z" fill="black" fillOpacity="0.38"/><path d="M1.3335 9.49992H2.66683V13.3333H6.50016V14.6666H2.60042C1.90086 14.6666 1.3335 14.0992 1.3335 13.3997V9.49992ZM1.3335 2.60018C1.3335 1.90062 1.90086 1.33325 2.60042 1.33325H6.50016V2.66659H2.66683V6.49992H1.3335V2.60018ZM14.6668 13.3997C14.6668 14.0992 14.0995 14.6666 13.3999 14.6666H9.50016V13.3333H13.3335V9.49992H14.6668V13.3997ZM14.6668 6.49992H13.3335V2.66659H9.50016V1.33325H13.3999C14.0995 1.33325 14.6668 1.90062 14.6668 2.60018V6.49992Z" fill="black" fillOpacity="0.38"/></svg>);
   if (type === "extract") return wrap(<><svg className="absolute inset-[8.33%_16.67%_12.5%_8.33%]" viewBox="0 0 12 12.667" fill="none" preserveAspectRatio="none"><path d={svgProgress.p31938000} fill="black" fillOpacity="0.38"/></svg><svg className="absolute inset-[63.33%_12.5%_9.17%_58.33%]" viewBox="0 0 4.66667 4.39974" fill="none" preserveAspectRatio="none"><path d={svgProgress.p1528fd00} fill="black" fillOpacity="0.38"/></svg></>);
@@ -4715,6 +4939,149 @@ function ToolLoading({ text }: { text: string }) {
   </span>;
 }
 
+// 动作执行中的文案：规范要求 text 用自带动词的短句（加载目标网页中的关键信息），
+// 执行中由界面补「正在」；已经带时态的文案不再重复加。
+function runningActionText(label: string) {
+  const action = label.includes("；") ? label.split("；").slice(1).join("；").trim() : label;
+  return /^(正在|已)/.test(action) ? action : `正在${action}`;
+}
+
+// 服务端下发的 icon 可能是 Figma ReAct 名称，也可能是旧的分类名；
+// 统一收敛成 UI 用的 ToolKind。plan.summary 与 tool.call 共用，避免两处映射不一致。
+const REACT_ICON_KINDS: ToolKind[] = ["memory", "clarify", "terminal", "think", "skill", "react-read", "react-analyze", "react-generate", "react-check", "react-summarize", "react-execute", "react-fail"];
+const LEGACY_ICON_MAP: Record<string, ToolKind> = { time: "search", calculate: "execute", tool: "execute", search: "search", read: "read" };
+function toToolKind(rawIcon: string): ToolKind {
+  return REACT_ICON_KINDS.includes(rawIcon as ToolKind) ? (rawIcon as ToolKind) : (LEGACY_ICON_MAP[rawIcon] ?? "execute");
+}
+
+// 执行意图规范（过程透明度）里的 12 种 type 与 Figma 10083:64848 的 12 个图标一一对应。
+// 界面上只靠图标区分类型，文案绝不能出现 type 本身。
+const INTENT_ICON: Record<string, ToolKind> = {
+  read: "react-read", memory: "memory", clarify: "clarify", run: "terminal", think: "think",
+  skill: "skill", analyze: "react-analyze", generate: "react-generate", verify: "react-check",
+  summarize: "react-summarize", execute: "react-execute", error: "react-fail",
+};
+function intentIcon(type: unknown): ToolKind {
+  const key = typeof type === "string" ? type.trim() : "";
+  return INTENT_ICON[key] ?? toToolKind(key);
+}
+
+// 真 agent 的单轮「行动说明 + 执行意图集合」块。多轮工具时每组独立折叠，
+// 和 Figma 里重复出现的说明 / 意图结构一致。
+/** 合并相邻的同类动作：查两个城市不该出现两行「获取重庆天气」「获取北京天气」，
+ *  按用户要的样子合成一条「获取重庆和北京的天气」。 */
+function compressActions(actions: AgentRound["actions"]) {
+  const merged: AgentRound["actions"] = [];
+  const seen = new Set<string>();
+  // 多轮里模型可能每个城市各发一条「获取X天气」、每轮各发一条「结合天气判断…」。
+  // 全部天气查询合并成一条「获取重庆和北京天气」（插在第一条天气原本的位置），
+  // 其余动作按文案去重只留一条，保证展开后是「一个集合列表」而不是每轮一份。
+  const weatherCities: string[] = [];
+  let weatherAction: AgentRound["actions"][number] | null = null;
+  let weatherIndex = -1;
+  for (const action of actions) {
+    const weather = /^获取(.+?)天气$/.exec(action.label);
+    if (weather) {
+      if (!weatherAction) { weatherAction = action; weatherIndex = merged.length; }
+      if (!weatherCities.includes(weather[1])) weatherCities.push(weather[1]);
+      continue;
+    }
+    if (seen.has(action.label)) continue;
+    seen.add(action.label);
+    merged.push(action);
+  }
+  if (weatherAction) {
+    const label = weatherCities.length > 1
+      ? `获取${weatherCities.join("和")}天气`
+      : weatherAction.label;
+    merged.splice(Math.min(weatherIndex, merged.length), 0, { ...weatherAction, label });
+  }
+  return merged;
+}
+
+/** 行动说明在执行时是「正在…」；跑完后还留着「正在」会和上面的「任务已完成」打架，
+ *  完成态统一改成「已…」，并给「并」补个逗号（已查询重庆天气，并判断是否适合出行）。 */
+function doneSummary(summary: string) {
+  const text = String(summary ?? "").trim();
+  if (!text.startsWith("正在")) return text;
+  return text.replace(/^正在/, "已").replace(/并(?=[^，。])/g, "，并");
+}
+
+function IntentBlock({ running, summary, title, actions, progress, stepEndRef, animateIn = false }: { running: boolean; summary: string; title?: string; actions: AgentRound["actions"]; progress: AgentRound["progress"]; stepEndRef?: { current: HTMLDivElement | null }; animateIn?: boolean }) {
+  const [expanded, setExpanded] = useState(running);
+  useEffect(() => { setExpanded(running); }, [running]);
+  const hasSummary = summary.trim().length > 0;
+  const targetShown = Math.min(actions.length, progress?.shown ?? actions.length);
+  const batchStart = Math.min(targetShown, progress?.batchStart ?? targetShown);
+  // 动作都跑完、但正文还没开始（模型在生成回答）时继续给一行 loading，
+  // 否则工具结束后会有几秒完全静止，看起来像卡住。
+  const showGenerating = running && targetShown >= actions.length && batchStart >= actions.length;
+  // 逐条揭示（用户要求）：服务端可能把整组执行意图一次性下发（plan.summary），
+  // 直接渲染就会「一下全冒出来」。整块内容排成一条序列——
+  // 行动说明 → 折叠短语 → 每条动作 → 「正在生成回答」，第一条立刻出现，
+  // 之后每条间隔 400ms。历史/已完成任务（animateIn=false 或已结束）直接全量。
+  const staggered = running && animateIn;
+  const headRows = (hasSummary ? 1 : 0) + (actions.length > 0 ? 1 : 0);
+  const targetStep = headRows + targetShown + (showGenerating ? 1 : 0);
+  const [step, setStep] = useState(0);
+  // 行动说明（用户可见的推理摘要）也要打字机效果：这一行打完再出下一行，
+  // 否则文字还没出现完，折叠短语/动作行就顶上来了。
+  const [summaryTyped, setSummaryTyped] = useState(false);
+  useEffect(() => { if (!staggered) setSummaryTyped(true); }, [staggered]);
+  useEffect(() => {
+    if (!staggered || step >= targetStep) return;
+    if (step === 1 && hasSummary && !summaryTyped) return;
+    const id = window.setTimeout(() => setStep(s => s + 1), step === 0 ? 0 : 400);
+    return () => window.clearTimeout(id);
+  }, [staggered, step, targetStep, summaryTyped, hasSummary]);
+  const revealed = staggered ? Math.min(step, targetStep) : targetStep;
+  const showSummary = hasSummary && revealed >= 1;
+  const showTitle = actions.length > 0 && revealed >= (hasSummary ? 1 : 0) + 1;
+  const shown = Math.max(0, Math.min(revealed - headRows, targetShown));
+  const generatingShown = showGenerating && revealed >= headRows + targetShown + 1;
+  // 动作列表：执行中必须用静态容器。ToolLoading 的扫描效果靠 background-clip:text，
+  // 一旦套上 framer-motion 的 opacity/height 入场动画（会创建合成层，动画期间 opacity:0），
+  // 文字会整段透明不可见，看起来就是「工具调用没有 loading」。
+  const list = (
+    <div className="flex flex-col gap-[12px]">
+      {actions.slice(0, shown).map(({ label, icon }, index) => {
+        const pending = index >= batchStart;
+        return (
+          <div key={`${label}-${index}`} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">
+            {pending ? <RadarArcLoader /> : <TaskIcon type={icon} />}
+            {pending ? <ToolLoading text={runningActionText(label)} /> : <span>{label}</span>}
+          </div>
+        );
+      })}
+      {/* 动作都跑完、但正文还没开始（模型在生成回答）时继续给一行 loading，
+          否则工具结束后会有几秒完全静止，看起来像卡住；同样按 400ms 排在最后出现 */}
+      {generatingShown && (
+        <div className="flex items-center gap-[8px] text-[14px] leading-[22px] tracking-[0.014px]">
+          <RadarArcLoader />
+          <ToolLoading text="正在生成回答" />
+        </div>
+      )}
+      <div ref={stepEndRef} aria-hidden className="h-px w-full shrink-0" />
+    </div>
+  );
+  return (
+    <div className="flex flex-col gap-[12px]">
+      {showSummary && <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter text={running ? summary : doneSummary(summary)} speed={staggered ? 26 : 16} onDone={() => setSummaryTyped(true)} /></p>}
+      {showTitle && (
+        <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[8px] text-left">
+          {/* 折叠入口写「这一组动作在做什么」的静态短语（天气查询与出行建议），
+              不是「显示执行意图」这种功能名——那是内部叫法，不该出现在界面上 */}
+          <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{title || "执行过程"}</span>
+          <TaskIcon type="chevron" expanded={expanded} />
+        </button>
+      )}
+      {expanded && actions.length > 0 && (running
+        ? list
+        : <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} transition={{ duration: 0.2, ease: "easeOut" }} className="flex flex-col gap-[12px] overflow-hidden">{list}</motion.div>)}
+    </div>
+  );
+}
+
 function Typewriter({ text, speed = 30, className, onDone, instant = false }: { text: string; speed?: number; className?: string; onDone?: () => void; instant?: boolean }) {
   // instant=true：历史消息直接完整显示，不重播打字动画（重新进入会话/切换任务时用）
   const [count, setCount] = useState(instant ? text.length : 0);
@@ -4741,48 +5108,46 @@ function Typewriter({ text, speed = 30, className, onDone, instant = false }: { 
   return <span className={className}>{text.slice(0, count)}</span>;
 }
 
-const PROCESS_PRESETS: Record<ProcessVariant, { goal: string; running: string; actions: { label: string; icon: ToolKind }[] }> = {
+const PROCESS_PRESETS: Record<ProcessVariant, ProcessPreset> = {
   requirement: {
-    goal: "任务目标：生成符合演示场景、受众与风格要求的 PPT",
-    running: "检索资料并梳理制作需求",
+    summary: "正在梳理演示场景与表达要求",
+    running: "正在梳理制作需求",
+    title: "需求梳理",
     actions: [
-      { label: "搜索；检索演示主题相关资料", icon: "search" },
-      { label: "读取；加载关键信息", icon: "read" },
-      { label: "提取；归纳关键内容", icon: "extract" },
-      { label: "分析；提炼内容结构", icon: "analyze" },
-      { label: "生成；创建 PPT 制作方案", icon: "generate" },
-      { label: "校验；检查内容一致性", icon: "check" },
-      { label: "汇总；输出需求确认结果", icon: "summarize" },
+      { label: "读取项目背景与参考资料", icon: "react-read" },
+      { label: "拆解受众与表达重点", icon: "react-analyze" },
+      { label: "拟定页数与风格建议", icon: "react-generate" },
+      { label: "汇总待确认的需求清单", icon: "react-summarize" },
     ],
   },
   outline: {
-    goal: "任务目标：依据已确认的需求，生成完整的 PPT 大纲",
-    running: "拆解需求并编排大纲结构",
+    summary: "正在编排页面结构与叙事顺序",
+    running: "正在编排大纲结构",
+    title: "大纲编排",
     actions: [
-      { label: "读取；载入已确认的需求", icon: "read" },
-      { label: "搜索；补充章节所需素材", icon: "search" },
-      { label: "分析；拆解叙事逻辑与层级", icon: "analyze" },
-      { label: "提取；筛选每页核心论点", icon: "extract" },
-      { label: "生成；编排页面顺序与标题", icon: "generate" },
-      { label: "校验；检查大纲完整性", icon: "check" },
-      { label: "汇总；输出大纲确认结果", icon: "summarize" },
+      { label: "载入已确认的需求", icon: "react-read" },
+      { label: "拆解叙事层级与重点", icon: "react-analyze" },
+      { label: "编排页面顺序与标题", icon: "react-generate" },
+      { label: "核对大纲的完整与均衡", icon: "react-check" },
+      { label: "输出可确认的大纲", icon: "react-summarize" },
     ],
   },
   ppt: {
-    goal: "任务目标：依据已确认的大纲，生成可预览的 PPT",
-    running: "撰写内容并渲染 PPT 页面",
+    summary: "正在撰写每页内容并渲染页面",
+    running: "正在生成页面内容",
+    title: "页面生成",
     actions: [
-      { label: "读取；载入已确认的大纲", icon: "read" },
-      { label: "生成；撰写每页正文内容", icon: "generate" },
-      { label: "分析；匹配版式与配图方案", icon: "analyze" },
-      { label: "执行；渲染页面与图表", icon: "execute" },
-      { label: "校验；检查排版与一致性", icon: "check" },
-      { label: "汇总；输出可预览文件", icon: "summarize" },
+      { label: "载入已确认的大纲", icon: "react-read" },
+      { label: "撰写每页正文内容", icon: "react-generate" },
+      { label: "匹配版式与配图方案", icon: "react-analyze" },
+      { label: "渲染页面与图表", icon: "react-execute" },
+      { label: "检查排版与内容一致性", icon: "react-check" },
+      { label: "输出可预览文件", icon: "react-summarize" },
     ],
   },
 };
 
-function ExecutionProcess({ running, instant = false, progress, onProgress, variant = "requirement", preset: customPreset, onGoalDone }: { running: boolean; instant?: boolean; progress?: { shown: number; batchStart: number }; onProgress?: (p: { shown: number; batchStart: number }) => void; variant?: ProcessVariant; preset?: ProcessPreset; onGoalDone?: () => void }) {
+function ExecutionProcess({ running, instant = false, progress, controlled = false, summary, rounds, onProgress, variant = "requirement", preset: customPreset, onGoalDone }: { running: boolean; instant?: boolean; progress?: { shown: number; batchStart: number }; controlled?: boolean; summary?: string; rounds?: AgentRound[]; onProgress?: (p: { shown: number; batchStart: number }) => void; variant?: ProcessVariant; preset?: ProcessPreset; onGoalDone?: () => void }) {
   const preset = customPreset ?? PROCESS_PRESETS[variant];
   const actions = preset.actions;
   const total = actions.length;
@@ -4792,6 +5157,8 @@ function ExecutionProcess({ running, instant = false, progress, onProgress, vari
   const onProgressRef = useRef(onProgress);
   onProgressRef.current = onProgress;
   const [expanded, setExpanded] = useState(Boolean(instant && running));
+  // 完成态里「显示执行意图」单独一层折叠，和外层「任务已完成」互不影响
+  const [intentExpanded, setIntentExpanded] = useState(false);
   const [visibleActions, setVisibleActions] = useState(instant && running ? (progress?.shown ?? total) : 0);
   // index of the first item in the batch that is currently executing
   const [batchStart, setBatchStart] = useState(instant && running ? (progress?.batchStart ?? Math.max(0, (progress?.shown ?? total) - 1)) : 0);
@@ -4802,7 +5169,12 @@ function ExecutionProcess({ running, instant = false, progress, onProgress, vari
   onGoalDoneRef.current = onGoalDone;
   // goal 里含完整提问，长提问逐字打要十几秒：按总时长约 2.2s 反推速度，
   // 短文本仍是 30ms/字（原速），长文本加速，避免展开前干等。
-  const goalSpeed = Math.min(30, Math.max(5, Math.round(2200 / Math.max(1, preset.goal.length))));
+  const goalSpeed = Math.min(30, Math.max(5, Math.round(2200 / Math.max(1, (preset.goal ?? "").length))));
+  // 真 agent 链路不展示「任务目标：…」引导句：等待阶段直接显示带扫描效果的「正在思考」。
+  // 演示链路现在也改用规范的两层结构（行动说明 + 折叠短语 + 动作），不再有「任务目标」打字机，
+  // 只有仍带 goal 的旧数据才保留打字效果。
+  const showGoal = !controlled && Boolean(preset.goal);
+  const stepsReady = controlled || goalTyped;
 
   // 兜底：思考结束切到折叠态时也必须推进消息揭示指针。
   // 长提问的 goal 可能还没打完就被切成折叠（Typewriter 卸载后 onDone 不再触发），
@@ -4834,19 +5206,32 @@ function ExecutionProcess({ running, instant = false, progress, onProgress, vari
     setExpanded(false);
     setVisibleActions(0);
     setBatchStart(0);
-    // 历史消息：goal 已视为展示完毕，避免子组件 onDone 先于本 effect 执行后被重置为 false
-    setGoalTyped(instant);
-  }, [running, total, instant]);
+    // 历史消息：goal 已视为展示完毕，避免子组件 onDone 先于本 effect 执行后被重置为 false；
+    // 没有 goal 打字机（新结构：行动说明直接显示）时同样视为已就绪，否则动作永远不揭示。
+    setGoalTyped(instant || !showGoal);
+  }, [running, total, instant, showGoal]);
 
   // 把执行进度回写到消息上，切走任务再回来时能接着显示
   useEffect(() => {
-    if (!running || instant) return;
+    if (!running || instant || controlled) return; // 受控模式的进度来自服务端，不需要回写
     onProgressRef.current?.({ shown: visibleActions, batchStart });
-  }, [running, visibleActions, batchStart, instant]);
+  }, [running, visibleActions, batchStart, instant, controlled]);
+
+  // 真 agent 受控模式：步骤完全由服务端 tool.call/tool.result 推进，不跑本地逐批揭示定时器。
+  // 同时把 progress 同步进本地 state（用于滚动/展开），并强制 goal 视为已打完、列表展开。
+  useEffect(() => {
+    if (!controlled || !running) return;
+    setGoalTyped(true);
+    setExpanded(true);
+    const shown = progress?.shown ?? visibleActions;
+    setVisibleActions(shown);
+    setBatchStart(progress?.batchStart ?? shown);
+  }, [controlled, running, progress?.shown, progress?.batchStart]);
 
   // reveal the tools only after the goal typewriter has actually finished
   useEffect(() => {
     if (!running || !goalTyped) return;
+    if (controlled) return; // 真 agent：进度由服务端事件驱动，不用本地伪节奏
     if (instant) {
       // 历史消息：进度已由上面的 reset effect 恢复，不重播逐批 reveal
       return;
@@ -4867,37 +5252,135 @@ function ExecutionProcess({ running, instant = false, progress, onProgress, vari
     return () => { if (revealTimer) window.clearTimeout(revealTimer); };
   }, [running, goalTyped, total, instant]);
 
-  // keep the newest step in view while the agent is running
+  // keep the newest step in view while the agent is running —— 但只在用户仍贴着底部时跟，
+  // 用户自己往上翻了就别把他拽回来（工具步骤会一条条出现，抢滚动会很难读）。
   useEffect(() => {
-    if (running && visibleActions > 0) {
-      stepEndRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
+    if (!running || visibleActions === 0) return;
+    const node = stepEndRef.current;
+    if (!node) return;
+    const scroller = node.closest("[data-chat-scroll]") as HTMLElement | null;
+    if (scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 80) return;
+    node.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [visibleActions, running]);
 
-  if (!running) return (
-    <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
-      <button onClick={() => setExpanded(v => !v)} className="flex items-center gap-[8px] text-left">
-        <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.running}</span>
-        <TaskIcon type="chevron" expanded={expanded} />
-      </button>
-      {expanded && <div className="flex flex-col gap-[12px]">
-        <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">{preset.goal}</p>
-        {actions.map(({ label, icon }) => <div key={label} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><TaskIcon type={icon} /><span>{label}</span></div>)}
-      </div>}
-    </div>
-  );
+  // 真 agent 多轮工具：**所有任务一律不分拆**（用户明确要求）。不管跑多少轮工具、
+  // 调多少个工具，界面上永远只有一个任务块：一条任务级行动说明（第一轮下发、
+  // 完成态把「正在」改成「已」）+ 一个折叠短语 + 一个合并去重后的动作列表
+  // （compressActions：天气查询合并成「获取A和B天气」，其余动作按文案去重）。
+  // 任务完成后（Figma 4379:44310）整块收进一行灰色「任务已完成 〉」。
+  if (controlled && rounds && rounds.length > 0) {
+    const allActions = compressActions(rounds.flatMap(round => round.actions));
+    const headRound = rounds[0];
+    const mergedProgress = {
+      shown: rounds.reduce((sum, round) => sum + (round.progress?.shown ?? round.actions.length), 0),
+      batchStart: rounds.reduce((sum, round) => sum + (round.progress?.batchStart ?? round.actions.length), 0),
+    };
+    if (!running) {
+      return (
+        <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
+          <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[4px] text-left">
+            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">任务已完成</span>
+            <TaskIcon type="chevron" expanded={expanded} />
+          </button>
+          {expanded && <div className="flex flex-col gap-[20px]">
+            <IntentBlock running={false} animateIn={false} summary={headRound.summary} title={headRound.title} actions={allActions} progress={mergedProgress} />
+          </div>}
+        </div>
+      );
+    }
+    return (
+      <div className="w-full max-w-[768px] flex flex-col gap-[20px]">
+        <IntentBlock running={running} animateIn={!instant} summary={headRound.summary} title={headRound.title} actions={allActions} progress={mergedProgress} stepEndRef={stepEndRef} />
+      </div>
+    );
+  }
+
+  if (!running) {
+    // 完成后整块收进「任务已完成 〉」（Figma 4379:44310），展开后才是
+    // 行动说明 → 折叠短语 → 动作行。真 agent 与演示链路（卡片 / PPT）现在同一套结构。
+    if (controlled || preset.summary) {
+      const intentSummary = (summary ?? preset.summary ?? "").trim();
+      return (
+        <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
+          <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[4px] text-left">
+            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">任务已完成</span>
+            <TaskIcon type="chevron" expanded={expanded} />
+          </button>
+          {expanded && <div className="flex flex-col gap-[12px]">
+            {intentSummary && <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">{intentSummary}</p>}
+            {actions.length > 0 && (
+              <button onClick={() => setIntentExpanded(v => !v)} className="flex self-start items-center gap-[8px] text-left">
+                <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.title ?? "执行过程"}</span>
+                <TaskIcon type="chevron" expanded={intentExpanded} />
+              </button>
+            )}
+            {intentExpanded && <div className="flex flex-col gap-[12px]">
+              {actions.map(({ label, icon }) => <div key={label} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><TaskIcon type={icon} /><span>{label}</span></div>)}
+            </div>}
+          </div>}
+        </div>
+      );
+    }
+    return (
+      <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
+        <>
+          <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[8px] text-left">
+            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.running}</span>
+            <TaskIcon type="chevron" expanded={expanded} />
+          </button>
+          {expanded && <div className="flex flex-col gap-[12px]">
+            {showGoal && <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">{preset.goal}</p>}
+            {actions.map(({ label, icon }) => <div key={label} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><TaskIcon type={icon} /><span>{label}</span></div>)}
+          </div>}
+        </>
+      </div>
+    );
+  }
+  // 演示链路（卡片 / PPT 三阶段）：结构、文案规范与真 agent 完全一致，
+  // 只是动作进度由本地的逐条揭示（visibleActions / batchStart）驱动。
+  if (!controlled && preset.summary) {
+    return (
+      <div className="w-full max-w-[768px]">
+        <IntentBlock
+          running
+          animateIn={false}
+          summary={preset.summary}
+          title={preset.title}
+          actions={actions}
+          progress={{ shown: visibleActions, batchStart }}
+          stepEndRef={stepEndRef}
+        />
+      </div>
+    );
+  }
   return (
     <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
-      <p className="text-[14px] leading-[22px] font-normal text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter instant={instant} text={preset.goal} speed={goalSpeed} onDone={() => { setGoalTyped(true); onGoalDone?.(); }} /></p>
-      {goalTyped && (<>
-        <button onClick={() => setExpanded(v => !v)} className="flex items-center gap-[8px] text-left">
-          <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.running}</span>
-          <TaskIcon type="chevron" expanded={expanded} />
-        </button>
-        {expanded && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} transition={{ duration: 0.2, ease: "easeOut" }} className="flex flex-col gap-[12px] overflow-hidden">
+      {showGoal && <p className="text-[14px] leading-[22px] font-normal text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter instant={instant} text={preset.goal!} speed={goalSpeed} onDone={() => { setGoalTyped(true); onGoalDone?.(); }} /></p>}
+      {stepsReady && (<>
+        {controlled ? (
+          !summary?.trim() ? (
+            <div className="flex items-center"><ToolLoading text={preset.running} /></div>
+          ) : (
+            <>
+              <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">{summary}</p>
+              {actions.length > 0 && (
+                <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[8px] text-left">
+                  <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.title ?? "执行过程"}</span>
+                  <TaskIcon type="chevron" expanded={expanded} />
+                </button>
+              )}
+            </>
+          )
+        ) : (
+          <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[8px] text-left">
+            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{preset.running}</span>
+            <TaskIcon type="chevron" expanded={expanded} />
+          </button>
+        )}
+        {expanded && actions.length > 0 && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} transition={{ duration: 0.2, ease: "easeOut" }} className="flex flex-col gap-[12px] overflow-hidden">
           {actions.slice(0, visibleActions).map(({ label, icon }, index) => <motion.div key={label} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: "easeOut" }} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">
             {index >= batchStart ? <RadarArcLoader /> : <TaskIcon type={icon} />}
-            {index >= batchStart ? <ToolLoading text={`正在${label.split("；")[0]}相关信息`} /> : <span>{label}</span>}
+            {index >= batchStart ? <ToolLoading text={runningActionText(label)} /> : <span>{label}</span>}
           </motion.div>)}
           <div ref={stepEndRef} aria-hidden className="h-px w-full shrink-0" />
         </motion.div>}
@@ -4911,18 +5394,22 @@ function MergedProcess({ presets }: { presets: ProcessPreset[] }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
-      <button onClick={() => setExpanded(v => !v)} className="flex items-center gap-[8px] text-left">
+      <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[8px] text-left">
         <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">任务已完成</span>
         <TaskIcon type="chevron" expanded={expanded} />
       </button>
       {expanded && <div className="flex flex-col gap-[20px]">
         {presets.map((preset, vi) => {
           return (
-            <div key={vi} className="flex flex-col gap-[12px]">
-              <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] font-normal">{preset.running}</p>
-              <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">{preset.goal}</p>
-              {preset.actions.map(({ label, icon }) => <div key={label} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><TaskIcon type={icon} /><span>{label}</span></div>)}
-            </div>
+            <IntentBlock
+              key={vi}
+              running={false}
+              animateIn={false}
+              summary={preset.summary ?? preset.running}
+              title={preset.title}
+              actions={preset.actions}
+              progress={{ shown: preset.actions.length, batchStart: preset.actions.length }}
+            />
           );
         })}
       </div>}
@@ -4931,6 +5418,20 @@ function MergedProcess({ presets }: { presets: ProcessPreset[] }) {
 }
 
 export default function App() {
+  // 登录页跳转过来时带一个一次性标记：等 Toaster 挂载后弹「登录成功」
+  useEffect(() => {
+    let flag: string | null = null;
+    try {
+      flag = window.sessionStorage.getItem("wb:login-success");
+      if (flag) window.sessionStorage.removeItem("wb:login-success");
+    } catch {
+      flag = null;
+    }
+    if (!flag) return;
+    const timer = window.setTimeout(() => toast.success("登录成功"), 280);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const isMobile = useIsMobile(800);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -4966,6 +5467,12 @@ export default function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   // 自动化任务由 App 持有：点「创建」会进入新会话，自动化页会卸载，任务不能跟着丢
   const [automationTasks, setAutomationTasks] = useState<AutomationTask[]>(INITIAL_AUTOMATION_TASKS);
+  // 模型调 create_automation 成功时，任务先落库、卡片先缓存；
+  // 等这条回答的 run.end 落地，再把卡片挂到对应的 AI 消息上（卡片必须在回复下方）。
+  const pendingAutomation = useRef(new Map<string, NonNullable<Message["automation"]>>());
+  // 「新建自动化任务」弹窗发起的一轮：带上弹窗里填好的结构化条件。
+  // seed 传给服务端（模型不用再追问、参数以用户填写为准），meta 留在前端保证任务与卡片跟弹窗一致。
+  const launchAutomation = useRef(new Map<string, LaunchAutomationPayload>());
   // 任务状态一变，会话里的自动化卡片要跟着变（Figma 9908:45451）：
   // 任务被删 → 卡片留在原地转「已删除」（标题加删除线、不再可点）；暂停/结束同理回写。
   // 列表页、会话详情栏、创建流程三处都改任务，统一从 applyTasks 走，卡片状态就不会漏同步。
@@ -5088,6 +5595,13 @@ export default function App() {
   // 记录每个会话最新的运行 id：切到别的任务时，原任务的后台流程仍可继续推进，
   // 只有当同一会话里又发起了新一轮运行时才作废旧的那一轮。
   const runIdByConversation = useRef(new Map<number, number>());
+  // 每个会话正在进行的真实 SSE 流，停止/新一轮/切走时 abort 服务端请求
+  const streamAbortByConversation = useRef(new Map<number, AbortController>());
+  // 标记某会话本轮是否已收到真实工具事件：首个 tool.call 到来时清掉本地占位步骤
+  const realToolMode = useRef(new Map<number, boolean>());
+  // plan.summary 会预置本轮动作（先展示 loading），tool.call 按顺序认领这些动作，
+  // 记下每轮已认领数量，避免同一条动作被追加两次。
+  const confirmedByRound = useRef(new Map<string, number>());
   // setTimeout 回调里读最新会话 id（state 会过期）
   const activeHistoryIdRef = useRef<number | null>(null);
   activeHistoryIdRef.current = activeHistoryId;
@@ -5375,7 +5889,8 @@ export default function App() {
     setActiveProjectId(item.projectId ?? null);
     setSelectedProjectId(null);
     // 从历史载入的消息打上 instant 标记：直接完整显示，不重播打字动画
-    setMessages(item.messages.map(m => ({ ...m, instant: true })));
+    // 同时清掉 needsTypewriter，避免切回来又逐字打一遍
+    setMessages(item.messages.map(m => ({ ...m, instant: true, needsTypewriter: false })));
   };
 
   // 把一次更新写回指定会话：当前正在看的就是 setMessages，否则写进历史列表，
@@ -5475,12 +5990,14 @@ export default function App() {
     handleSend(query, [], { regenerateFrom: index });
   };
 
-  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = [], options?: { automationRun?: boolean; regenerateFrom?: number }) => {
+  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = [], options?: { automationRun?: boolean; regenerateFrom?: number; launch?: LaunchAutomationPayload; conversationTitle?: string; forceNewConversation?: boolean; runningLabel?: string }) => {
     const text = (suggestion ?? input).trim();
     if (!text) return;
     if (sentAttachments.some(attachment => attachment.status !== "ready")) return;
     const isRegenerate = typeof options?.regenerateFrom === "number";
-    const targetProjectId = activeProjectId ?? selectedProjectId;
+    // 弹窗创建自动化任务时强制开新会话：不能落到用户上一次看的那条任务里
+    const forceNew = options?.forceNewConversation === true;
+    const targetProjectId = forceNew ? null : (activeProjectId ?? selectedProjectId);
     const shouldGeneratePpt = !isRegenerate && (pptGeneration || isPPTIntent(text));
     const runId = ++activeRunId.current;
     // 重新生成不应清空用户正在编辑的草稿
@@ -5489,19 +6006,13 @@ export default function App() {
       clearDraftAttachments(false);
       setPptGeneration(false);
     }
-    // 「创建自动化任务」→ 直接进自动化创建流程（与自动化页「创建」同一链路），
-    // 周期条件从文案里解析；任务结果回写本会话（不另开新会话）。
-    // automationRun：自动化任务「立即执行」发的消息 —— 任务文案里常带「创建自动化任务」字样，
-    // 不能再被意图识别拦回去重新创建，必须当普通消息执行。
-    if (!isRegenerate && !options?.automationRun && isAutomationIntent(text)) {
-      const parsed = parseAutomationSchedule(text);
-      handleLaunchAutomationChat({ schedule: parsed.schedule, prompt: text, newSessionEachRun: false, title: parsed.title, goal: parsed.goal });
-      return;
-    }
-    const historyTitle = text || sentAttachments[0]?.name || "附件会话";
+    // 自动化任务不再在这里拦截：说「以后每天早上九点提醒我」时，
+    // 由模型自己判断是自动化意图 → 条件齐全才调 create_automation 工具，
+    // 前端在 tool.result 里落库并挂出任务卡片（条件不齐时模型会先追问，不会走到创建）。
+    const historyTitle = options?.conversationTitle?.trim() || text || sentAttachments[0]?.name || "附件会话";
     // create a history entry when starting a brand-new conversation
-    const isNewConversation = activeHistoryId === null;
-    let conversationId = activeHistoryId;
+    const isNewConversation = activeHistoryId === null || forceNew;
+    let conversationId = isNewConversation ? null : activeHistoryId;
     if (conversationId === null) {
       conversationId = nextHistoryId.current++;
       setHistory(h => [{ id: conversationId as number, title: historyTitle.slice(0, 20), createdAt: Date.now(), messages: [], ...(targetProjectId !== null ? { projectId: targetProjectId } : {}) }, ...h]);
@@ -5511,6 +6022,9 @@ export default function App() {
     const convId = conversationId;
     // 该会话的最新运行轮次：切到别的任务不会作废它，只有本会话再发新一轮才会
     runIdByConversation.current.set(convId, runId);
+    // 弹窗创建自动化任务：这一轮的结构化条件按「会话+轮次」登记，
+    // 服务端据此补齐工具参数（模型不用再追问），前端据此保证任务与卡片跟弹窗一致
+    if (options?.launch) launchAutomation.current.set(`${convId}:${runId}`, options.launch);
     setSelectedProjectId(null);
     // 演示入口（Figma 9369:50206 用户消息变体）：
     //   「模拟失败」→ 红色感叹号 + 发送失败/重试；「模拟提示」→ info 图标。
@@ -5532,7 +6046,7 @@ export default function App() {
       const appendRich: (list: Message[]) => Message[] = prev => [
         ...freezePrevious(prev),
         { role: "user", text, attachments: sentAttachments },
-        { role: "ai", text: RICH_TEXT_SAMPLE_LEAD, html: RICH_TEXT_SAMPLE_HTML, plainText: RICH_TEXT_SAMPLE_PLAIN, animateRich: true, followUps: DEFAULT_FOLLOW_UPS },
+        { role: "ai", text: RICH_TEXT_SAMPLE_LEAD, html: RICH_TEXT_SAMPLE_HTML, plainText: RICH_TEXT_SAMPLE_PLAIN, animateRich: true, followUps: RICH_TEXT_FOLLOW_UPS },
       ];
       if (isNewConversation) setMessages(appendRich); else applyToConversation(convId, appendRich);
       return;
@@ -5540,15 +6054,34 @@ export default function App() {
     // 搜索结果卡片示例：和普通提问一样先跑执行过程，结束后再返回 OneDrive / Outlook 卡片
     // 首页推荐问题「找出近一周的邮件」也走 Outlook 邮件卡片演示
     const cardDemo = (text.includes("邮件卡片") || text.includes("找出近一周的邮件")) ? "outlook" : text.includes("文件卡片") ? "onedrive" : null;
+    const useRealAgent = !shouldGeneratePpt && !cardDemo;
     const processText = text || "处理上传的文件";
+    // 真 agent 链路不预置任何本地工具步骤：模型没发 tool.call 前只显示中性的「正在理解」，
+    // 收到真实 tool.call 后才按模型选择的工具追加步骤；若整轮无工具，answer.start 会直接收起这条 process。
     const initialProcess: Message = shouldGeneratePpt
       ? { role: "process", text: "", thinking: true, variant: "requirement" }
-      : { role: "process", text: "", thinking: true, variant: "requirement", preset: buildQueryProcess(processText) };
+      : useRealAgent
+        ? {
+          role: "process",
+          text: "",
+          thinking: true,
+          variant: "requirement",
+          controlledProcess: true,
+          // 弹窗创建自动化任务：过程里的说话人改成任务口吻（步骤仍由真实工具调用驱动）
+          preset: options?.launch
+            ? { goal: "好的，我来帮你创建这个自动化任务", running: options.runningLabel ?? "正在思考", actions: [] }
+            : { goal: `任务目标：${processText}`, running: options?.runningLabel ?? "正在思考", actions: [] },
+        }
+        : { role: "process", text: "", thinking: true, variant: "requirement", preset: buildQueryProcess(processText, cardDemo === "onedrive" ? "onedrive" : "outlook") };
     {
       const appendRun: (list: Message[]) => Message[] = prev => {
         // 重新生成：截掉旧回答（及其后的消息），从对应提问重新挂执行过程
         if (isRegenerate) {
-          const base = prev.slice(0, options!.regenerateFrom!).map(m => (
+          // 同时截掉这轮回答前面的执行过程：否则旧的「任务已完成」会留在页面上，
+          // 和新生成的执行过程并排出现两条，且旧的那条永远没有正文跟随。
+          let cut = options!.regenerateFrom!;
+          while (cut > 0 && prev[cut - 1]?.role === "process") cut -= 1;
+          const base = prev.slice(0, cut).map(m => (
             m.instant || (m.role === "process" && m.thinking) ? m : { ...m, instant: true }
           ));
           return [...base, initialProcess];
@@ -5558,7 +6091,414 @@ export default function App() {
       if (isNewConversation) setMessages(appendRun); else applyToConversation(convId, appendRun);
     }
 
-    // AI returns summary first
+    // 普通提问：走真实模型流式输出；PPT / 卡片演示仍保留原模拟链路
+    if (useRealAgent) {
+      streamAbortByConversation.current.get(convId)?.abort();
+      const abortController = new AbortController();
+      streamAbortByConversation.current.set(convId, abortController);
+      realToolMode.current.delete(convId);
+      for (const key of [...confirmedByRound.current.keys()]) {
+        if (key.startsWith(`${convId}:`)) confirmedByRound.current.delete(key);
+      }
+
+      const ownerMessages = isNewConversation
+        ? []
+        : (activeHistoryIdRef.current === convId ? messages : (history.find(item => item.id === convId)?.messages ?? []));
+      const prior = (isRegenerate ? ownerMessages.slice(0, options!.regenerateFrom!) : ownerMessages)
+        .filter(m => (m.role === "user" || m.role === "ai") && !m.streaming && !m.sendState)
+        .map(m => ({ role: (m.role === "ai" ? "assistant" : "user") as "user" | "assistant", content: (m.plainText || m.text).slice(0, 8000) }));
+      const attachmentNote = sentAttachments.length ? `[附件：${sentAttachments.map(a => a.name).join("、")}] ` : "";
+      const apiMessages = [...prior, { role: "user" as const, content: `${attachmentNote}${text}`.slice(0, 8000) }];
+
+      let aiAppended = false;
+      let fullText = "";
+      let answerStarted = false;
+      // 结果自检结论：verify.result 在 answer.start 之前就到，先存着，建消息时带上
+      let verifyState: Message["verify"];
+      const isCurrent = () => runIdByConversation.current.get(convId) === runId && !abortController.signal.aborted;
+
+      const clearProcessAndFail = () => {
+        applyToConversation(convId, prev => {
+          const next = prev.filter(m => !(m.role === "process" && m.thinking) && !(m.role === "ai" && m.streaming));
+          const lastUser = next.findLastIndex(m => m.role === "user");
+          if (lastUser !== -1) next[lastUser] = { ...next[lastUser], sendState: "failed" as const };
+          return next;
+        });
+      };
+
+      const handleEvent = (event: AgentEvent) => {
+        if (!isCurrent()) return;
+        if (event.type === "plan.summary") {
+          // 「正在思考」结束后，先落一行用户可见的行动说明 / 下一步计划 / 推理摘要，
+          // 再等 tool.call 推进「显示执行意图」里每条的状态。每一轮工具调用各自成块。
+          // 服务端随摘要一起下发本轮的执行意图集合（type/text/status），前端立刻按 status 渲染
+          // 已完成与执行中，否则工具很快返回时，摘要与「已完成」之间没有任何执行反馈。
+          const textSummary = typeof event.data.text === "string" ? event.data.text.trim() : "";
+          // 折叠入口标题：概括这一组动作的静态短语（天气查询与出行建议），不是固定功能名
+          const textTitle = typeof event.data.title === "string" ? event.data.title.trim() : "";
+          const roundIndex = Number.isInteger(event.data.round) ? (event.data.round as number) : undefined;
+          // type 只用于选图标；text 是规范要求的自带动词短句，直接当文案，不带任何类型前缀。
+          const intents = (Array.isArray(event.data.intents) ? event.data.intents : [])
+            .filter(i => i && typeof i.text === "string" && i.text.trim())
+            .map(i => ({ label: i.text.trim(), icon: intentIcon(i.type), done: (i.status ?? "running") === "done" }));
+          const plannedActions = intents.map(({ label, icon }) => ({ label, icon }));
+          // 服务端保证 done 在前、running 在后：第一个未完成项之后都按执行中渲染
+          const firstRunning = intents.findIndex(i => !i.done);
+          const batchStart = firstRunning === -1 ? plannedActions.length : firstRunning;
+          const slots = (Array.isArray(event.data.slots) ? event.data.slots : []).filter(n => Number.isInteger(n)) as number[];
+          if (!textSummary && !plannedActions.length) return;
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+            if (idx === -1) return next;
+            const rounds = [...(next[idx].rounds ?? [])];
+            if (roundIndex !== undefined && rounds[roundIndex]) {
+              const target = rounds[roundIndex];
+              // 服务端预置的意图优先（同一批动作在 tool.call 里按 slots 认领，不重复追加）
+              rounds[roundIndex] = plannedActions.length && target.actions.length === 0
+                ? { ...target, summary: textSummary || target.summary, title: textTitle || target.title, actions: plannedActions, progress: { shown: plannedActions.length, batchStart }, slots }
+                : { ...target, summary: textSummary || target.summary, title: textTitle || target.title };
+            } else {
+              rounds.push({
+                summary: textSummary,
+                title: textTitle,
+                actions: plannedActions,
+                progress: { shown: plannedActions.length, batchStart },
+                slots,
+              });
+            }
+            next[idx] = { ...next[idx], summary: textSummary || next[idx].summary, rounds };
+            return next;
+          });
+        } else if (event.type === "tool.phase") {
+          // 工具阶段：process 保持 thinking（转圈 + 步骤逐个展开），此时下方绝不出现正文
+          if (event.data.stage === "start") {
+            const steps = event.data.steps;
+            if (Array.isArray(steps) && steps.length) {
+              applyToConversation(convId, prev => {
+                const next = [...prev];
+                const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+                if (idx !== -1) {
+                  next[idx] = {
+                    ...next[idx],
+                    preset: { goal: next[idx].preset?.goal ?? `任务目标：${text}`, running: next[idx].preset?.running ?? `围绕「${text}」检索并整理信息`, actions: steps.map(s => ({ label: s.label, icon: s.icon as ToolKind })) },
+                  };
+                }
+                return next;
+              });
+            }
+          }
+        } else if (event.type === "step.end") {
+          // 兼容旧的占位步骤事件（真 agent 下服务端不再发，保留以防回退）
+          const done = Number(event.data.index) + 1;
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+            if (idx !== -1 && Number.isFinite(done)) {
+              const total = next[idx].preset?.actions.length ?? done;
+              next[idx] = { ...next[idx], progress: { shown: Math.min(total, Math.max(next[idx].progress?.shown ?? 0, done)), batchStart: Math.min(total, Math.max(next[idx].progress?.batchStart ?? 0, done)) } };
+            }
+            return next;
+          });
+        } else if (event.type === "tool.call") {
+          // 真实工具调用：只推进对应轮次的执行意图状态，不新增文案。
+          // plan.summary 已经按服务端下发的 intents 预置好整组意图，服务端的 slots 记录
+          // 「第 i 个 tool_call 对应第几条意图」，这里精确认领，避免靠文案相等匹配而重复追加
+          // （模型给的意图文案与工具的动作文案本来就不一致）。
+          const icon = toToolKind(typeof event.data.icon === "string" ? event.data.icon : "");
+          const label = typeof event.data.label === "string" ? event.data.label : "";
+          const roundIndex = Number.isInteger(event.data.round) ? (event.data.round as number) : undefined;
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+            if (idx === -1) return next;
+            const current = next[idx].preset;
+            const realMode = realToolMode.current.get(convId) ?? false;
+            const actions = realMode ? [...(current?.actions ?? [])] : [];
+            actions.push({ label, icon });
+            realToolMode.current.set(convId, true);
+            const rounds = [...(next[idx].rounds ?? [])];
+            if (rounds.length === 0) rounds.push({ summary: next[idx].summary || "正在调用工具处理您的请求", actions: [], progress: { shown: 0, batchStart: 0 } });
+            const target = roundIndex !== undefined && rounds[roundIndex] ? roundIndex : rounds.length - 1;
+            while (rounds.length <= target) rounds.push({ summary: "正在调用工具处理您的请求", actions: [], progress: { shown: 0, batchStart: 0 } });
+            const targetRound = rounds[target];
+            const confirmKey = `${convId}:${target}`;
+            const confirmed = confirmedByRound.current.get(confirmKey) ?? 0;
+            const slot = targetRound.slots?.[confirmed];
+            const claim = Number.isInteger(slot) && (slot as number) < targetRound.actions.length ? (slot as number) : -1;
+            const roundActions = claim >= 0 ? targetRound.actions : [...targetRound.actions, { label, icon }];
+            const activeIndex = claim >= 0 ? claim : roundActions.length - 1;
+            confirmedByRound.current.set(confirmKey, confirmed + 1);
+            rounds[target] = {
+              ...targetRound,
+              actions: roundActions,
+              slots: claim >= 0 ? targetRound.slots : [...(targetRound.slots ?? []), activeIndex],
+              // batchStart 指向刚认领的这一条：它之后的都算执行中
+              progress: { shown: roundActions.length, batchStart: activeIndex },
+            };
+            next[idx] = {
+              ...next[idx],
+              controlledProcess: true,
+              rounds,
+              preset: { goal: current?.goal ?? `任务目标：${text}`, running: (typeof event.data.running === "string" && event.data.running) || runningActionText(label), actions },
+              progress: { shown: actions.length, batchStart: actions.length - 1 },
+            };
+            return next;
+          });
+        } else if (event.type === "tool.result") {
+          // 工具执行完成：把对应轮次里正在执行的步骤推进为完成（batchStart 越界即全部完成）
+          const roundIndex = Number.isInteger(event.data.round) ? (event.data.round as number) : undefined;
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+            if (idx === -1) return next;
+            const actions = next[idx].preset?.actions ?? [];
+            const rounds = [...(next[idx].rounds ?? [])];
+            if (rounds.length) {
+              const target = roundIndex !== undefined && rounds[roundIndex] ? roundIndex : rounds.length - 1;
+              const targetRound = rounds[target];
+              // 动作文案可能被服务端纠正过（创建任务的条件不齐 → 「核对任务条件」）：
+              // 用 tool.result 下发的 label 覆盖刚执行的那一条，别让执行过程显示成已创建。
+              const roundActions = [...targetRound.actions];
+              const activeIndex = targetRound.progress.batchStart;
+              const finalLabel = typeof event.data.label === "string" ? event.data.label : "";
+              if (finalLabel && roundActions[activeIndex] && roundActions[activeIndex].label !== finalLabel) {
+                roundActions[activeIndex] = { ...roundActions[activeIndex], label: finalLabel };
+              }
+              rounds[target] = { ...targetRound, actions: roundActions, progress: { shown: roundActions.length, batchStart: roundActions.length } };
+            }
+            next[idx] = { ...next[idx], rounds, progress: { shown: actions.length, batchStart: actions.length } };
+            return next;
+          });
+          // 模型调了 create_automation 且条件齐全：任务立刻落到「自动化任务」列表，
+          // 卡片暂存在 pendingAutomation，等 run.end 落地时挂到这条回答下方。
+          // 条件不齐时服务端返回 created:false（只有 question），这里不会建任何任务。
+          if (event.data.name === "create_automation" && event.data.ok) {
+            const output = event.data.output as AgentAutomationOutput | undefined;
+            const created = output?.created ? output.automation : undefined;
+            if (created) {
+              // 从弹窗发起时，排期 / 任务名以弹窗里填的为准（模型只负责确认 + 给图标关键词）；
+              // 纯对话里创建的任务没有 launch，就按模型返回的参数还原。
+              const launch = launchAutomation.current.get(`${convId}:${runId}`);
+              const base = buildDefaultSchedule();
+              const schedule: ScheduleState = launch?.meta.schedule ?? {
+                ...base,
+                cycle: created.cycle as ScheduleState["cycle"],
+                time: created.time,
+                weekdays: created.weekdays.length ? created.weekdays : base.weekdays,
+                monthDays: created.monthDays.length ? created.monthDays : base.monthDays,
+              };
+              const summary = summarizeSchedule(schedule);
+              // 标题是任务的概括：模型给的（服务端已收敛）优先，其次弹窗里填的名字，
+              // 最后才是「就」的内容；到这里再过一次收敛，保证 15 字左右、最多 30 字。
+              const goal = launch?.meta.goal ?? created.goal;
+              const title = condenseAutomationTitle(created.title, launch?.meta.title || goal);
+              const taskId = `automation-${Date.now()}`;
+              // 图标优先用服务端到 icons.kubai.design 检索到的那个（/api/icon 代理，统一主色）；
+              // 检索失败时按任务语义退回本地图标。
+              const icon = resolveAutomationIcon(`${title} ${goal} ${created.icon?.name ?? ""}`);
+              const iconUrl = created.icon?.url;
+              applyTasks(current => [{
+                id: taskId,
+                title,
+                cycle: summary.cycle,
+                description: summary.description,
+                status: "已启用",
+                schedule,
+                prompt: goal,
+                icon,
+                ...(iconUrl ? { iconUrl } : {}),
+                // 运行记录挂上本会话 id：点记录上的定位能跳回这段对话
+                records: buildRunRecords(goal, schedule.time, convId),
+                newSessionEachRun: launch?.meta.newSessionEachRun ?? false,
+                sourceConversationId: convId,
+                ...(launch?.meta.attachments?.length ? { attachments: launch.meta.attachments } : {}),
+              }, ...current]);
+              pendingAutomation.current.set(`${convId}:${runId}`, {
+                taskId,
+                title,
+                cycle: summary.cycle,
+                description: summary.description,
+                icon,
+                ...(iconUrl ? { iconUrl } : {}),
+                status: "已启用",
+                schedule,
+                prompt: goal,
+              });
+            }
+          }
+        } else if (event.type === "verify.start" || event.type === "verify.retry") {
+          // 结果自检：正文发出前，服务端先拿回答跟本轮工具的真实记录对账。
+          // 在最后一轮执行过程末尾补一条「核对回答与依据」（重写时再补一条），
+          // 复用同一套逐条揭示，所以它会排在动作行之后。
+          const label = typeof event.data.label === "string" && event.data.label
+            ? event.data.label
+            : (event.type === "verify.retry" ? "按依据重写回答" : "核对回答与依据");
+          const icon: ToolKind = event.type === "verify.retry" ? "react-analyze" : "react-check";
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+            if (idx === -1) return next;
+            const rounds = [...(next[idx].rounds ?? [])];
+            if (!rounds.length) return next;
+            const last = rounds[rounds.length - 1];
+            const actions = [...last.actions, { label, icon }];
+            // 新加的这条在执行中，前面的都算完成
+            rounds[rounds.length - 1] = { ...last, actions, progress: { shown: actions.length, batchStart: actions.length - 1 } };
+            next[idx] = { ...next[idx], rounds };
+            return next;
+          });
+        } else if (event.type === "verify.result") {
+          // 核对结束：整组动作收尾。没通过时正文里已经有服务端写的说明，这里只负责不再转圈。
+          verifyState = {
+            ok: event.data.ok === true,
+            retried: event.data.retried === true,
+            note: typeof event.data.note === "string" ? event.data.note : "",
+          };
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
+            if (idx === -1) return next;
+            const rounds = [...(next[idx].rounds ?? [])];
+            if (!rounds.length) return next;
+            const last = rounds[rounds.length - 1];
+            rounds[rounds.length - 1] = { ...last, progress: { shown: last.actions.length, batchStart: last.actions.length } };
+            next[idx] = { ...next[idx], rounds };
+            return next;
+          });
+        } else if (event.type === "answer.start") {
+          // 工具处理全部结束，这一刻才允许正文出现。
+          // 没有真实 tool.call 的轮次直接移除 process，不再留下本地预置的假工具步骤；
+          // 有真实工具调用时才收起执行过程供展开查看。
+          answerStarted = true;
+          const hadRealTools = realToolMode.current.get(convId) === true;
+          applyToConversation(convId, prev => {
+            const next = hadRealTools
+              ? prev.map(m => (m.role === "process" && m.thinking ? { ...m, thinking: false } : m))
+              : prev.filter(m => !(m.role === "process" && m.thinking));
+            // 本轮工具已经建好任务时，卡片在这里就先挂上（不等 run.end），
+            // 否则操作项会按「无卡片」的 120ms 先冒出来，卡片晚到再插到它上面把操作项顶下去。
+            const pendingCard = pendingAutomation.current.get(`${convId}:${runId}`);
+            // 从弹窗发起创建时卡片要等 run.end 兜底生成，这期间也别先出操作项。
+            const cardPending = !pendingCard && launchAutomation.current.has(`${convId}:${runId}`);
+            if (!next.some(m => m.role === "ai" && m.streaming)) next.push({ role: "ai", text: "", instant: true, streaming: true, needsTypewriter: true, runId, ...(pendingCard ? { automation: pendingCard } : {}), ...(cardPending ? { automationPending: true } : {}), ...(verifyState ? { verify: verifyState } : {}) });
+            return next;
+          });
+          // 指针推进由 ChatView 内部的 ChatMessageRow（打字完成回调 advance）负责，
+          // 这里不要再调 advance —— App 作用域里没有该函数，调用会抛错并被 SSE 解析静默吞掉。
+        } else if (event.type === "message.delta") {
+          const delta = typeof event.data.text === "string" ? event.data.text : "";
+          if (!delta) return;
+          fullText += delta;
+          // answer.start 之前的 delta 一律不渲染（服务端正常情况下不会这样发，这里是防御）
+          if (!answerStarted) return;
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "ai" && m.streaming);
+            if (idx !== -1) {
+              next[idx] = { ...next[idx], text: fullText, instant: true, needsTypewriter: true };
+            } else {
+              aiAppended = true;
+              const pendingCard = pendingAutomation.current.get(`${convId}:${runId}`);
+              const cardPending = !pendingCard && launchAutomation.current.has(`${convId}:${runId}`);
+              next.push({ role: "ai", text: fullText, instant: true, streaming: true, needsTypewriter: true, runId, ...(pendingCard ? { automation: pendingCard } : {}), ...(cardPending ? { automationPending: true } : {}), ...(verifyState ? { verify: verifyState } : {}) });
+            }
+            return next;
+          });
+        } else if (event.type === "answer.end") {
+          // 正文已发完，推荐追问还在服务端生成：先标记 bodyDone，
+          // 打字机收尾后操作项立即出现，不再跟推荐问题一起出来。
+          applyToConversation(convId, prev => {
+            const next = [...prev];
+            const idx = next.findLastIndex(m => m.role === "ai" && m.streaming);
+            if (idx !== -1) next[idx] = { ...next[idx], bodyDone: true };
+            return next;
+          });
+        } else if (event.type === "run.end") {
+          const finalText = typeof event.data.text === "string" && event.data.text ? event.data.text : fullText;
+          const plainText = typeof event.data.plainText === "string" && event.data.plainText ? event.data.plainText : undefined;
+          // 来源只有服务端真实下发且非空时才落到消息；无来源的回答不带此字段，徽标不显示。
+          const sources = Array.isArray(event.data.sources) && event.data.sources.length ? event.data.sources : undefined;
+          // 推荐追问由服务端按当前回答生成；没有就不显示，不再兜底到万金油模板。
+          const followUps = Array.isArray(event.data.followUps)
+            ? event.data.followUps.filter((q): q is string => typeof q === "string" && Boolean(q.trim())).slice(0, 3)
+            : [];
+          const hadRealTools = realToolMode.current.get(convId) === true;
+          // 本轮真的创建了自动化任务：卡片挂在回答下方，延展问题换成任务相关那三条
+          // （模型生成追问时还不知道卡片的存在，给不出「执行记录在哪看」这类问题）。
+          const automationKey = `${convId}:${runId}`;
+          let automation = pendingAutomation.current.get(automationKey);
+          pendingAutomation.current.delete(automationKey);
+          const launch = launchAutomation.current.get(automationKey);
+          launchAutomation.current.delete(automationKey);
+          // 兜底：从弹窗发起时条件本来就齐全，模型偶尔只回一句话、没真的调工具，
+          // 这时按弹窗里的条件把任务补上，避免「点了创建却没生成任务」。
+          if (!automation && launch) {
+            const summary = summarizeSchedule(launch.meta.schedule);
+            const taskId = `automation-${Date.now()}`;
+            const seedTitle = condenseAutomationTitle(launch.meta.title, launch.meta.goal);
+            const icon = resolveAutomationIcon(`${seedTitle} ${launch.meta.goal}`);
+            applyTasks(current => [{
+              id: taskId,
+              title: seedTitle,
+              cycle: summary.cycle,
+              description: summary.description,
+              status: "已启用",
+              schedule: launch.meta.schedule,
+              prompt: launch.meta.goal,
+              icon,
+              records: buildRunRecords(launch.meta.goal, launch.meta.schedule.time, convId),
+              newSessionEachRun: launch.meta.newSessionEachRun,
+              sourceConversationId: convId,
+              ...(launch.meta.attachments?.length ? { attachments: launch.meta.attachments } : {}),
+            }, ...current]);
+            automation = {
+              taskId,
+              title: seedTitle,
+              cycle: summary.cycle,
+              description: summary.description,
+              icon,
+              status: "已启用",
+              schedule: launch.meta.schedule,
+              prompt: launch.meta.goal,
+            };
+          }
+          applyToConversation(convId, prev => {
+            const next = hadRealTools
+              ? prev.map(m => (m.role === "process" && m.thinking ? { ...m, thinking: false } : m))
+              : prev.filter(m => !(m.role === "process" && m.thinking));
+            const idx = next.findLastIndex(m => m.role === "ai" && m.streaming);
+            const content = finalText || "（模型未返回内容）";
+            const follow = automation ? AUTOMATION_FOLLOW_UPS : (followUps.length ? followUps : undefined);
+            if (idx !== -1) {
+              next[idx] = { ...next[idx], text: content, plainText: plainText, streaming: false, followUps: follow, followUpsReady: true, instant: true, sources, needsTypewriter: true, runId, automationPending: false, ...(automation ? { automation } : {}) };
+            } else {
+              next.push({ role: "ai", text: content, plainText: plainText, followUps: follow, followUpsReady: true, instant: true, sources, needsTypewriter: true, runId, automationPending: false, ...(automation ? { automation } : {}) });
+            }
+            return next;
+          });
+          streamAbortByConversation.current.delete(convId);
+        } else if (event.type === "run.error") {
+          const message = typeof event.data.message === "string" ? event.data.message : "模型调用失败";
+          pendingAutomation.current.delete(`${convId}:${runId}`);
+          clearProcessAndFail();
+          streamAbortByConversation.current.delete(convId);
+          if (activeHistoryIdRef.current === convId) toast.error(message);
+        }
+      };
+
+      streamChat({ messages: apiMessages, runId, signal: abortController.signal, automationRun: options?.automationRun === true, automationSeed: options?.launch?.seed, onEvent: handleEvent })
+        .catch(error => {
+          if (!isCurrent()) return;
+          if (abortController.signal.aborted) return;
+          clearProcessAndFail();
+          streamAbortByConversation.current.delete(convId);
+          if (activeHistoryIdRef.current === convId) toast.error(error?.message ?? "模型调用失败");
+        });
+      return;
+    }
+
+    // 以下为演示态：PPT 生成 / OneDrive / Outlook 卡片仍使用本地脚本
     setTimeout(() => {
       if (runIdByConversation.current.get(convId) !== runId) return;
       if (shouldGeneratePpt) {
@@ -5566,28 +6506,19 @@ export default function App() {
           const next = [...prev];
           const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
           if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
-          next.push({ role: "ai", text: "好的，我来帮您生成PPT。需要先确认演示场景、受众、页数和风格，以便提供针对性的内容结构。", followUps: DEFAULT_FOLLOW_UPS });
+          next.push({ role: "ai", text: "好的，我来帮您生成PPT。需要先确认演示场景、受众、页数和风格，以便提供针对性的内容结构。", followUps: PPT_FOLLOW_UPS });
           return next;
         });
-        // panel appears after AI summary is shown
         setTimeout(() => { if (activeHistoryIdRef.current === convId && runIdByConversation.current.get(convId) === runId) setStage("requirement"); }, 400);
       } else if (cardDemo) {
         applyToConversation(convId, prev => {
           const next = [...prev];
           const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
           if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
+          // 搜索卡片本身就是「来源」：用真实返回的条目数作为来源徽标数量，不再写死 9。
           next.push(cardDemo === "outlook"
-            ? { role: "ai", text: "查到了以下邮件，共 3 封。", outlookMails: OUTLOOK_SAMPLE, followUps: DEFAULT_FOLLOW_UPS }
-            : { role: "ai", text: "在 OneDrive 里找到 3 个相关文件。", oneDriveFiles: ONE_DRIVE_SAMPLE, followUps: DEFAULT_FOLLOW_UPS });
-          return next;
-        });
-      } else {
-        applyToConversation(convId, prev => {
-          const next = [...prev];
-          const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
-          if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
-          const artifacts = buildTaskArtifacts(processText);
-          next.push(artifacts.length ? { role: "ai", text: "帮您整理好了", artifacts, followUps: DEFAULT_FOLLOW_UPS } : { role: "ai", text: "好的，我来帮您处理这个请求。", followUps: DEFAULT_FOLLOW_UPS });
+            ? { role: "ai", text: "查到了以下邮件，共 3 封。", outlookMails: OUTLOOK_SAMPLE, sources: OUTLOOK_SAMPLE.map(m => ({ title: m.title, kind: "outlook" })), followUps: OUTLOOK_FOLLOW_UPS }
+            : { role: "ai", text: "在 OneDrive 里找到 3 个相关文件。", oneDriveFiles: ONE_DRIVE_SAMPLE, sources: ONE_DRIVE_SAMPLE.map(f => ({ title: f.name, kind: "onedrive" })), followUps: ONEDRIVE_FOLLOW_UPS });
           return next;
         });
       }
@@ -5605,7 +6536,7 @@ export default function App() {
         const next = [...prev];
         const idx = next.findLastIndex(m => m.role === "process" && m.thinking);
         if (idx !== -1) next[idx] = { ...next[idx], thinking: false };
-        next.push({ role: "ai", text: "需求已确认，大纲生成完成，请确认以下结构。", followUps: DEFAULT_FOLLOW_UPS });
+        next.push({ role: "ai", text: "需求已确认，大纲生成完成，请确认以下结构。", followUps: PPT_FOLLOW_UPS });
         return next;
       });
       setTimeout(() => { if (activeRunId.current === runId) setStage("outline"); }, 400);
@@ -5632,6 +6563,12 @@ export default function App() {
 
   const handleStop = () => {
     activeRunId.current += 1;
+    const convId = activeHistoryIdRef.current;
+    if (convId !== null) {
+      runIdByConversation.current.delete(convId);
+      streamAbortByConversation.current.get(convId)?.abort();
+      streamAbortByConversation.current.delete(convId);
+    }
     setStage("idle");
     setMessages(prev => prev.map(message => message.role === "process" && message.thinking ? { ...message, thinking: false } : message));
   };
@@ -5696,18 +6633,20 @@ export default function App() {
   sendRunRef.current = handleSend;
   // 新建自动化任务弹窗点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
   // 由 AI 承接并完成创建。排期条件转成自然语言写进 AI 的过程与回复里。
+  // 新建自动化任务弹窗点「创建」：不再本地演一遍假流程，
+  // 而是把弹窗里填好的条件写成一句话，发起一轮真实对话 —— 执行过程来自真实工具调用，
+  // 回复由模型生成，任务由 create_automation 落库，图标由模型给关键词后到 icons.kubai.design 检索。
+  // 弹窗里填的周期 / 时刻 / 任务名通过 launch.seed 一起带过去，模型漏字段也不会跑偏。
   const handleLaunchAutomationChat = ({ schedule, prompt, attachments, newSessionEachRun, title: titleOverride, goal: goalOverride }: { schedule: ScheduleState; prompt: string; attachments?: ChatAttachment[]; newSessionEachRun: boolean; title?: string; goal?: string }) => {
-    const summary = summarizeSchedule(schedule);
-    const when = describeSchedule(schedule);
-    const title = titleOverride?.trim() || prompt.split("\n")[0].trim() || "未命名自动化任务";
     // 「就」的内容：卡片副标题与任务详情用；从聊天文案进来时已剥掉「创建…／每天…」这类前缀
     const goal = goalOverride?.trim() || prompt;
-    const runId = ++activeRunId.current;
-    const taskId = `automation-${Date.now()}`;
-    // 图标不写死：按标题 + 「就」的内容去图标词表里分词匹配（icons.kubai.design）
-    const icon = resolveAutomationIcon(`${title} ${goal}`);
+    // 标题是任务的概括（最好 15 字、最多 30 字）：
+    // 用户在弹窗里填了名字就用名字，否则从「就」的内容里收敛出一句概括。
+    // 实在收敛不出来就留空，交给模型在 create_automation 里给（服务端还会再收一次）。
+    const title = titleOverride?.trim() ? condenseAutomationTitle(titleOverride, goal) : condenseAutomationTitle(goal);
+    const when = describeSchedule(schedule);
 
-    // 离开自动化页 → 新会话
+    // 离开自动化页 → 新会话（handleSend 里强制开新会话，不落到上一个任务里）
     setMobileNavigationOpen(false);
     setAutomationOpen(false);
     setProjectListOpen(false);
@@ -5716,79 +6655,32 @@ export default function App() {
     setLibraryOpen(false);
     setSelectedProjectId(null);
     setActiveProjectId(null);
-    // 附件交给了新会话与新建的任务：预览地址要继续用，不能回收
-    clearDraftAttachments(!attachments?.length);
-    setInput("");
-    setPptGeneration(false);
     setStage("idle");
+    setPptGeneration(false);
+    // 附件交给新会话与新建的任务：预览地址要继续用，不能回收
+    clearDraftAttachments(!attachments?.length);
 
-    const id = nextHistoryId.current++;
-    setHistory(h => [{ id, title: title.slice(0, 20), createdAt: Date.now(), messages: [] }, ...h]);
-    setActiveHistoryId(id);
-    setMessages([
-      { role: "user", text: prompt, ...(attachments?.length ? { attachments } : {}) },
-      {
-        role: "process",
-        text: "",
-        thinking: true,
-        variant: "requirement",
-        preset: {
-          goal: "好的，我来帮你创建这个自动化任务",
-          running: "正在创建自动化任务",
-          actions: [
-            { label: `读取；识别执行时间「${when}」`, icon: "read" },
-            { label: "生成；创建自动化任务", icon: "generate" },
-            { label: "校验；校验配置并启用任务", icon: "check" },
-          ],
+    // 指令拼接前先去掉内容末尾的句号，避免出现「建议。。」这种双句号
+    const goalForMessage = goal.replace(/[。！？；，,.\s]+$/, "");
+    const instruction = title
+      ? `帮我创建一个自动化任务「${title}」：${when} 自动执行，内容是${goalForMessage}。`
+      : `帮我创建一个自动化任务：${when} 自动执行，内容是${goalForMessage}。`;
+    handleSend(instruction, attachments ?? [], {
+      conversationTitle: title || goal.slice(0, 20),
+      forceNewConversation: true,
+      launch: {
+        seed: {
+          // 没有现成名字时不塞 title，让模型按内容概括一个（服务端会收敛到 30 字内）
+          ...(title ? { title } : {}),
+          goal,
+          cycle: schedule.cycle,
+          time: schedule.time,
+          weekdays: schedule.cycle === "每周" ? schedule.weekdays : [],
+          monthDays: schedule.cycle === "每月" ? schedule.monthDays : schedule.cycle === "每年" ? [schedule.yearDay] : [],
         },
+        meta: { title, goal, schedule, newSessionEachRun, ...(attachments?.length ? { attachments } : {}) },
       },
-    ]);
-
-    // AI「创建完成」：任务才真正落到「自动化任务」列表（本地模拟，后续可换真实 Agent）
-    runIdByConversation.current.set(id, runId);
-    window.setTimeout(() => {
-      if (runIdByConversation.current.get(id) !== runId) return;
-      // 结果按会话写回：用户可能已经切回别的任务，直接 setMessages 会把结果追加到别人的会话里
-      applyToConversation(id, prev => {
-        const next = [...prev];
-        const index = next.findLastIndex(message => message.role === "process" && message.thinking);
-        if (index !== -1) next[index] = { ...next[index], thinking: false };
-        next.push({
-          role: "ai",
-          text: `已创建自动化任务「${title}」，${when} 自动执行。\n任务已启用，你可以在「自动化任务」里暂停、修改或查看执行记录。`,
-          // 卡片就展示在回复下方，点它打开右侧详情（Figma 9925:54837）
-          automation: { taskId, title, cycle: summary.cycle, description: summary.description, icon, status: "已启用", schedule, prompt: goal },
-          // 卡片下方的延展问题（Figma 9925:54837「延展问题」模块）
-          followUps: [
-            "这个任务的执行记录在哪里查看？",
-            "把执行时间改成每天 09:00",
-            "给这个任务设置一个结束时间",
-          ],
-        });
-        return next;
-      });
-      applyTasks(current => [
-        {
-          id: taskId,
-          title,
-          cycle: summary.cycle,
-          description: summary.description,
-          status: "已启用",
-          schedule,
-          prompt: goal,
-          icon,
-          // 运行记录先铺一组示例（Figma 9908:45451），「立即执行」会再插新的；
-          // 带上创建会话 id：这些记录点图钉时也能跳回本对话
-          records: buildRunRecords(goal, schedule.time, id),
-          // 执行方式：勾选了「每次执行都开启新会话」→ 每次执行开新对话；
-          // 否则写回本会话（sourceConversationId）。会话被删时当次执行也开新对话。
-          newSessionEachRun,
-          sourceConversationId: id,
-          ...(attachments?.length ? { attachments } : {}),
-        },
-        ...current,
-      ]);
-    }, 6200);
+    });
   };
 
   // 「立即执行」= 把任务内容当作一条消息发进落点会话，走真实的执行流程（发送 → 过程 → 回复），
@@ -5825,7 +6717,7 @@ export default function App() {
       if (activeHistoryIdRef.current !== convId) {
         // 切到创建会话：已有消息按历史处理（instant 不重播动画），任务消息接着往下发
         gotoConversation(convId);
-        setMessages(base.map(m => ({ ...m, instant: true })));
+        setMessages(base.map(m => ({ ...m, instant: true, needsTypewriter: false })));
       }
       // 正在看的就是创建会话：什么都不用动，消息直接续在后面
     } else {
@@ -5874,7 +6766,7 @@ export default function App() {
     setSelectedProjectId(null);
     setActiveProjectId(target.projectId ?? null);
     setActiveHistoryId(target.id);
-    setMessages(target.messages.map(m => ({ ...m, instant: true })));
+    setMessages(target.messages.map(m => ({ ...m, instant: true, needsTypewriter: false })));
     // 等会话渲染完再滚过去：优先按记录里的消息位置，找不到再退回「含该任务卡片 / 任务文案的最后一条」
     window.setTimeout(() => {
       const rows = [...document.querySelectorAll<HTMLElement>("[data-message-index]")];
@@ -6036,6 +6928,20 @@ export default function App() {
       handleRunAutomationTask(task);
     }
   };
+  // 会话卡片 hover 操作项：与列表卡片同一套菜单。卡片只带 taskId，
+  // 这里补成真实任务再走同一个 handler；编辑 / 执行记录 都在右侧详情栏里看。
+  const handleChatCardOperate = (label: string, taskId: string) => {
+    const task = automationTasksRef.current.find(item => item.id === taskId);
+    if (!task) {
+      toast.error("该任务已删除", { id: "automation-task-status" });
+      return;
+    }
+    if (label === "编辑" || label === "执行记录") {
+      setChatAutomationId(taskId);
+      return;
+    }
+    handleChatAutomationOperate(label, task);
+  };
   const activeTaskProject = projects.find(project => project.id === activeTask?.projectId);
   const activeTaskArtifacts: LocatedTaskArtifact[] = messages.flatMap((message, messageIndex) => (
     (message.artifacts ?? []).map(artifact => ({ ...artifact, messageIndex }))
@@ -6059,17 +6965,17 @@ export default function App() {
   };
 
   // 当前会话的 messages 比 history 回写早一帧，补进去避免 loading 图标延迟出现。
-  // AI 正文出来后仍保持 loading，直到该回答的延展问题真的显示出来（用户定义：那时才算执行完成）。
+  // 完成判定（用户 2026-11-25 改）：本轮操作项出现即算执行完成，loading 立刻结束，不再等推荐问题。
   const activeHasThinking = messages.some(message => message.role === "process" && message.thinking);
-  const activeRecommendationKey = getRecommendationKey(activeHistoryId, messages);
-  const recommendationsPending = activeHistoryId !== null
-    && activeRecommendationKey !== null
+  const activeAnswerDoneKey = getAnswerDoneKey(activeHistoryId, messages);
+  const answerPending = activeHistoryId !== null
+    && activeAnswerDoneKey !== null
     && !activeHasThinking
-    && !shownRecommendationKeys.has(activeRecommendationKey);
+    && !shownRecommendationKeys.has(activeAnswerDoneKey);
   const sidebarRunningTaskIds = new Set<number>(history
     .filter(item => item.messages.some(message => message.role === "process" && message.thinking))
     .map(item => item.id));
-  if (activeHistoryId !== null && (activeHasThinking || recommendationsPending)) {
+  if (activeHistoryId !== null && (activeHasThinking || answerPending)) {
     sidebarRunningTaskIds.add(activeHistoryId);
   }
 
@@ -6139,6 +7045,11 @@ export default function App() {
         }}
         onDrop={handleDrop}
       >
+        {/* 首页背景层（点阵 + 开场 5s shader 光效）：挂在主内容区最外层，absolute inset-0
+            连顶栏一起盖满，避免顶部出现白色缺口。仅首页挂载；负 z 在白底之上、内容之下。 */}
+        {!libraryOpen && !automationOpen && !archiveOpen && !connectorOpen && !projectListOpen && !activeProject && messages.length === 0 && (
+          <HomeBackground />
+        )}
         {/* 自动化任务页（Figma 9937:57105）与连接器页（Figma 10118:87777）没有全局顶栏；
             移动端保留顶栏以免失去导航入口 */}
         {(automationOpen || connectorOpen) && !isMobile ? null : (
@@ -6262,6 +7173,7 @@ export default function App() {
               agentRunning={messages.some(message => message.role === "process" && Boolean(message.thinking))}
               onStop={handleStop}
               onOpenAutomation={setChatAutomationId}
+              onAutomationOperate={handleChatCardOperate}
               onOpenConnectors={handleOpenConnectors}
               onEditMessage={handleEditMessage}
               onDeleteMessage={handleDeleteMessage}

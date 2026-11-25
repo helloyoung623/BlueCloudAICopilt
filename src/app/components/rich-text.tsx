@@ -297,6 +297,220 @@ export function plainTextToHtml(text: string): string {
     .join("");
 }
 
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** 行内 markdown：粗体 / 删除线 / 行内代码 / 安全链接。全部先转义，再只放开白名单标签。 */
+function mdInline(raw: string): string {
+  let s = esc(raw);
+  s = s.replace(/`([^`]+)`/g, (_m, code: string) => `<code>${code}</code>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, (_m, t: string) => `<strong>${t}</strong>`);
+  s = s.replace(/~~([^~]+)~~/g, (_m, t: string) => `<del>${t}</del>`);
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_m, t: string, href: string) => `<a href="${href}">${t}</a>`);
+  return s;
+}
+
+/**
+ * 把模型常见的 markdown（标题/列表/代码块/引用/表格）转成 RichText 白名单 HTML。
+ * 目的只有一个：让「要点」真正渲染成 <ol>/<ul>/<li>，而不是纯文本里的「1. 2. 3.」。
+ */
+function markdownToHtml(src: string): string {
+  const lines = src.replace(/\r/g, "").split("\n");
+  const out: string[] = [];
+  let i = 0;
+  const isSep = (line: string) => /^\s*\|?[\s:-]*-{3,}[\s:-]*\|?\s*$/.test(line);
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i += 1; continue; }
+    // 代码块
+    if (/^\s*```/.test(line)) {
+      const lang = line.trim().replace(/^```/, "").trim();
+      const code: string[] = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) { code.push(lines[i]); i += 1; }
+      if (i < lines.length) i += 1;
+      const cls = lang ? ` class="language-${esc(lang.replace(/[^\w+#-]/g, ""))}"` : "";
+      out.push(`<pre><code${cls}>${esc(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+    // 标题
+    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/);
+    if (heading) {
+      // 普通回答的小节标题从 h3 起；markdown 的 #/## 不映射成 h1/h2，避免大号标题突兀
+      const level = Math.min(6, heading[1].length + 2);
+      out.push(`<h${level}>${mdInline(heading[2].trim())}</h${level}>`);
+      i += 1; continue;
+    }
+    // 表格（表头行 + 分隔行 + 数据行）
+    if (line.includes("|") && i + 1 < lines.length && isSep(lines[i + 1])) {
+      const cells = (l: string) => l.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      const head = cells(line);
+      i += 2;
+      const body: string[][] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) { body.push(cells(lines[i])); i += 1; }
+      out.push(`<table><thead><tr>${head.map(c => `<th>${mdInline(c)}</th>`).join("")}</tr></thead><tbody>${body.map(r => `<tr>${r.map(c => `<td>${mdInline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      continue;
+    }
+    // 有序 / 无序列表
+    const ol = /^\s*\d+[.)]\s+/.test(line);
+    const ul = /^\s*[-*+]\s+/.test(line);
+    if (ol || ul) {
+      const re = ol ? /^\s*\d+[.)]\s+(.+)$/ : /^\s*[-*+]\s+(.+)$/;
+      const items: string[] = [];
+      while (i < lines.length) {
+        const m = lines[i].match(re);
+        if (!m) break;
+        items.push(`<li>${mdInline(m[1])}</li>`);
+        i += 1;
+      }
+      out.push(`<${ol ? "ol" : "ul"}>${items.join("")}</${ol ? "ol" : "ul"}>`);
+      continue;
+    }
+    // 引用
+    if (/^\s*>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { quote.push(mdInline(lines[i].replace(/^\s*>\s?/, ""))); i += 1; }
+      out.push(`<blockquote>${quote.map(q => `<p>${q}</p>`).join("")}</blockquote>`);
+      continue;
+    }
+    // 分隔线
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push("<hr>"); i += 1; continue; }
+    // 普通段落：连续非空行合并，单换行 → <br>
+    const para: string[] = [];
+    while (i < lines.length && lines[i].trim()
+      && !/^\s*(#{1,6}\s|```|\d+[.)]\s|[-*+]\s|>\s?|(-{3,}|\*{3,}|_{3,}))$/.test(lines[i])) {
+      para.push(mdInline(lines[i])); i += 1;
+    }
+    if (para.length) out.push(`<p>${para.join("<br>")}</p>`);
+  }
+  return out.join("");
+}
+
+/**
+ * 模型有时已经把正文写成 HTML，但「要点」仍用纯文本的「- 」「1. 」开头
+ * （形如 <p>- 备餐说明：…</p>）。这种不走 markdownToHtml，会原样显示成一段带「-」的文字，
+ * 看起来像列表却没有列表样式。这里在 DOM 层把这些段落还原成 <ul>/<ol>：
+ *  - 连续的同类段落合并成一个列表
+ *  - 一个段落里用 <br> 分隔的多条要点，按 <br> 拆成多条
+ *  - 段落里若含真正的块级元素（表格/代码/标题/嵌套列表）就不动，避免破坏原结构
+ */
+function dashedParagraphsToLists(html: string): string {
+  if (!/[-*+]\s|\d+[.)]\s/.test(html)) return html;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const body = doc.body;
+  const markerOf = (node: Element): "ul" | "ol" | null => {
+    if (node.tagName !== "P") return null;
+    if (node.querySelector("ul,ol,table,pre,blockquote,h1,h2,h3,h4,h5,h6")) return null;
+    const text = (node.textContent ?? "").trimStart();
+    if (/^[-*+]\s+/.test(text)) return "ul";
+    if (/^\d+[.)]\s+/.test(text)) return "ol";
+    return null;
+  };
+  // 一个 <p> 可能用 <br> 塞了多条要点：拆成若干份节点数组
+  const splitItems = (node: Element, kind: "ul" | "ol"): Node[][] => {
+    const items: Node[][] = [];
+    let current: Node[] = [];
+    Array.from(node.childNodes).forEach(child => {
+      if (child.nodeName === "BR") { items.push(current); current = []; return; }
+      current.push(child);
+    });
+    items.push(current);
+    const re = kind === "ul" ? /^\s*[-*+]\s+/ : /^\s*\d+[.)]\s+/;
+    return items
+      .map(nodes => {
+        const [first, ...rest] = nodes;
+        if (first && first.nodeType === Node.TEXT_NODE) {
+          const stripped = (first.textContent ?? "").replace(re, "");
+          first.textContent = stripped;
+        }
+        return [first, ...rest].filter(Boolean) as Node[];
+      })
+      .filter(nodes => (nodes[0]?.textContent ?? "").trim() || nodes.length > 1);
+  };
+
+  let changed = false;
+  Array.from(body.children).forEach(child => {
+    if (!child.isConnected) return;
+    const kind = markerOf(child);
+    if (!kind) return;
+    // 收集连续的同类要点段落
+    const run: Element[] = [child];
+    let next = child.nextElementSibling;
+    while (next && markerOf(next) === kind) { run.push(next); next = next.nextElementSibling; }
+    const list = doc.createElement(kind);
+    run.forEach(node => {
+      splitItems(node, kind).forEach(nodes => {
+        const li = doc.createElement("li");
+        nodes.forEach(n => li.appendChild(n));
+        list.appendChild(li);
+      });
+    });
+    run[0].replaceWith(list);
+    run.slice(1).forEach(node => node.remove());
+    changed = true;
+  });
+  return changed ? body.innerHTML : html;
+}
+
+/**
+ * AI 正文归一化为白名单 HTML：
+ *  - 模型按提示词输出了 HTML → 原样交给 RichText（它内部有 DOMParser 白名单过滤，script/style 会被丢掉）
+ *  - 模型输出 markdown（小模型常见）→ 转成 <ol>/<ul>/<h3>/<pre> 等标签，保证 Figma 标签样式生效
+ *  - 纯文本 → 走 plainTextToHtml
+ * 结果里若含 ``` 包裹，先剥掉外层围栏。
+ */
+export function normalizeAiHtml(raw: string): string {
+  let s = (raw ?? "").trim();
+  if (!s) return "";
+  const fence = s.match(/^```(?:html|markdown|md)?\s*\n([\s\S]*?)\n?```$/i);
+  if (fence) s = fence[1].trim();
+  // 出现白名单块级/行内标签就当作 HTML（不合法的属性会被 RichText 忽略）
+  if (/<\/?(?:p|h[1-6]|ol|ul|li|strong|b|del|s|code|pre|blockquote|hr|table|thead|tbody|tfoot|tr|th|td|a|br|div|span)\b/i.test(s)) return dashedParagraphsToLists(s);
+  // 明显的 markdown 结构才转换，纯文本仍走原逻辑（避免把含「1.」的普通句子误转成列表）
+  if (/^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s|```|\|.*\|)/m.test(s)) return markdownToHtml(s);
+  return plainTextToHtml(s);
+}
+
+/**
+ * HTML 里的可见文字长度（打字机目标）。
+ * 只数文本节点的字符，不数标签；<br> 这类无文本标签不计入。
+ */
+export function visibleTextLength(html: string): number {
+  if (!html) return 0;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return (doc.body.textContent ?? "").length;
+}
+
+/**
+ * 按「可见文字数」截断 HTML：保留已揭示部分的完整标签结构，让逐字打字期间仍是富文本样式
+ * （列表圆点、加粗、标题等都正确），而不是把标签源码打到屏幕上。
+ * maxChars<=0 返回空；达到上限后丢弃后续节点。
+ */
+export function truncateHtmlByVisibleText(html: string, maxChars: number): string {
+  if (maxChars <= 0 || !html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  let remaining = maxChars;
+  const walk = (node: Node): boolean => {
+    if (node.nodeType === 3) { // TEXT_NODE
+      const text = node.nodeValue ?? "";
+      if (text.length <= remaining) { remaining -= text.length; return false; }
+      node.nodeValue = text.slice(0, remaining);
+      remaining = 0;
+      return true;
+    }
+    if (node.nodeType === 1) { // ELEMENT_NODE
+      for (const child of Array.from(node.childNodes)) {
+        if (walk(child)) {
+          while (child.nextSibling) node.removeChild(child.nextSibling);
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  walk(doc.body);
+  return doc.body.innerHTML;
+}
+
 export const RICH_TEXT_CSS = `
 @keyframes acrtIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .acrt{
@@ -310,12 +524,16 @@ export const RICH_TEXT_CSS = `
 .acrt h1,.acrt h2,.acrt h3,.acrt h4,.acrt h5,.acrt h6{
   color:rgba(0,0,0,.88);font-family:"PingFang SC:Medium","PingFang SC",sans-serif;margin:0;
 }
-.acrt h1{font-size:24px;line-height:32px;font-weight:600;margin-top:24px}
-.acrt h2{font-size:22px;line-height:30px;font-weight:600;margin-top:24px}
-.acrt h3{font-size:20px;line-height:28px;font-weight:600;margin-top:24px}
-.acrt h4{font-size:18px;line-height:26px;font-weight:500;margin-top:16px}
-.acrt h5{font-size:16px;line-height:24px;font-weight:500;margin-top:16px}
-.acrt h6{font-size:14px;line-height:22px;font-weight:500;margin-top:16px}
+/* 标题层级严格按 Figma 2759:15863：26/24/22/20/18/16，上边距 24/24/24/16/16/16 */
+.acrt h1{font-size:26px;line-height:34px;font-weight:600;margin-top:24px}
+.acrt h2{font-size:24px;line-height:32px;font-weight:600;margin-top:24px}
+.acrt h3{font-size:22px;line-height:30px;font-weight:600;margin-top:24px}
+.acrt h4{font-size:20px;line-height:28px;font-weight:500;margin-top:16px}
+.acrt h5{font-size:18px;line-height:26px;font-weight:500;margin-top:16px}
+.acrt h6{font-size:16px;line-height:24px;font-weight:500;margin-top:16px}
+/* 正文之后的标题必须留白；避免模型把小节标题紧跟在引导句后面时“挨在一起” */
+.acrt p+h1,.acrt p+h2,.acrt p+h3{margin-top:24px}
+.acrt p+h4,.acrt p+h5,.acrt p+h6{margin-top:16px}
 .acrt>:first-child,.acrt blockquote>:first-child{margin-top:0}
 .acrt p{margin:16px 0 0}
 .acrt strong,.acrt b{font-weight:600}
@@ -368,15 +586,13 @@ export const RICH_TEXT_CSS = `
 .acrt-table{border-collapse:collapse;width:100%}
 .acrt-table th{background:#fff;padding:8px 12px;font-size:14px;line-height:22px;font-weight:500;text-align:left}
 .acrt-table td{padding:8px 12px;border-top:1px solid #F2F2F2;text-align:left}
+/* 列间竖线：Figma 2898:10282 每个单元格左右各 1px #F2F2F2；最后一列去掉，避免与外框双重描边 */
+.acrt-table th,.acrt-table td{border-right:1px solid #F2F2F2}
+.acrt-table th:last-child,.acrt-table td:last-child{border-right:0}
 .acrt-table .acrt-td--num{text-align:right}
 @container chat-layout (width >= 560px){
-  .acrt{--acrt-body-size:16px;--acrt-body-lh:26px;--acrt-code-size:14px}
-  .acrt h1{font-size:32px;line-height:40px}
-  .acrt h2{font-size:28px;line-height:36px}
-  .acrt h3{font-size:24px;line-height:32px}
-  .acrt h4{font-size:20px;line-height:28px}
-  .acrt h5{font-size:18px;line-height:26px}
-  .acrt h6{font-size:16px;line-height:24px}
+  .acrt{--acrt-body-size:16px;--acrt-body-lh:28px;--acrt-code-size:14px}
+  /* 标题字号全断点统一按 Figma 2759:15863，宽屏不再额外放大 h1 */
   .acrt-table-head,.acrt-table th{font-size:16px;line-height:24px}
 }
 @media (prefers-reduced-motion:reduce){.acrt--animate{animation:none}}

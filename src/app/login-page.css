@@ -1,0 +1,338 @@
+.login-page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  background: #ffffff;
+  font-family: "PingFang SC", "PingFang SC:Regular", -apple-system, "Segoe UI", "Microsoft YaHei",
+    system-ui, sans-serif;
+  color: rgba(0, 0, 0, 0.88);
+  -webkit-font-smoothing: antialiased;
+}
+
+.login-page__bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.login-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 64px;
+  box-sizing: border-box;
+  width: 456px;
+  max-width: 100%;
+  padding: 24px 32px 32px;
+  border-radius: 16px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(30px) saturate(1.05);
+  -webkit-backdrop-filter: blur(30px) saturate(1.05);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.05),
+    0 20px 56px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.login-card__title {
+  margin: 0;
+  align-self: stretch;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 500;
+  letter-spacing: 0.001em;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.login-card__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5.93px;
+  padding: 0 7.11px 5.93px;
+}
+
+.login-card__mark {
+  display: block;
+  width: 118.53px;
+  height: 118.53px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.login-card__wordmark {
+  display: block;
+  width: 225.78px;
+  height: 22.52px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.login-card__body {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 24px;
+}
+
+.login-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  align-self: stretch;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 8px 24px;
+  border: 0;
+  border-radius: 4px;
+  background: #1e63f5;
+  color: rgba(255, 255, 255, 0.98);
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: 0.001em;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    transform 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.login-submit:hover:not(:disabled) {
+  background: #1a58e0;
+}
+
+.login-submit:active:not(:disabled) {
+  background: #174fcc;
+  transform: translateY(0.5px);
+}
+
+.login-submit:focus-visible {
+  outline: 2px solid rgba(30, 99, 245, 0.45);
+  outline-offset: 2px;
+}
+
+.login-submit[data-state="loading"] {
+  cursor: progress;
+  opacity: 0.85;
+}
+
+/* 未同意协议：Figma 270:46 Disabled 态 */
+.login-submit[data-state="locked"] {
+  background: #99c3ff;
+  color: rgba(255, 255, 255, 0.22);
+  cursor: not-allowed;
+}
+
+.login-submit[data-state="locked"] .login-submit__icon {
+  opacity: 0.22;
+}
+
+.login-submit__icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.login-submit__spinner {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  border-top-color: rgba(255, 255, 255, 0.98);
+  animation: login-spin 0.7s linear infinite;
+}
+
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.login-agreement {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  align-self: stretch;
+}
+
+.login-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 20px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.login-check__box {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease;
+}
+
+.login-check__box::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  background: #ffffff;
+  transition:
+    opacity 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.login-check[aria-checked="true"] .login-check__box::after {
+  opacity: 0;
+}
+
+.login-check__tick {
+  position: absolute;
+  inset: 0;
+  width: 16px;
+  height: 16px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.login-check[aria-checked="true"] .login-check__tick {
+  opacity: 1;
+}
+
+.login-check:focus-visible {
+  outline: 2px solid rgba(30, 99, 245, 0.45);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.login-agreement__text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: 0.001em;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.login-agreement__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: #1c61f1;
+  cursor: pointer;
+}
+
+.login-agreement__link:hover {
+  text-decoration: underline;
+}
+
+.login-agreement__link:focus-visible {
+  outline: 2px solid rgba(30, 99, 245, 0.45);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* 窄屏（<800px）：Figma 244:216 —— 品牌区居中于上半屏，操作区贴底 */
+@media (max-width: 799px) {
+  .login-page {
+    padding: 0;
+  }
+
+  .login-card {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    padding: 32px 32px clamp(16px, 8vh, 56px);
+    gap: 24px;
+    justify-content: space-between;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+  }
+
+  .login-card__title {
+    display: none;
+  }
+
+  .login-card__brand {
+    flex: 1 1 auto;
+    min-height: 0;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .login-card__mark {
+    width: 123.08px;
+    height: 123.08px;
+  }
+
+  .login-card__wordmark {
+    width: 234.43px;
+    height: 23.38px;
+  }
+
+  .login-card__body {
+    flex: none;
+    width: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    gap: 16px;
+  }
+}
+
+/* 超窄/矮屏兜底 */
+@media (max-width: 480px) {
+  .login-card {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  .login-card__mark {
+    width: 96px;
+    height: 96px;
+  }
+
+  .login-card__wordmark {
+    width: 190px;
+    height: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-submit,
+  .login-check__box::after,
+  .login-check__tick {
+    transition: none;
+  }
+
+  .login-card--shake {
+    animation: none;
+  }
+}

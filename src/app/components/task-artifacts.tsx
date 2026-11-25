@@ -26,7 +26,7 @@ const ARTIFACT_LABELS: Record<TaskArtifactExtension, string> = {
   html: "HTML",
 };
 
-export function SmallTip({ label, side = "bottom", children, className }: { label: string; side?: "top" | "bottom"; children: ReactNode; className?: string }) {
+export function SmallTip({ label, side = "bottom", children, className }: { label: ReactNode; side?: "top" | "bottom"; children: ReactNode; className?: string }) {
   return (
     <TooltipPrimitive.Provider delayDuration={200}>
       <TooltipPrimitive.Root>

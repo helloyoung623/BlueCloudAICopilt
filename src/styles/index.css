@@ -6,6 +6,9 @@
   container: chat-layout / inline-size;
 }
 
+/* 首页背景由 HomeBackground 组件绘制（点阵 canvas + 开场 5s shader 光效），
+   挂在主内容区最外层并盖满含顶栏的整块区域；页面容器保持白底或透明。 */
+
 .conversation-gutter {
   padding-inline: 16px;
 }
@@ -81,4 +84,10 @@
   width: 0;
   height: 0;
   display: none;
+}
+
+/* 首页小圆点背景淡入（HomeBackground）：出现时 0% → 100%，500ms */
+@keyframes dot-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

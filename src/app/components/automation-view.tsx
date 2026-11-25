@@ -12,6 +12,7 @@ import { AttachmentTray } from "./attachment-tray";
 import type { ChatAttachment } from "./attachment-tray";
 import { useDraftAttachments } from "./use-draft-attachments";
 import { useDetailPanelWidth } from "./use-detail-panel-width";
+import { KubaiIcon, kubaiNameFromUrl } from "./kubai-icon";
 
 // ============================================================================
 // 自动化任务页（Figma 9665:49113 列表页；9782/9783/9785 新建自动化任务弹窗各周期态）
@@ -210,6 +211,12 @@ export function automationIconSrc(icon: AutomationIcon | string): string {
   return `/assets/kubai/${icon}.svg`;
 }
 
+// 任务/卡片的图标地址：优先用真实检索到的那个（/api/icon?name=xxx），
+// 拿不到时按任务语义退回本地图标，保证任何情况下都有图。
+export function taskIconSrc(task: { icon: AutomationIcon | string; iconUrl?: string }): string {
+  return task.iconUrl || automationIconSrc(task.icon);
+}
+
 // ---------------------------------------------------------------------------
 // 运行记录（Figma 9908:45451 右侧侧边栏「运行记录」Tab）
 // 一条记录 = 左侧时间轴节点 + 右侧内容卡：头部「18:01 · 成功」、正文、耗时行（可带图钉）
@@ -291,6 +298,9 @@ export type AutomationTask = {
   attachments?: ChatAttachment[];
   // 语义匹配出来的图标（icons.kubai.design），随任务一起存下来保证稳定
   icon: AutomationIcon;
+  // 真实检索到的图标（AI 给关键词 → 服务端到 icons.kubai.design 搜到的那个），
+  // 有就用它；没有（站点不可达 / 没搜到）才退回 icon 对应的本地图标
+  iconUrl?: string;
   // 运行记录（Figma 9908:45451 右侧「运行记录」Tab），新建时铺一组示例，立即执行会插新的一条
   records?: RunRecord[];
   // 执行方式「每次执行都开启新会话」勾选状态：
@@ -303,7 +313,7 @@ export type AutomationTask = {
 export const INITIAL_TASKS: AutomationTask[] = [];
 
 // 「更多」下拉菜单项（Figma 9625:49728 DropdownMenu #9709:63275）
-const TASK_OPERATIONS = [
+export const TASK_OPERATIONS = [
   { label: "编辑", icon: "automation-menu-edit.svg" },
   { label: "立即执行", icon: "automation-menu-refresh.svg" },
   { label: "执行记录", icon: "automation-menu-time.svg" },
@@ -377,7 +387,7 @@ function useUnlockScrollInDialog() {
 // 下拉面板展开后，点击面板与触发按钮以外的任何地方都自动收起。
 // 用 capture 阶段监听 document 的 pointerdown，避开 OperationMenu 内部的 stopPropagation；
 // 通过 data-operation-menu 属性识别面板内部点击（交给面板自身处理，不在这里收起）。
-function useDismissOnOutside(anchor: HTMLElement | null, setAnchor: (value: null) => void) {
+export function useDismissOnOutside(anchor: HTMLElement | null, setAnchor: (value: null) => void) {
   useEffect(() => {
     if (!anchor) return;
     const onPointerDown = (event: PointerEvent) => {
@@ -1017,15 +1027,17 @@ function CreateAutomationDialog({ open, onOpenChange, onCreate }: {
             <span className="font-['TCloudNumber'] text-[14px] font-normal leading-[22px] text-[rgba(0,0,0,0.88)]">就</span>
             <Popover open={attachmentSource !== null} onOpenChange={next => { if (!next) setAttachmentSource(null); }}>
               <PopoverAnchor asChild>
-                <div className="relative w-full overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
-                  <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
+                {/* 滚动区 = 整个文字区（含 12px 内边距），滚动条落在框的最右边；
+                    文字不再由 textarea 自己滚，避免出现「文字溢到框外、滚动条缩在中间」 */}
+                <div className="relative flex w-full flex-col overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
+                  <div className="flex max-h-[132px] min-h-0 flex-col gap-[8px] overflow-y-auto px-[12px] pb-[12px] pt-[12px]">
                     <AttachmentTray attachments={attachments} onRemove={removeAttachment} />
                     <textarea
                       rows={1}
                       value={prompt}
                       onChange={event => setPrompt(event.target.value)}
                       placeholder="希望我干什么？"
-                      className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
+                      className="block min-h-[22px] w-full shrink-0 resize-none bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
                     />
                   </div>
                   <div className="flex items-center gap-[8px] p-[8px]">
@@ -1255,9 +1267,16 @@ function AutomationTaskCard({ task, onOperate, onOpen, active }: {
       className="group flex w-full cursor-pointer items-center gap-[8px] rounded-[8px] p-[8px] text-left transition-colors hover:bg-[#f2f2f2] data-[menu-open=true]:bg-[#f2f2f2] data-[active=true]:bg-[#f2f2f2]"
       data-menu-open={moreAnchor ? "true" : undefined}
       data-active={active ? "true" : undefined}
+      data-kubai-trigger="true"
     >
-      {/* 图标按任务语义匹配（icons.kubai.design 分词检索），不再固定用文档图标 */}
-      <img src={automationIconSrc(task.icon)} alt="" className="size-[32px] shrink-0" />
+      {/* 图标按任务语义匹配（icons.kubai.design 分词检索），不再固定用文档图标；
+          hover 整行时播放图标自带动效（信封翻盖、信纸升起这类），静态版垫底兜底 */}
+      <KubaiIcon
+        name={kubaiNameFromUrl(task.iconUrl)}
+        src={task.iconUrl}
+        fallbackSrc={automationIconSrc(task.icon)}
+        size={32}
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-[4px]">
         <span className="truncate font-['PingFang_SC:Medium'] text-[14px] font-medium leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
           {task.title}
@@ -1673,14 +1692,14 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
               <Popover open={attachmentSource !== null} onOpenChange={next => { if (!next) setAttachmentSource(null); }}>
                 <PopoverAnchor asChild>
                   <div className="flex w-full flex-col overflow-hidden rounded-[8px] border border-[#e6e6e6] bg-white focus-within:border-[#1e63f5]">
-                    <div className="flex flex-col gap-[8px] px-[12px] pb-[48px] pt-[12px]">
+                    <div className="flex max-h-[132px] min-h-0 flex-col gap-[8px] overflow-y-auto px-[12px] pb-[12px] pt-[12px]">
                       <AttachmentTray attachments={attachments} onRemove={removeAttachment} />
                       <textarea
                         rows={1}
                         value={draft.prompt}
                         onChange={event => patchDraft({ prompt: event.target.value })}
                         placeholder="希望我干什么？"
-                        className="block max-h-[132px] min-h-[22px] w-full resize-none overflow-y-auto bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
+                        className="block min-h-[22px] w-full shrink-0 resize-none bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)] [field-sizing:content]"
                       />
                     </div>
                     <div className="flex items-center gap-[8px] p-[8px]">
