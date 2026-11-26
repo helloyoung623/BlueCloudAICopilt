@@ -13,6 +13,7 @@
     "serve": "node server/index.mjs",
     "format": "oxfmt",
     "test": "node --test src/app/components/avatar-initial.test.mjs src/app/agent-client.test.mjs src/app/chat/*.test.mjs src/app/automation/*.test.mjs src/app/projects/*.test.mjs server/automation-seed.test.mjs",
+    "test:browser": "node --test tests/browser/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "build:check": "node scripts/build-check.mjs",
     "check": "pnpm test && pnpm typecheck && pnpm build:check"
@@ -72,6 +73,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "4.7.0",
     "oxfmt": "^0.2.0",
+    "puppeteer-core": "25.17.0",
     "tailwindcss": "4.1.12",
     "typescript": "^5.7.0",
     "vite": "6.3.5"
