@@ -121,7 +121,7 @@ function doneSummary(summary: string) {
   return text.replace(/^正在/, "已").replace(/并(?=[^，。])/g, "，并");
 }
 
-function IntentBlock({ running, summary, title, actions, progress, stepEndRef, animateIn = false }: { running: boolean; summary: string; title?: string; actions: AgentRound["actions"]; progress: AgentRound["progress"]; stepEndRef?: { current: HTMLDivElement | null }; animateIn?: boolean }) {
+function IntentBlock({ running, stopped = false, summary, title, actions, progress, stepEndRef, animateIn = false }: { running: boolean; stopped?: boolean; summary: string; title?: string; actions: AgentRound["actions"]; progress: AgentRound["progress"]; stepEndRef?: { current: HTMLDivElement | null }; animateIn?: boolean }) {
   const [expanded, setExpanded] = useState(running);
   useEffect(() => { setExpanded(running); }, [running]);
   const hasSummary = summary.trim().length > 0;
@@ -159,7 +159,9 @@ function IntentBlock({ running, summary, title, actions, progress, stepEndRef, a
   const list = (
     <div className="flex flex-col gap-[12px]">
       {actions.slice(0, shown).map(({ label, icon }, index) => {
-        const pending = index >= batchStart;
+        // 被中断的一轮：正在跑的那一步不会再跑下去，不显示转圈，
+        // 也不把它算成已完成（文案保持原样，不做「正在…」→「已…」的改写）。
+        const pending = !stopped && index >= batchStart;
         return (
           <div key={`${label}-${index}`} className="flex items-center gap-[8px] text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">
             {pending ? <RadarArcLoader /> : <TaskIcon type={icon} />}
@@ -180,7 +182,7 @@ function IntentBlock({ running, summary, title, actions, progress, stepEndRef, a
   );
   return (
     <div className="flex flex-col gap-[12px]">
-      {showSummary && <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter text={running ? summary : doneSummary(summary)} speed={staggered ? 26 : 16} onDone={() => setSummaryTyped(true)} /></p>}
+      {showSummary && <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]"><Typewriter text={running || stopped ? summary : doneSummary(summary)} speed={staggered ? 26 : 16} onDone={() => setSummaryTyped(true)} /></p>}
       {showTitle && (
         <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[8px] text-left">
           {/* 折叠入口写「这一组动作在做什么」的静态短语（天气查询与出行建议），
@@ -261,10 +263,12 @@ const PROCESS_PRESETS: Record<ProcessVariant, ProcessPreset> = {
   },
 };
 
-function ExecutionProcess({ running, instant = false, progress, controlled = false, summary, rounds, onProgress, variant = "requirement", preset: customPreset, onGoalDone }: { running: boolean; instant?: boolean; progress?: { shown: number; batchStart: number }; controlled?: boolean; summary?: string; rounds?: AgentRound[]; onProgress?: (p: { shown: number; batchStart: number }) => void; variant?: ProcessVariant; preset?: ProcessPreset; onGoalDone?: () => void }) {
+function ExecutionProcess({ running, stopped = false, instant = false, progress, controlled = false, summary, rounds, onProgress, variant = "requirement", preset: customPreset, onGoalDone }: { running: boolean; stopped?: boolean; instant?: boolean; progress?: { shown: number; batchStart: number }; controlled?: boolean; summary?: string; rounds?: AgentRound[]; onProgress?: (p: { shown: number; batchStart: number }) => void; variant?: ProcessVariant; preset?: ProcessPreset; onGoalDone?: () => void }) {
   const preset = customPreset ?? PROCESS_PRESETS[variant];
   const actions = preset.actions;
   const total = actions.length;
+  // 被用户中断的一轮：收尾文案是「已停止生成」，不能写成「任务已完成」。
+  const finishedLabel = stopped ? "已停止生成" : "任务已完成";
   // 恢复用的进度快照（不放进 effect 依赖，避免上报后自我重置）
   const progressRef = useRef(progress);
   progressRef.current = progress;
@@ -393,11 +397,11 @@ function ExecutionProcess({ running, instant = false, progress, controlled = fal
       return (
         <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
           <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[4px] text-left">
-            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">任务已完成</span>
+            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{finishedLabel}</span>
             <TaskIcon type="chevron" expanded={expanded} />
           </button>
           {expanded && <div className="flex flex-col gap-[20px]">
-            <IntentBlock running={false} animateIn={false} summary={headRound.summary} title={headRound.title} actions={allActions} progress={mergedProgress} />
+            <IntentBlock running={false} stopped={stopped} animateIn={false} summary={headRound.summary} title={headRound.title} actions={allActions} progress={mergedProgress} />
           </div>}
         </div>
       );
@@ -417,7 +421,7 @@ function ExecutionProcess({ running, instant = false, progress, controlled = fal
       return (
         <div className="w-full max-w-[768px] flex flex-col gap-[12px]">
           <button onClick={() => setExpanded(v => !v)} className="flex self-start items-center gap-[4px] text-left">
-            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">任务已完成</span>
+            <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.38)] tracking-[0.014px] whitespace-nowrap font-normal">{finishedLabel}</span>
             <TaskIcon type="chevron" expanded={expanded} />
           </button>
           {expanded && <div className="flex flex-col gap-[12px]">

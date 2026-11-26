@@ -161,6 +161,7 @@ function createSession({ res, call, mock }) {
     body: call.body,
     sentText: "",
     answerStarted: false,
+    answerEnded: false,
     clientClosed: false,
     finished: false,
     closed,
@@ -212,6 +213,80 @@ function createSession({ res, call, mock }) {
     return true;
   };
 
+  // 模拟「模型调 create_automation 并真的建出任务」：tool.call + tool.result（created:true）。
+  // 此时还没发 answer.start：会话里还没有正文消息，卡片只在等待缓存里。
+  // 覆盖「任务已建出、正文还没开始就停下」这个窗口。
+  session.createAutomationTask = (options = {}) => {
+    if (!session.open) return false;
+    const title = options.title ?? "整理本周竞品动态";
+    res.write(sseFrame("tool.call", {
+      callId: `call-${call.index}`,
+      name: "create_automation",
+      label: "创建自动化任务",
+      icon: "react-generate",
+      running: "正在创建自动化任务",
+      round: 0,
+      args: {},
+    }));
+    res.write(sseFrame("tool.result", {
+      callId: `call-${call.index}`,
+      name: "create_automation",
+      label: "创建自动化任务",
+      ok: true,
+      round: 0,
+      output: {
+        created: true,
+        automation: {
+          title,
+          goal: options.goal ?? title,
+          cycle: options.cycle ?? "每天",
+          time: options.time ?? "09:00",
+          weekdays: options.weekdays ?? [],
+          monthDays: options.monthDays ?? [],
+          icon: { name: "mail", url: "" },
+        },
+      },
+    }));
+    return true;
+  };
+
+  // 只发 answer.end：正文结束，推荐追问还在服务端生成，连接保持打开。
+  // 用来验证「正文一到 answer.end 就恢复发送按钮」，以及之后旧轮次迟到的 run.end。
+  session.answerEnd = () => {
+    if (!session.open) return false;
+    if (!session.answerStarted) throw new Error("正文还没开始：answer.end 不能早于 answer.start");
+    res.write(sseFrame("answer.end", {}));
+    session.answerEnded = true;
+    return true;
+  };
+
+  // 只发 run.end：模拟「正文早就结束、剩下的内容现在才到」的迟到收尾。
+  session.runEnd = (options = {}) => {
+    if (!session.open) return false;
+    const text = options.text ?? session.sentText;
+    res.write(sseFrame("run.end", { text, plainText: text, followUps: options.followUps ?? [] }));
+    session.finished = true;
+    res.end();
+    return true;
+  };
+
+  // 连接直接结束（EOF），不发任何结束事件：模拟服务端中途断开。
+  session.endStream = () => {
+    if (!session.open) return false;
+    session.finished = true;
+    res.end();
+    return true;
+  };
+
+  // 正文发完后连接直接结束：正文完整、后续内容缺失。
+  session.endAfterAnswer = () => {
+    if (!session.open) return false;
+    session.answerEnd();
+    session.finished = true;
+    res.end();
+    return true;
+  };
+
   // 由测试主动掐断（模拟服务端异常/超时），不再往浏览器写任何东西。
   session.cancel = () => {
     if (!session.open) return false;
@@ -235,7 +310,9 @@ function createSession({ res, call, mock }) {
   };
 
   // 挂住：只进入「执行过程」阶段（此时产品才提供暂停入口），正文留给测试推进。
-  session.startHold = ({ summary, title } = {}) => {
+  // tool 会先记一条工具调用：执行过程因此能一路留到正文阶段，
+  // 「这一轮被停掉时显示已停止生成」才有东西可断言。
+  session.startHold = ({ summary, title, tool } = {}) => {
     res.writeHead(200, SSE_HEADERS);
     res.write(sseFrame("run.start", { runId: call.index }));
     if (summary) {
@@ -243,6 +320,18 @@ function createSession({ res, call, mock }) {
         sseFrame("plan.summary", {
           text: summary,
           ...(title ? { title } : {}),
+          round: 0,
+        }),
+      );
+    }
+    if (tool) {
+      res.write(
+        sseFrame("tool.call", {
+          callId: `call-${call.index}`,
+          name: "read_mail",
+          label: tool,
+          icon: "react-read",
+          running: `正在${tool}`,
           round: 0,
         }),
       );
@@ -518,11 +607,58 @@ export async function waitForPause(page, timeout = 8000) {
   );
 }
 
+// 可见的「暂停生成」/「发送消息」按钮。
+// 生成中只有暂停入口，正文结束后才恢复发送：这两个断言用来区分这两种状态，
+// 只看按钮是否存在会被隐藏的同名按钮骗过去，所以额外要求 offsetParent（可见）。
+export const hasVisibleButton = (page, aria) =>
+  page.evaluate(
+    (label) =>
+      [...document.querySelectorAll("button")].some(
+        (b) => b.getAttribute("aria-label") === label && !!b.offsetParent,
+      ),
+    aria,
+  );
+
 export async function waitForIdle(page, timeout = 8000) {
   await page.waitForFunction(
     () => ![...document.querySelectorAll("button")].some((b) => b.getAttribute("aria-label") === "暂停生成"),
     { timeout },
   );
+}
+
+// 回答下方的操作项（重新生成 / 复制 / 来源）。
+// 自动化卡片还没到时（消息上挂着 automationPending）这些操作项不会出现，
+// 所以「操作项恢复」这样断言：看 AI 回答这一行的按钮真的挂到了 DOM 上。
+// 注意用户消息也有一个「复制」按钮，所以这里必须限定在 .ac-actions 这一行里。
+export const hasVisibleActions = (page) =>
+  page.evaluate(
+    () =>
+      [...document.querySelectorAll(".ac-actions button")].some(
+        (b) => b.getAttribute("aria-label") === "复制" && !!b.offsetParent,
+      ),
+  );
+
+export async function waitForActions(page, timeout = 8000) {
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".ac-actions button")].some(
+        (b) => b.getAttribute("aria-label") === "复制" && !!b.offsetParent,
+      ),
+    { timeout },
+  );
+}
+
+export async function waitForCalls(mock, count, timeout = 10000) {
+  // 旧连接可能一直没关（正文结束但追问还在生成），所以要按「第几个请求」等，
+  // 不能只看「当前还开着的最后一个会话」。
+  const started = Date.now();
+  while (mock.calls.length < count) {
+    if (Date.now() - started > timeout) {
+      throw new Error(`等待第 ${count} 个请求超时：目前只收到 ${mock.calls.length} 个`);
+    }
+    await sleep(50);
+  }
+  return mock.sessions.at(-1);
 }
 
 export async function sendMessage(page, text) {

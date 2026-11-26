@@ -403,7 +403,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
     );
   }
   if (msg.role === "process") return (
-    <div className="w-full max-w-[768px]"><ExecutionProcess running={Boolean(msg.thinking)} instant={instant} progress={msg.progress} controlled={Boolean(msg.controlledProcess)} summary={msg.summary} rounds={msg.rounds} onProgress={p => onProcessProgress?.(index, p)} variant={msg.variant ?? "requirement"} preset={msg.preset} onGoalDone={() => advance(index)} /></div>
+    <div className="w-full max-w-[768px]"><ExecutionProcess running={Boolean(msg.thinking)} stopped={Boolean(msg.stopped)} instant={instant} progress={msg.progress} controlled={Boolean(msg.controlledProcess)} summary={msg.summary} rounds={msg.rounds} onProgress={p => onProcessProgress?.(index, p)} variant={msg.variant ?? "requirement"} preset={msg.preset} onGoalDone={() => advance(index)} /></div>
   );
   if (msg.role === "result") return (
     <div className="w-full max-w-[768px]"><PptResultMessage onOpen={() => onOpenPpt?.()} onRegenerate={onRegeneratePpt} /></div>

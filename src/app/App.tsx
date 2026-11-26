@@ -44,6 +44,8 @@ import { ListPageHeader } from "./components/list-page-header";
 import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, useDismissOnOutside, TASK_OPERATIONS, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
 import type { AgentRound, HistoryItem, Message, ProcessPreset, ProcessVariant, ToolKind } from "./chat/types";
 import { deriveUnreadState, findLastIndex, freezePreviousMessages, getAnswerDoneKey, markConversationRead, toInstantMessages, updateConversationInHistory } from "./chat/conversation-state";
+import { beginBody, classifyStreamEnd, endGeneration, finalizeBodyOnlyMessages, finalizeInterruptedMessages, isGenerating, startGeneration } from "./chat/generation-state";
+import type { GenerationState } from "./chat/generation-state";
 import type { OutlinePage, PptMode, PptPageCount, PptStage } from "./ppt/types";
 import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/launch";
 import { addSourcesToProject, buildImportTasks, parseFileSize } from "./projects/project-files";
@@ -355,6 +357,20 @@ export default function App() {
   const runIdByConversation = useRef(new Map<number, number>());
   // 每个会话正在进行的真实 SSE 流，停止/新一轮/切走时 abort 服务端请求
   const streamAbortByConversation = useRef(new Map<number, AbortController>());
+  // 每个会话的生成状态：请求开始 → 正文结束（answer.end）之间算「生成中」，三个阶段都能停。
+  // 按会话隔离：切到别的会话不会中断后台生成，也不会把后台会话的暂停按钮带到当前会话。
+  const [generationByConversation, setGenerationByConversation] = useState<Map<number, GenerationState>>(() => new Map());
+  const updateGeneration = useCallback((conversationId: number, update: (state: GenerationState | undefined) => GenerationState | undefined) => {
+    setGenerationByConversation(current => {
+      const previous = current.get(conversationId);
+      const next = update(previous);
+      if (next === previous) return current;
+      const map = new Map(current);
+      if (next) map.set(conversationId, next);
+      else map.delete(conversationId);
+      return map;
+    });
+  }, []);
   // 标记某会话本轮是否已收到真实工具事件：首个 tool.call 到来时清掉本地占位步骤
   const realToolMode = useRef(new Map<number, boolean>());
   // plan.summary 会预置本轮动作（先展示 loading），tool.call 按顺序认领这些动作，
@@ -674,7 +690,23 @@ export default function App() {
     if (target?.role === "process" || target?.role === "result") {
       activeRunId.current++;
       // 删掉正在执行的步骤：作废该会话的后台流程，避免回调又把消息补回来
-      if (activeHistoryId !== null) runIdByConversation.current.delete(activeHistoryId);
+      if (activeHistoryId !== null) {
+        const deletedRunId = runIdByConversation.current.get(activeHistoryId);
+        runIdByConversation.current.delete(activeHistoryId);
+        // 删的正是还在跑的那一步：把请求也断掉、生成状态清掉，
+        // 否则发送按钮会一直停在「暂停生成」。
+        if (target.role === "process" && target.thinking) {
+          streamAbortByConversation.current.get(activeHistoryId)?.abort();
+          streamAbortByConversation.current.delete(activeHistoryId);
+          updateGeneration(activeHistoryId, () => undefined);
+          // 这一轮不会再兑现的等待：卡片缓存与弹窗发起参数一并清掉。
+          const deletedKey = deletedRunId !== undefined ? `${activeHistoryId}:${deletedRunId}` : undefined;
+          if (deletedKey) {
+            pendingAutomation.current.delete(deletedKey);
+            launchAutomation.current.delete(deletedKey);
+          }
+        }
+      }
     }
   };
   const handleRetryMessage = (index: number) => {
@@ -792,10 +824,39 @@ export default function App() {
     const cardDemo = (text.includes("邮件卡片") || text.includes("找出近一周的邮件")) ? "outlook" : text.includes("文件卡片") ? "onedrive" : null;
     const useRealAgent = !shouldGeneratePpt && !cardDemo;
     const processText = text || "处理上传的文件";
+    // 同一会话里发起新一轮前，先把上一轮没收尾的残留收掉：断开旧请求、保留已收到的正文、
+    // 把没跑完的执行过程标记为「已停止生成」。否则旧轮次会一直转圈，正文也永远打不完。
+    // 正文已经发完的上一轮例外：不掐断它的连接，让服务端把剩下的部分（推荐追问）发完；
+    // 它迟到的结束事件会被运行号守卫丢弃，不会改到新一轮。
+    let keepPreviousStream = false;
+    if (!isNewConversation) {
+      const previous = generationByConversation.get(convId);
+      const wasGenerating = isGenerating(previous);
+      const previousRunId = previous?.runId;
+      keepPreviousStream = previous?.phase === "idle";
+      if (!keepPreviousStream) {
+        streamAbortByConversation.current.get(convId)?.abort();
+        streamAbortByConversation.current.delete(convId);
+      }
+      // 上一轮不会再兑现的等待：卡片缓存与弹窗发起参数。真的建出来的卡片挂回上一轮的回答，
+      // 没建出来的绝不伪造成功。
+      const previousKey = previousRunId !== undefined ? `${convId}:${previousRunId}` : undefined;
+      const previousCard = previousKey ? pendingAutomation.current.get(previousKey) : undefined;
+      if (previousKey) {
+        pendingAutomation.current.delete(previousKey);
+        launchAutomation.current.delete(previousKey);
+      }
+      // 上一轮还在生成中才把它算作「已停止生成」；已经正常结束的轮次保持「任务已完成」。
+      applyToConversation(convId, prev => finalizeInterruptedMessages(prev, {
+        runId: previousRunId,
+        interrupted: wasGenerating,
+        automation: previousCard,
+      }));
+    }
     // 真 agent 链路不预置任何本地工具步骤：模型没发 tool.call 前只显示中性的「正在理解」，
     // 收到真实 tool.call 后才按模型选择的工具追加步骤；若整轮无工具，answer.start 会直接收起这条 process。
     const initialProcess: Message = shouldGeneratePpt
-      ? { role: "process", text: "", thinking: true, variant: "requirement" }
+      ? { role: "process", text: "", thinking: true, variant: "requirement", runId }
       : useRealAgent
         ? {
           role: "process",
@@ -803,12 +864,13 @@ export default function App() {
           thinking: true,
           variant: "requirement",
           controlledProcess: true,
+          runId,
           // 弹窗创建自动化任务：过程里的说话人改成任务口吻（步骤仍由真实工具调用驱动）
           preset: options?.launch
             ? { goal: "好的，我来帮你创建这个自动化任务", running: options.runningLabel ?? "正在思考", actions: [] }
             : { goal: `任务目标：${processText}`, running: options?.runningLabel ?? "正在思考", actions: [] },
         }
-        : { role: "process", text: "", thinking: true, variant: "requirement", preset: buildQueryProcess(processText, cardDemo === "onedrive" ? "onedrive" : "outlook") };
+        : { role: "process", text: "", thinking: true, variant: "requirement", runId, preset: buildQueryProcess(processText, cardDemo === "onedrive" ? "onedrive" : "outlook") };
     {
       const appendRun: (list: Message[]) => Message[] = prev => {
         // 重新生成：截掉旧回答（及其后的消息），从对应提问重新挂执行过程
@@ -826,10 +888,13 @@ export default function App() {
       };
       if (isNewConversation) setMessages(appendRun); else applyToConversation(convId, appendRun);
     }
+    // 这一轮进入「生成中」：请求开始 → 正文结束（answer.end）之间，发送按钮是「暂停生成」。
+    updateGeneration(convId, () => startGeneration(runId));
 
     // 普通提问：走真实模型流式输出；PPT / 卡片演示仍保留原模拟链路
     if (useRealAgent) {
-      streamAbortByConversation.current.get(convId)?.abort();
+      // 上一轮正文已经发完时保留它的连接（让它自己走完）；其余情况一律掐断。
+      if (!keepPreviousStream) streamAbortByConversation.current.get(convId)?.abort();
       const abortController = new AbortController();
       streamAbortByConversation.current.set(convId, abortController);
       realToolMode.current.delete(convId);
@@ -840,8 +905,14 @@ export default function App() {
       const ownerMessages = isNewConversation
         ? []
         : (activeHistoryIdRef.current === convId ? messages : (history.find(item => item.id === convId)?.messages ?? []));
+      // 上下文要带上这一会话里已经说出口的内容。
+      // 正文已结束（answer.end 到了）但这一轮还没收尾（run.end 没到）时，这条回答的状态
+      // 还是 streaming，可它其实已经说完了 —— 不能因为状态没收尾就把这段 assistant 正文漏掉，
+      // 否则下一轮请求里模型看不到自己上一轮的回答。
       const prior = (isRegenerate ? ownerMessages.slice(0, options!.regenerateFrom!) : ownerMessages)
-        .filter(m => (m.role === "user" || m.role === "ai") && !m.streaming && !m.sendState)
+        .filter(m => (m.role === "user" || m.role === "ai") && !(m.streaming && !m.bodyDone) && !m.sendState)
+        // 空白的 assistant 轮次不发给服务端：模型会当成自己说过一句空话。
+        .filter(m => m.role === "user" || Boolean((m.plainText || m.text).trim()))
         .map(m => ({ role: (m.role === "ai" ? "assistant" : "user") as "user" | "assistant", content: (m.plainText || m.text).slice(0, 8000) }));
       const attachmentNote = sentAttachments.length ? `[附件：${sentAttachments.map(a => a.name).join("、")}] ` : "";
       const apiMessages = [...prior, { role: "user" as const, content: `${attachmentNote}${text}`.slice(0, 8000) }];
@@ -849,6 +920,9 @@ export default function App() {
       let aiAppended = false;
       let fullText = "";
       let answerStarted = false;
+      // 这一轮收到过哪些结束事件：连接先断了（EOF）时靠它们分清结局
+      let sawAnswerEnd = false;
+      let sawRunEnd = false;
       // 结果自检结论：verify.result 在 answer.start 之前就到，先存着，建消息时带上
       let verifyState: Message["verify"];
       const isCurrent = () => runIdByConversation.current.get(convId) === runId && !abortController.signal.aborted;
@@ -1107,6 +1181,8 @@ export default function App() {
           // 没有真实 tool.call 的轮次直接移除 process，不再留下本地预置的假工具步骤；
           // 有真实工具调用时才收起执行过程供展开查看。
           answerStarted = true;
+          // 正文开始流式输出：整轮仍在生成中，发送按钮继续是「暂停生成」。
+          updateGeneration(convId, state => (state && state.runId === runId ? beginBody(state) : state));
           const hadRealTools = realToolMode.current.get(convId) === true;
           applyToConversation(convId, prev => {
             const next = hadRealTools
@@ -1144,6 +1220,9 @@ export default function App() {
         } else if (event.type === "answer.end") {
           // 正文已发完，推荐追问还在服务端生成：先标记 bodyDone，
           // 打字机收尾后操作项立即出现，不再跟推荐问题一起出来。
+          // 正文结束＝整轮生成结束：恢复发送按钮，不因为推荐追问还在生成就一直是「暂停生成」。
+          sawAnswerEnd = true;
+          updateGeneration(convId, state => (state && state.runId === runId ? endGeneration(state) : state));
           applyToConversation(convId, prev => {
             const next = [...prev];
             const idx = findLastIndex(next, m => m.role === "ai" && m.streaming);
@@ -1151,6 +1230,7 @@ export default function App() {
             return next;
           });
         } else if (event.type === "run.end") {
+          sawRunEnd = true;
           const finalText = typeof event.data.text === "string" && event.data.text ? event.data.text : fullText;
           const plainText = typeof event.data.plainText === "string" && event.data.plainText ? event.data.plainText : undefined;
           // 来源只有服务端真实下发且非空时才落到消息；无来源的回答不带此字段，徽标不显示。
@@ -1214,21 +1294,54 @@ export default function App() {
             return next;
           });
           streamAbortByConversation.current.delete(convId);
+          // 这一轮彻底结束（正文 + 推荐追问都到齐）：清掉生成状态。
+          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
         } else if (event.type === "run.error") {
           const message = typeof event.data.message === "string" ? event.data.message : "模型调用失败";
           pendingAutomation.current.delete(`${convId}:${runId}`);
           clearProcessAndFail();
           streamAbortByConversation.current.delete(convId);
+          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
           if (activeHistoryIdRef.current === convId) toast.error(message);
         }
       };
 
       streamChat({ messages: apiMessages, runId, signal: abortController.signal, automationRun: options?.automationRun === true, automationSeed: options?.launch?.seed, onEvent: handleEvent })
+        .then(() => {
+          // 连接结束了，但这一轮可能没走完（服务端中途断开，或少了结束事件）。
+          // 靠 classifyStreamEnd 分清四种结局：主动取消 / 整轮收齐 / 正文完成但追问缺失 / 正文未完成的异常结束。
+          const kind = classifyStreamEnd({ aborted: abortController.signal.aborted, sawAnswerEnd, sawRunEnd });
+          // 主动取消与正常收齐都已经各自收尾，这里不重复处理。
+          if (kind === "cancelled" || kind === "completed") return;
+          // 已被同一会话的新一轮取代：迟到的收尾不许改当前轮次。
+          if (!isCurrent()) return;
+          if (streamAbortByConversation.current.get(convId) === abortController) {
+            streamAbortByConversation.current.delete(convId);
+          }
+          // 这一轮不会再兑现的等待：卡片缓存与弹窗发起参数。真的建出来的卡片挂回这条回答，
+          // 没建出来的绝不伪造成功。
+          const automationKey = `${convId}:${runId}`;
+          const card = pendingAutomation.current.get(automationKey);
+          pendingAutomation.current.delete(automationKey);
+          launchAutomation.current.delete(automationKey);
+          if (kind === "body-only") {
+            // 正文已经写完，只是推荐追问没来：正文保留、收尾，发送按钮恢复，不当故障。
+            updateGeneration(convId, state => (state && state.runId === runId ? endGeneration(state) : state));
+            applyToConversation(convId, prev => finalizeBodyOnlyMessages(prev, { runId, automation: card }));
+            return;
+          }
+          // 正文都没写完：异常结束，按既有失败处理，不把不完整回答当成功。
+          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
+          clearProcessAndFail();
+          if (activeHistoryIdRef.current === convId) toast.error("模型调用失败");
+        })
         .catch(error => {
+          // 用户主动停止时请求会被中断：这不是故障，走停止分支，不弹失败提示。
           if (!isCurrent()) return;
           if (abortController.signal.aborted) return;
           clearProcessAndFail();
           streamAbortByConversation.current.delete(convId);
+          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
           if (activeHistoryIdRef.current === convId) toast.error(error?.message ?? "模型调用失败");
         });
       return;
@@ -1258,6 +1371,8 @@ export default function App() {
           return next;
         });
       }
+      // 演示链路跑完：这一轮不再生成中，发送按钮恢复。
+      updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
     }, 15000);
   };
 
@@ -1265,7 +1380,8 @@ export default function App() {
     const runId = ++activeRunId.current;
     const convId = activeHistoryIdRef.current;
     setStage("outline_generating");
-    setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "outline" }]);
+    setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "outline", runId }]);
+    if (convId !== null) updateGeneration(convId, () => startGeneration(runId));
     setTimeout(() => {
       if (activeRunId.current !== runId || convId === null) return;
       applyToConversation(convId, prev => {
@@ -1275,6 +1391,7 @@ export default function App() {
         next.push({ role: "ai", text: "需求已确认，大纲生成完成，请确认以下结构。", followUps: PPT_FOLLOW_UPS });
         return next;
       });
+      updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
       setTimeout(() => { if (activeRunId.current === runId) setStage("outline"); }, 400);
     }, 24000);
   };
@@ -1283,7 +1400,8 @@ export default function App() {
     const runId = ++activeRunId.current;
     const convId = activeHistoryIdRef.current;
     setStage("ppt_generating");
-    setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "ppt" }]);
+    setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "ppt", runId }]);
+    if (convId !== null) updateGeneration(convId, () => startGeneration(runId));
     setTimeout(() => {
       if (activeRunId.current !== runId || convId === null) return;
       applyToConversation(convId, prev => {
@@ -1293,20 +1411,42 @@ export default function App() {
         next.push({ role: "result", text: "", artifacts: [{ id: `${Date.now()}-pptx`, name: PPT_ARTIFACT_NAME, extension: "pptx", size: "12.6M" }] });
         return next;
       });
+      updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
       setTimeout(() => { if (activeRunId.current === runId) setStage("preview"); }, 400);
     }, 20000);
   };
 
+  // 「暂停生成」：中断当前会话这一轮的请求。
+  // 保留已经收到的正文和已经记下的执行步骤；没跑完的执行过程显示「已停止生成」，
+  // 不显示「任务已完成」，也不当成请求故障（不弹失败提示、不把消息标成发送失败）。
   const handleStop = () => {
-    activeRunId.current += 1;
     const convId = activeHistoryIdRef.current;
-    if (convId !== null) {
-      runIdByConversation.current.delete(convId);
-      streamAbortByConversation.current.get(convId)?.abort();
-      streamAbortByConversation.current.delete(convId);
+    if (convId === null) return;
+    const state = generationByConversation.get(convId);
+    const runId = state?.runId;
+    activeRunId.current += 1;
+    // 作废本会话的运行号：之后到达的迟到事件不再改消息，也不影响下一轮请求。
+    runIdByConversation.current.delete(convId);
+    streamAbortByConversation.current.get(convId)?.abort();
+    streamAbortByConversation.current.delete(convId);
+    // 状态回到「未生成中」：发送按钮恢复成发送。
+    updateGeneration(convId, current => (current ? endGeneration(current) : undefined));
+    // 清理这一轮不会再兑现的等待：卡片缓存与弹窗发起参数。
+    // 真的建出来的任务已经在列表里，卡片也挂回这条回答；没建出来的绝不伪造成功。
+    const automationKey = runId !== undefined ? `${convId}:${runId}` : undefined;
+    const card = automationKey ? pendingAutomation.current.get(automationKey) : undefined;
+    if (automationKey) {
+      pendingAutomation.current.delete(automationKey);
+      launchAutomation.current.delete(automationKey);
     }
+    // 保留已经收到的正文和已经记下的执行步骤；这一轮的执行过程显示「已停止生成」，
+    // 不显示「任务已完成」，也不当成请求故障（不弹失败提示、不把消息标成发送失败）。
+    applyToConversation(convId, prev => finalizeInterruptedMessages(prev, {
+      runId,
+      interrupted: true,
+      automation: card,
+    }));
     setStage("idle");
-    setMessages(prev => prev.map(message => message.role === "process" && message.thinking ? { ...message, thinking: false } : message));
   };
 
   const handleNewChat = () => {
@@ -1681,6 +1821,10 @@ export default function App() {
   // 当前会话的 messages 比 history 回写早一帧，补进去避免 loading 图标延迟出现。
   // 完成判定（用户 2026-11-25 改）：本轮操作项出现即算执行完成，loading 立刻结束，不再等推荐问题。
   const activeHasThinking = messages.some(message => message.role === "process" && message.thinking);
+  // 当前会话是否在生成中：请求开始 → 正文结束（answer.end）之间为真，
+  // 思考、工具执行、正文流式输出三个阶段都能停。
+  // 按会话隔离：这里只看当前会话自己的状态，后台会话的生成不会把暂停按钮带过来。
+  const agentRunning = activeHistoryId !== null && isGenerating(generationByConversation.get(activeHistoryId));
   const activeAnswerDoneKey = getAnswerDoneKey(activeHistoryId, messages);
   const answerPending = activeHistoryId !== null
     && activeAnswerDoneKey !== null
@@ -1884,7 +2028,7 @@ export default function App() {
               onPptModeChange={setPptMode}
               pptPages={pptPages}
               onPptPagesChange={setPptPages}
-              agentRunning={messages.some(message => message.role === "process" && Boolean(message.thinking))}
+              agentRunning={agentRunning}
               onStop={handleStop}
               onOpenAutomation={setChatAutomationId}
               onAutomationOperate={handleChatCardOperate}
