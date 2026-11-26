@@ -1,3 +1,5 @@
+import { parseSseBuffer } from "./chat/agent-events.ts";
+
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
 // 一条回答引用的真实来源（工具返回）。目前只用 title 做展示，保留其余字段便于将来扩展来源详情。
@@ -31,7 +33,7 @@ export type StreamChatOptions = {
   // 本轮是「已有自动化任务的立即执行」：服务端据此禁止再创建自动化任务。
   automationRun?: boolean;
   // 本轮来自「新建自动化任务」弹窗：条件已填齐，服务端据此补齐 create_automation 的参数。
-  automationSeed?: { title: string; goal: string; cycle?: string; time: string; weekdays: string[]; monthDays: string[] };
+  automationSeed?: { title?: string; goal: string; cycle?: string; time: string; weekdays: string[]; monthDays: string[] };
   onEvent: (event: AgentEvent) => void;
 };
 
@@ -62,21 +64,10 @@ export async function streamChat({ messages, runId, signal, automationRun, autom
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      let event = "message";
-      let data = "";
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      if (!data) continue;
-      try {
-        onEvent({ type: event, data: JSON.parse(data) } as AgentEvent);
-      } catch {
-        // 忽略单条无法解析的事件，不影响后续流
-      }
+    const parsed = parseSseBuffer(buffer);
+    buffer = parsed.rest;
+    for (const event of parsed.events) {
+      onEvent(event as AgentEvent);
     }
   }
 }

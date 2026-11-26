@@ -5,6 +5,8 @@ import { OperationMenu } from "./operation-menu";
 import { EXAMPLE_FILES } from "./attachment-picker";
 import { formatFileSize, getAttachmentExtension, getAttachmentValidationError } from "./attachment-tray";
 import { formatByExtension, matchFileFilters } from "./file-filter";
+import { createCloudSourceFiles, DEMO_FILE_URL } from "../projects/project-files";
+export { createCloudSourceFiles } from "../projects/project-files";
 import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./file-filter";
 import { SmallTip } from "./task-artifacts";
 
@@ -91,8 +93,6 @@ const EXTRA_ARTIFACT_SEEDS: Array<[string, number, number]> = [
   ["知识沉淀文档.md", kb(72), 96],
 ];
 
-const DEMO_FILE_URL = "/assets/attachment-example.jpeg";
-
 export const DEMO_PROJECT_FILES: ProjectFiles = {
   sources: [
     ...EXAMPLE_FILES.map((file, index) => ({
@@ -162,20 +162,6 @@ export function pickSourceFiles(fileList: FileList): { additions: ProjectFile[];
     additions.push({ id: crypto.randomUUID(), name: file.name, blob: file, owner: "我", createdAt: Date.now(), status: "enabled" });
   }
   return { additions, errors };
-}
-
-// 云来源（OneDrive / Outlook / SharePoint / 产物）选择文件后加入「来源」：
-// 与本地文件一致，按当前用户「我」上传、默认已启用
-export function createCloudSourceFiles(files: { name: string; size: number }[]): ProjectFile[] {
-  return files.map(file => ({
-    id: crypto.randomUUID(),
-    name: file.name,
-    url: DEMO_FILE_URL,
-    size: file.size,
-    owner: "我",
-    createdAt: Date.now(),
-    status: "enabled",
-  }));
 }
 
 export function ProjectFilesPanel({ kind, files, query, formats, timeFilter, statuses, uploader, onChange, onUploadToProject }: {

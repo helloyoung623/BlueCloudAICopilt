@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
-import { addMonths, addYears, endOfDay, format, startOfDay, subDays } from "date-fns";
+import { addMonths, addYears, format, startOfDay } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import type { DateRange } from "react-day-picker";
 import { OperationMenu } from "./operation-menu";
@@ -12,85 +12,10 @@ import "./library-view.css";
 // 文件筛选：资料库与项目「来源 / 产物」共用同一套字段与交互
 // 字段（Figma 10045:64279）：状态（仅来源：已启用 / 停用）+ 格式（文档 / 表格 / 其他）
 //   + 上传人（仅来源：我 / 其他人）+ 更新时间（近 7 天 / 近 30 天 / 自定义区间）
-export type FileFormat = "文档" | "表格" | "文件夹" | "其他";
-// 与 project-files 的 SourceStatus 同一口径，只是不带业务前缀
-export type FileStatus = "enabled" | "disabled";
-export const FILE_STATUS_OPTIONS: { value: FileStatus; label: string }[] = [
-  { value: "enabled", label: "已启用" },
-  { value: "disabled", label: "停用" },
-];
-export type TimeFilter =
-  | { kind: "recent"; days: 7 | 30 }
-  | { kind: "custom"; from: Date; to: Date }
-  | null;
-
-// 「上传人」筛选（Figma 10045:64279）：「我」是一个独立开关，成员多选放在「其他人」里
-export type UploaderFilter = { mine: boolean; members: string[] };
-export const EMPTY_UPLOADER_FILTER: UploaderFilter = { mine: false, members: [] };
-// 当前用户上传的文件在数据里固定记为「我」
-export const SELF_OWNER = "我";
-
-export const FILE_FORMATS: FileFormat[] = ["文档", "表格", "其他"];
-// 附件面板的「格式」多一项「文件夹」（Figma 10069:64630）：云盘树里文件夹/站点也是可选条目
-export const CLOUD_FORMATS: FileFormat[] = ["文档", "表格", "文件夹", "其他"];
-
-// 「选择成员」里头像胶囊的底色：按名字做稳定映射，同一个人每次都是同一个颜色
-const OWNER_COLORS = ["#1e63f5", "#00bfc4", "#00c853", "#ff2442", "#ffcc00", "#9254ff"];
-function ownerColor(name: string) {
-  let hash = 0;
-  for (const char of name) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
-  return OWNER_COLORS[hash % OWNER_COLORS.length];
-}
-
-export function isUploaderFilterActive(filter?: UploaderFilter) {
-  return Boolean(filter && (filter.mine || filter.members.length > 0));
-}
-
-// 已选成员摘要：1 人显示姓名；2 人「A、B」；更多人「A、B等 N人」（Figma 10045:64279 的「张三、李四等 9人」）
-export function describeUploaders(members: string[]) {
-  if (members.length === 0) return "";
-  if (members.length === 1) return members[0];
-  if (members.length === 2) return `${members[0]}、${members[1]}`;
-  return `${members[0]}、${members[1]}等 ${members.length}人`;
-}
-
-export function formatByExtension(name: string): FileFormat {
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  if (ext === "pdf" || ["doc", "docx"].includes(ext)) return "文档";
-  if (["xls", "xlsx", "csv"].includes(ext)) return "表格";
-  return "其他";
-}
-
-export function displayDate(date: Date) {
-  return format(date, "yyyy.M.d");
-}
-
-export function hasActiveFileFilters(formats: FileFormat[], timeFilter: TimeFilter, uploader?: UploaderFilter, statuses?: FileStatus[]) {
-  return formats.length > 0 || timeFilter !== null || isUploaderFilterActive(uploader) || Boolean(statuses?.length);
-}
-
-// 名称 / 状态 / 格式 / 上传人 / 更新时间 五项命中判定，资料库与项目文件列表共用
-export function matchFileFilters(
-  file: { name: string; format: FileFormat; modified: Date; owner?: string; status?: FileStatus },
-  options: { query?: string; formats: FileFormat[]; timeFilter: TimeFilter; uploader?: UploaderFilter; statuses?: FileStatus[] },
-) {
-  const query = options.query?.trim().toLocaleLowerCase() ?? "";
-  if (query && !file.name.toLocaleLowerCase().includes(query)) return false;
-  if (options.formats.length && !options.formats.includes(file.format)) return false;
-  if (options.statuses?.length && (!file.status || !options.statuses.includes(file.status))) return false;
-  const uploader = options.uploader;
-  if (isUploaderFilterActive(uploader) && uploader) {
-    const mine = uploader.mine && file.owner === SELF_OWNER;
-    const picked = uploader.members.length > 0 && Boolean(file.owner) && uploader.members.includes(file.owner as string);
-    if (!mine && !picked) return false;
-  }
-  const { timeFilter } = options;
-  if (!timeFilter) return true;
-  const today = startOfDay(new Date());
-  const from = timeFilter.kind === "recent" ? subDays(today, timeFilter.days - 1) : timeFilter.from;
-  const to = timeFilter.kind === "recent" ? today : timeFilter.to;
-  return file.modified >= startOfDay(from) && file.modified <= endOfDay(to);
-}
+export type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "../projects/file-filtering";
+export { FILE_STATUS_OPTIONS, EMPTY_UPLOADER_FILTER, SELF_OWNER, FILE_FORMATS, CLOUD_FORMATS, isUploaderFilterActive, describeUploaders, formatByExtension, displayDate, hasActiveFileFilters, matchFileFilters } from "../projects/file-filtering";
+import { ownerColor, describeUploaders, displayDate, hasActiveFileFilters, isUploaderFilterActive, FILE_STATUS_OPTIONS, FILE_FORMATS, CLOUD_FORMATS, SELF_OWNER, EMPTY_UPLOADER_FILTER } from "../projects/file-filtering";
+import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "../projects/file-filtering";
 
 // 双月并排浮层总宽：每月 288px（含内部 padding / 分隔线），共 576px。
 // 定位时按此宽度预留，保证「左边缘距内容区 ≥ 16px」的判断与实际渲染一致。
