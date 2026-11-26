@@ -12,6 +12,7 @@ import {
   clickAria,
   clickSidebarTask,
   clickText,
+  hasVisibleButton,
   makeFixtureFiles,
   resolveChrome,
   sendMessage,
@@ -83,12 +84,18 @@ test("生成中切换会话再返回：流式内容落在原会话，新会话�
     // 切换前：第一段正文必须真的渲染出来，而不是只在连接里
     assert.equal(session.beginAnswer(CHUNK_1), true, "应能显式开始正文");
     await waitForText(page, CHUNK_1, 10000);
+    // 正文还在流，这一轮就属于生成中：暂停入口必须还在，不能变回发送。
+    assert.ok(await hasVisibleButton(page, "暂停生成"), "正文流式输出阶段仍应能暂停");
+    assert.ok(!(await hasVisibleButton(page, "发送消息")), "正文还在生成，不应出现发送按钮");
 
     assert.ok(await clickText(page, "新任务"), "生成中应能切到新任务");
     await waitForText(page, "试试这些", 8000);
     const home = await chatText(page);
     assert.ok(!home.includes(CHUNK_1), "新任务不应出现原会话的流式正文");
     assert.ok(!home.includes(STREAM_PROMPT), "新任务不应混入原会话消息");
+    // 状态按会话隔离：后台会话还在生成，也不能把它的暂停按钮带到当前会话。
+    assert.ok(!(await hasVisibleButton(page, "暂停生成")), "后台会话的暂停按钮不应带到当前会话");
+    assert.ok(await hasVisibleButton(page, "发送消息"), "当前会话应照常能发送新消息");
 
     // 切走期间由测试显式下发第二段：连接仍在，内容只能回到原会话。
     assert.equal(session.delta(CHUNK_2), true, "切走后连接应仍可继续下发");
@@ -105,17 +112,20 @@ test("生成中切换会话再返回：流式内容落在原会话，新会话�
     );
     assert.ok(!chat.includes("已收到："), "原会话不应混入其他请求的回答");
     assert.equal(mock.calls.length, 1, "切换会话不应重复发起请求");
+    // 切回来后那一轮仍在生成中：暂停入口跟着会话回来。
+    assert.ok(await hasVisibleButton(page, "暂停生成"), "切回原会话后仍应能暂停那一轮");
 
     assert.equal(session.finish(), true, "应能正常收尾这次回答");
     await waitForIdle(page);
+    assert.ok(await hasVisibleButton(page, "发送消息"), "正文结束后应恢复发送按钮");
     assert.deepEqual(errors, [], "页面不应有 JS 错误");
   });
 });
 
-// 产品现状：暂停入口（以及侧栏「AI 执行中」）只在「执行过程」阶段存在，
-// answer.start 一到，思考块就收起、按钮变回发送。所以暂停用例在真实可暂停的窗口内断言：
-// 执行摘要已显示 → 连接关闭 → 后续 chunk 写不进、旧内容不被追加 → 新消息可发送。
-test("暂停生成：先看到部分输出，暂停后连接关闭且不再追加，随后可继续发送", { timeout: 90000 }, async () => {
+// 产品现状：暂停入口（以及侧栏「AI 执行中」）覆盖「请求开始 → 正文结束」整段，
+// 思考、工具执行、正文流式输出三个阶段都能停。
+// 思考阶段停：执行摘要已显示 → 连接关闭 → 后续 chunk 写不进、旧内容不被追加 → 新消息可发送。
+test("暂停生成（思考阶段）：连接关闭且显示已停止生成，随后可继续发送", { timeout: 90000 }, async () => {
   await withPage(browser, app, async ({ page, mock, errors }) => {
     mock.hold({ summary: RUNNING_SUMMARY, title: "读取未读邮件" });
     assert.ok(await sendMessage(page, "先暂停这条"));
@@ -136,11 +146,13 @@ test("暂停生成：先看到部分输出，暂停后连接关闭且不再追�
     await sleep(600);
     const chat = await chatText(page);
     assert.ok(!chat.includes(LATE_CHUNK), "暂停后不应再有内容追加到这段输出");
-    assert.ok(chat.includes("任务已完成"), "暂停后执行过程应正常收尾，而不是停在半途");
+    assert.ok(chat.includes("已停止生成"), "被中断的执行过程应显示「已停止生成」");
+    assert.ok(!chat.includes("任务已完成"), "被中断的执行过程不能显示「任务已完成」");
     assert.ok(!chat.includes("（模型未返回内容）"), "暂停不应伪造一条空回答");
+    assert.ok(await hasVisibleButton(page, "发送消息"), "暂停后发送按钮应恢复");
 
-    // 产品收尾后会把过程收进「任务已完成 〉」；展开确认暂停前显示的内容没有被清掉。
-    assert.ok(await clickText(page, "任务已完成"), "应能展开已收尾的执行过程");
+    // 收尾后执行过程收进「已停止生成 〉」；展开确认暂停前显示的内容没有被清掉。
+    assert.ok(await clickText(page, "已停止生成"), "应能展开已停止的执行过程");
     await waitForText(page, RUNNING_TEXT, 8000);
     assert.ok(!(await chatText(page)).includes(LATE_CHUNK), "展开后也不应出现暂停后的追加内容");
     assert.equal(mock.calls.length, 1, "暂停本身不应触发重试请求");
@@ -151,6 +163,92 @@ test("暂停生成：先看到部分输出，暂停后连接关闭且不再追�
     await waitForText(page, "已收到：暂停后继续发送", 10000);
     assert.equal(mock.calls.length, before + 1, "继续发送应新增一次请求");
     assert.equal(mock.calls.at(-1).userText, "暂停后继续发送", "请求内容应为新消息");
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
+// 正文阶段停：已经收到第一段正文才按暂停 → 连接关闭 → 正文保留、后续不再追加 → 可继续发送。
+test("暂停生成（正文阶段）：已收到的正文保留、后续不再追加、可以继续发送", { timeout: 90000 }, async () => {
+  await withPage(browser, app, async ({ page, mock, errors }) => {
+    mock.hold({ summary: RUNNING_SUMMARY, title: "读取未读邮件", tool: RUNNING_TEXT });
+    assert.ok(await sendMessage(page, "正文里停一下"));
+    const session = await mock.waitForSession();
+    await waitForPause(page);
+
+    assert.equal(session.beginAnswer(CHUNK_1), true, "应能显式开始正文");
+    await waitForText(page, CHUNK_1, 10000);
+    // 正文还在流，这一轮就属于生成中：暂停入口必须还在。
+    assert.ok(await hasVisibleButton(page, "暂停生成"), "正文流式输出阶段仍应能暂停");
+    assert.ok(!(await hasVisibleButton(page, "发送消息")), "正文还在生成，不应出现发送按钮");
+
+    assert.ok(await clickAria(page, "暂停生成"), "正文阶段应能暂停");
+    assert.equal(await session.waitForClientClose(10000), true, "暂停后服务端应看到连接关闭");
+    assert.equal(session.open, false, "连接关闭后会话不应还可写");
+    assert.equal(session.delta(LATE_CHUNK), false, "连接已关闭，不应再写入");
+
+    await waitForIdle(page);
+    await sleep(600);
+    const chat = await chatText(page);
+    assert.ok(chat.includes(CHUNK_1), "暂停前已收到的正文要保留");
+    assert.ok(!chat.includes(LATE_CHUNK), "暂停后不应再有内容追加");
+    assert.ok(chat.includes("已停止生成"), "被中断的这一轮应显示「已停止生成」");
+    assert.ok(!chat.includes("任务已完成"), "被中断的这一轮不能显示「任务已完成」");
+    assert.ok(!chat.includes("（模型未返回内容）"), "暂停不应伪造一条空回答");
+
+    // 暂停后可以继续发新消息，上一轮的内容不会被冲掉。
+    mock.normal();
+    const before = mock.calls.length;
+    assert.ok(await sendMessage(page, "暂停后继续发送"));
+    await waitForText(page, "已收到：暂停后继续发送", 10000);
+    assert.equal(mock.calls.length, before + 1, "继续发送应新增一次请求");
+    const after = await chatText(page);
+    assert.ok(after.includes(CHUNK_1), "新一轮不应冲掉上一轮已收到的正文");
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
+// 正文正常结束：answer.end 一到就恢复发送按钮，不因为推荐追问还在生成就一直是暂停。
+test("正文正常结束：answer.end 后恢复发送按钮，不显示已停止生成", { timeout: 90000 }, async () => {
+  await withPage(browser, app, async ({ page, mock, errors }) => {
+    mock.hold({ summary: RUNNING_SUMMARY, title: "读取未读邮件", tool: RUNNING_TEXT });
+    assert.ok(await sendMessage(page, "正常跑完"));
+    const session = await mock.waitForSession();
+    await waitForPause(page);
+
+    assert.equal(session.beginAnswer(CHUNK_1), true, "应能显式开始正文");
+    await waitForText(page, CHUNK_1, 10000);
+    assert.ok(await hasVisibleButton(page, "暂停生成"), "正文阶段仍在生成中");
+
+    assert.equal(session.finish(), true, "应能正常收尾这次回答");
+    await waitForIdle(page);
+    await sleep(400);
+    assert.ok(await hasVisibleButton(page, "发送消息"), "正文结束后应恢复发送按钮");
+    const chat = await chatText(page);
+    assert.ok(chat.includes(CHUNK_1), "完整正文应保留");
+    assert.ok(!chat.includes("已停止生成"), "正常结束不应显示已停止生成");
+    assert.ok(chat.includes("任务已完成"), "正常结束的执行过程应显示任务已完成");
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
+// 请求真的失败：走既有的失败提示，不与主动停止混淆。
+test("请求失败：按失败处理并保留失败提示，不与主动停止混淆", { timeout: 90000 }, async () => {
+  await withPage(browser, app, async ({ page, mock, errors }) => {
+    mock.hold({ summary: RUNNING_SUMMARY, title: "读取未读邮件" });
+    assert.ok(await sendMessage(page, "这条会失败"));
+    const session = await mock.waitForSession();
+    await waitForPause(page);
+
+    // 服务端直接掐断连接：客户端应当按「请求失败」处理。
+    assert.equal(session.cancel(), true, "应能掐断这次请求");
+    await waitForIdle(page);
+    await page.waitForFunction(
+      () => !!document.querySelector('button[aria-label="发送失败，点击重试"]'),
+      { timeout: 8000 },
+    );
+    const chat = await chatText(page);
+    assert.ok(!chat.includes("已停止生成"), "请求失败不是主动停止，不应显示已停止生成");
+    assert.ok(await hasVisibleButton(page, "发送消息"), "失败后应恢复发送按钮");
     assert.deepEqual(errors, [], "页面不应有 JS 错误");
   });
 });

@@ -235,7 +235,9 @@ function createSession({ res, call, mock }) {
   };
 
   // 挂住：只进入「执行过程」阶段（此时产品才提供暂停入口），正文留给测试推进。
-  session.startHold = ({ summary, title } = {}) => {
+  // tool 会先记一条工具调用：执行过程因此能一路留到正文阶段，
+  // 「这一轮被停掉时显示已停止生成」才有东西可断言。
+  session.startHold = ({ summary, title, tool } = {}) => {
     res.writeHead(200, SSE_HEADERS);
     res.write(sseFrame("run.start", { runId: call.index }));
     if (summary) {
@@ -243,6 +245,18 @@ function createSession({ res, call, mock }) {
         sseFrame("plan.summary", {
           text: summary,
           ...(title ? { title } : {}),
+          round: 0,
+        }),
+      );
+    }
+    if (tool) {
+      res.write(
+        sseFrame("tool.call", {
+          callId: `call-${call.index}`,
+          name: "read_mail",
+          label: tool,
+          icon: "react-read",
+          running: `正在${tool}`,
           round: 0,
         }),
       );
@@ -517,6 +531,18 @@ export async function waitForPause(page, timeout = 8000) {
     { timeout },
   );
 }
+
+// 可见的「暂停生成」/「发送消息」按钮。
+// 生成中只有暂停入口，正文结束后才恢复发送：这两个断言用来区分这两种状态，
+// 只看按钮是否存在会被隐藏的同名按钮骗过去，所以额外要求 offsetParent（可见）。
+export const hasVisibleButton = (page, aria) =>
+  page.evaluate(
+    (label) =>
+      [...document.querySelectorAll("button")].some(
+        (b) => b.getAttribute("aria-label") === label && !!b.offsetParent,
+      ),
+    aria,
+  );
 
 export async function waitForIdle(page, timeout = 8000) {
   await page.waitForFunction(

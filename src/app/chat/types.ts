@@ -27,6 +27,8 @@ export type Message = {
   outlookMails?: OutlookMail[];
   attachments?: ChatAttachment[];
   thinking?: boolean;
+  // 这一轮被中断（用户点「暂停生成」）：执行过程显示「已停止生成」，不显示「任务已完成」
+  stopped?: boolean;
   variant?: ProcessVariant;
   preset?: ProcessPreset;
   artifacts?: TaskArtifact[];
