@@ -143,9 +143,15 @@ cp .env.example .env
 pnpm test:browser
 ```
 
-它会在临时目录跑一次生产构建并起本地静态服务，所有 `/api/chat` 由测试内可控 SSE
-拦截，不访问真实模型。需要本机 Chrome；不在默认路径时设置 `CHROME_PATH`，
-也可以设置 `APP_URL` 复用已启动的预览。
+它会在临时目录跑一次生产构建，并起一个本地 HTTP 服务同时提供静态站点和
+`/api/chat` 的可控 SSE，全程离线、不访问真实模型。需要本机 Chrome，不在默认路径时
+设置 `CHROME_PATH`。
+
+注意：`/api/chat` 必须由这个本地服务用 `res.write` 分批下发，**不要**改成
+`req.respond()` 塞 `ReadableStream` —— Puppeteer 只接受 string/Buffer，那样
+「先发一段再挂住」的语义会失效，测出来的是假状态。测试要控制的流式场景，用
+`mock.hold()` 挂住、`session.beginAnswer()` / `session.delta()` / `session.finish()`
+显式推进；mock 与请求拦截记录到的异常会导致用例失败，只有明确预期的取消和页面关闭不算。
 
 ---
 

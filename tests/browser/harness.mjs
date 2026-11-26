@@ -1,9 +1,14 @@
-// 浏览器回归公共设施：本地 Chrome + puppeteer-core + 可控 SSE mock。
-// 不访问真实模型：所有 /api/chat 都由这里拦截并按固定帧返回。
+// 浏览器回归公共设施：本地 Chrome + puppeteer-core + 本地可控 SSE mock 服务。
+//
+// 为什么不用 page.setRequestInterception + req.respond(ReadableStream)：
+// Puppeteer 的 respond() 只接受 string/Buffer，塞 ReadableStream 属于非法参数，
+// 「先发一半再挂住」的 hold 语义根本不会生效。这里改成真正的本地 HTTP 服务：
+// /api/chat 由 res.write 分批下发 SSE，测试拿到 session 句柄后可以显式追加 chunk、
+// 收尾或取消，全程不出网、不访问真实模型。
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -28,6 +33,15 @@ const MIME = {
   ".txt": "text/plain; charset=utf-8",
 };
 
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
+};
+
+const sseFrame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
 export function resolveChrome() {
   const candidates = [
     process.env.CHROME_PATH,
@@ -42,11 +56,233 @@ export function resolveChrome() {
   return found;
 }
 
-// 优先复用已启动的预览（APP_URL）；否则生产构建到唯一临时目录并起静态服务。
-// 只在 finally 清理本次自己创建的临时目录，不碰项目 dist 或其他文件。
-export async function startApp() {
-  if (process.env.APP_URL) return { url: process.env.APP_URL, close: async () => {} };
+// ---------------------------------------------------------------------------
+// 可控 SSE mock：每个页面一份，互不影响；所有异常都进 errors，由 withPage 断言为空。
+// ---------------------------------------------------------------------------
+function createMockApi() {
+  const mock = {
+    mode: "normal",
+    holdOptions: {},
+    calls: [],
+    sessions: [],
+    errors: [],
+  };
+  const pendingWaiters = [];
 
+  mock.recordError = (message) => {
+    mock.errors.push(message);
+  };
+
+  // 下一个请求：先进入「执行过程」阶段并保持连接，正文由测试显式开始。
+  // options.summary 会随 plan.summary 先下发，用户能看到一条真实的执行摘要。
+  mock.hold = (options = {}) => {
+    mock.mode = "hold";
+    mock.holdOptions = options;
+  };
+  // 之后的请求：一次性流完（和真实服务端的短回答一致）。
+  mock.normal = () => {
+    mock.mode = "normal";
+  };
+
+  mock.waitForSession = (timeout = 10000) =>
+    new Promise((done, fail) => {
+      const open = mock.sessions.filter((session) => session.open);
+      if (open.length) {
+        done(open.at(-1));
+        return;
+      }
+      const timer = setTimeout(() => {
+        const index = pendingWaiters.indexOf(waiter);
+        if (index !== -1) pendingWaiters.splice(index, 1);
+        fail(new Error("等待 hold 会话超时：没有请求被挂住"));
+      }, timeout);
+      function waiter(session) {
+        clearTimeout(timer);
+        done(session);
+      }
+      pendingWaiters.push(waiter);
+    });
+
+  mock.handleChat = (req, res) => {
+    if (req.method !== "POST") {
+      mock.recordError(`/api/chat 收到非 POST 请求：${req.method}`);
+      res.writeHead(405, { "Content-Type": "application/json" }).end("{}");
+      return;
+    }
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("error", (error) => mock.recordError(`读取 /api/chat 请求体失败：${error.message}`));
+    req.on("end", () => {
+      let body;
+      try {
+        body = JSON.parse(raw || "{}");
+      } catch (error) {
+        mock.recordError(`/api/chat 请求体不是合法 JSON：${error.message}`);
+        res.writeHead(400, { "Content-Type": "application/json" }).end("{}");
+        return;
+      }
+      const userText = (body.messages ?? []).filter((m) => m.role === "user").at(-1)?.content ?? "";
+      const call = {
+        index: mock.calls.length + 1,
+        userText,
+        body,
+        automationSeed: body.automationSeed ?? null,
+        at: Date.now(),
+      };
+      mock.calls.push(call);
+
+      const session = createSession({ res, call, mock });
+      mock.sessions.push(session);
+      if (mock.mode === "hold") {
+        session.startHold(mock.holdOptions);
+        pendingWaiters.splice(0).forEach((waiter) => waiter(session));
+      } else {
+        session.startNormal();
+      }
+    });
+  };
+
+  return mock;
+}
+
+function createSession({ res, call, mock }) {
+  const listeners = [];
+  let resolveClosed;
+  const closed = new Promise((done) => {
+    resolveClosed = done;
+  });
+
+  const session = {
+    index: call.index,
+    userText: call.userText,
+    body: call.body,
+    sentText: "",
+    answerStarted: false,
+    clientClosed: false,
+    finished: false,
+    closed,
+  };
+
+  Object.defineProperty(session, "open", {
+    get: () => !session.finished && !session.clientClosed,
+  });
+
+  const flush = (raw) => {
+    if (!session.open) return false;
+    res.write(raw);
+    return true;
+  };
+
+  session.write = flush;
+
+  session.delta = (text) => {
+    if (!session.open) return false;
+    // answer.start 之前的 delta 会被前端直接丢弃，写成这样一定是用例顺序错了。
+    if (!session.answerStarted) throw new Error("正文还没开始：message.delta 会被前端忽略");
+    session.sentText += text;
+    res.write(sseFrame("message.delta", { text }));
+    return true;
+  };
+
+  // 由测试显式把回答从「执行过程」推进到正文，并给出第一段正文。
+  session.beginAnswer = (text) => {
+    if (!session.open) return false;
+    if (session.answerStarted) throw new Error("正文已经开始，不能重复 beginAnswer");
+    session.answerStarted = true;
+    res.write(sseFrame("answer.start", {}));
+    return text ? session.delta(text) : true;
+  };
+
+  // 正常收尾：补齐 answer.end / run.end，正文取本连接累计下发的全部内容。
+  session.finish = () => {
+    if (!session.open) return false;
+    res.write(sseFrame("answer.end", {}));
+    res.write(
+      sseFrame("run.end", {
+        text: session.sentText,
+        plainText: session.sentText,
+        followUps: [],
+      }),
+    );
+    session.finished = true;
+    res.end();
+    return true;
+  };
+
+  // 由测试主动掐断（模拟服务端异常/超时），不再往浏览器写任何东西。
+  session.cancel = () => {
+    if (!session.open) return false;
+    session.finished = true;
+    res.destroy();
+    return true;
+  };
+
+  session.startNormal = () => {
+    res.writeHead(200, SSE_HEADERS);
+    const echo = `已收到：${String(call.userText).slice(0, 30)}`;
+    session.sentText = echo;
+    session.answerStarted = true;
+    res.write(sseFrame("run.start", { runId: call.index }));
+    res.write(sseFrame("answer.start", {}));
+    res.write(sseFrame("message.delta", { text: echo }));
+    res.write(sseFrame("answer.end", {}));
+    res.write(sseFrame("run.end", { text: echo, plainText: echo, followUps: [] }));
+    session.finished = true;
+    res.end();
+  };
+
+  // 挂住：只进入「执行过程」阶段（此时产品才提供暂停入口），正文留给测试推进。
+  session.startHold = ({ summary, title } = {}) => {
+    res.writeHead(200, SSE_HEADERS);
+    res.write(sseFrame("run.start", { runId: call.index }));
+    if (summary) {
+      res.write(
+        sseFrame("plan.summary", {
+          text: summary,
+          ...(title ? { title } : {}),
+          round: 0,
+        }),
+      );
+    }
+  };
+
+  session.waitForClientClose = (timeout = 10000) => {
+    if (session.clientClosed) return Promise.resolve(true);
+    return new Promise((done, fail) => {
+      const timer = setTimeout(() => {
+        fail(new Error("等待连接关闭超时：前端可能没有真正中断这次请求"));
+      }, timeout);
+      listeners.push(() => {
+        clearTimeout(timer);
+        done(session.clientClosed);
+      });
+    });
+  };
+
+  res.on("close", () => {
+    // 已经由我们收尾的连接属于正常关闭；没写完就关，才是前端取消/页面关闭。
+    if (!session.finished) session.clientClosed = true;
+    resolveClosed();
+    listeners.splice(0).forEach((fn) => fn());
+  });
+
+  res.on("error", (error) => {
+    // 明确预期的收尾：正常结束，或前端主动取消（暂停/离开/关页面）后再无写入。
+    if (session.finished || session.clientClosed) return;
+    mock.recordError(`/api/chat 响应异常（第 ${call.index} 个请求）：${error.message}`);
+  });
+
+  return session;
+}
+
+// ---------------------------------------------------------------------------
+// 静态站点 + /api/chat 同源服务：这样前端 fetch("/api/chat") 直接命中 mock，
+// 不需要再拦截这个请求，也不会碰到真实模型。
+// ---------------------------------------------------------------------------
+export async function startApp() {
   const outDir = mkdtempSync(join(tmpdir(), "bluecloud-browser-"));
   try {
     const build = spawnSync(
@@ -62,137 +298,170 @@ export async function startApp() {
     throw error;
   }
 
-  const server = createServer(async (req, res) => {
-    const pathname = decodeURIComponent(new URL(req.url || "/", "http://127.0.0.1").pathname);
-    let filePath = resolve(outDir, `.${pathname}`);
-    if (!filePath.startsWith(outDir)) {
-      res.writeHead(403).end();
+  const hub = { mock: null };
+
+  const server = createServer((req, res) => {
+    let pathname;
+    try {
+      pathname = decodeURIComponent(new URL(req.url || "/", "http://127.0.0.1").pathname);
+    } catch (error) {
+      res.writeHead(400).end();
+      hub.mock?.recordError(`无法解析请求路径：${req.url}（${error.message}）`);
       return;
     }
-    try {
-      if (statSync(filePath).isDirectory()) filePath = join(filePath, "index.html");
-    } catch {
-      filePath = join(outDir, "index.html"); // SPA 回退
+
+    if (pathname === "/api/chat") {
+      if (!hub.mock) {
+        res.writeHead(503, { "Content-Type": "application/json" }).end('{"error":"mock 未就绪"}');
+        return;
+      }
+      hub.mock.handleChat(req, res);
+      return;
     }
-    try {
-      const body = readFileSync(filePath);
-      res.writeHead(200, { "Content-Type": MIME[extname(filePath)] ?? "application/octet-stream" });
-      res.end(body);
-    } catch {
-      res.writeHead(404).end();
+    // 其余接口本回归不覆盖，明确返回 404（前端对这些调用有本地回退），不算异常。
+    if (pathname.startsWith("/api/")) {
+      res.writeHead(404, { "Content-Type": "application/json" }).end("{}");
+      return;
     }
+    // 浏览器会自己请求 favicon，产品也没提供，明确返回 204 而不是记成资源缺失。
+    if (pathname === "/favicon.ico") {
+      res.writeHead(204).end();
+      return;
+    }
+    serveStatic({ outDir, pathname, res, mock: hub.mock });
   });
+
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("静态服务未拿到端口");
+
   return {
     url: `http://127.0.0.1:${address.port}/`,
-    close: async () => {
+    // 每个页面一份 mock，避免上一个用例的 calls/errors 串到下一个用例。
+    mockForPage() {
+      hub.mock = createMockApi();
+      return hub.mock;
+    },
+    async close() {
+      hub.mock = null;
       await new Promise((done) => server.close(done));
       rmSync(outDir, { recursive: true, force: true });
     },
   };
 }
 
-const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-
-// 拦截页面所有请求：/api/chat 走可控帧，其他 /api 直接短路，外部网络一律 abort。
-export async function attachMock(page) {
-  const state = { mode: "normal", calls: [], lastBody: null };
-  await page.setRequestInterception(true);
-  page.on("request", async (req) => {
-    const url = req.url();
-    try {
-      if (url.includes("/api/chat")) {
-        if (req.method() !== "POST") {
-          await req.respond({ status: 405, contentType: "application/json", body: "{}" });
-          return;
-        }
-        let body = {};
-        try {
-          body = JSON.parse(req.postData() || "{}");
-        } catch {
-          body = {};
-        }
-        state.lastBody = body;
-        const userText = (body.messages ?? []).filter((m) => m.role === "user").at(-1)?.content ?? "";
-        state.calls.push({ at: Date.now(), userText, automationSeed: body.automationSeed ?? null });
-        const runId = state.calls.length;
-        const echo = String(userText).slice(0, 30);
-        const full =
-          frame("run.start", { runId }) +
-          frame("answer.start", {}) +
-          frame("message.delta", { text: `已收到：${echo}` }) +
-          frame("answer.end", {}) +
-          frame("run.end", { text: `已收到：${echo}`, plainText: `已收到：${echo}`, followUps: [] });
-        if (state.mode === "hold") {
-          // 只吐前半段并保持连接不关闭，用来制造真实的「生成中」窗口。
-          const encoder = new TextEncoder();
-          const stream = new ReadableStream({
-            async start(controller) {
-              controller.enqueue(encoder.encode(frame("run.start", { runId }) + frame("answer.start", {})));
-              await sleep(400);
-              controller.enqueue(encoder.encode(frame("message.delta", { text: `正在处理：${echo}` })));
-              // 故意不 close：前端暂停/切走时会取消这个流。
-            },
-            cancel() {},
-          });
-          await req.respond({
-            status: 200,
-            contentType: "text/event-stream",
-            headers: { "Cache-Control": "no-cache" },
-            body: stream,
-          });
-        } else {
-          await req.respond({
-            status: 200,
-            contentType: "text/event-stream",
-            headers: { "Cache-Control": "no-cache" },
-            body: full,
-          });
-        }
-        return;
-      }
-      if (url.includes("/api/")) {
-        await req.respond({ status: 404, contentType: "application/json", body: "{}" });
-        return;
-      }
-      if (!/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(url)) {
-        await req.abort();
-        return;
-      }
-      await req.continue();
-    } catch {
-      try {
-        await req.abort();
-      } catch {
-        // 页面已关闭，忽略
-      }
-    }
-  });
-  state.setMode = (mode) => {
-    state.mode = mode;
-  };
-  return state;
+function serveStatic({ outDir, pathname, res, mock }) {
+  if (pathname === "/") {
+    sendFile({ outDir, res, mock, filePath: join(outDir, "index.html") });
+    return;
+  }
+  const requested = resolve(outDir, `.${pathname}`);
+  if (!requested.startsWith(outDir + sep)) {
+    mock?.recordError(`请求越出构建目录：${pathname}`);
+    res.writeHead(403).end();
+    return;
+  }
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(requested).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (isDirectory) {
+    sendFile({ outDir, res, mock, filePath: join(requested, "index.html") });
+    return;
+  }
+  if (!extname(pathname)) {
+    // 前端路由路径统一回退到 index.html
+    sendFile({ outDir, res, mock, filePath: join(outDir, "index.html") });
+    return;
+  }
+  sendFile({ outDir, res, mock, filePath: requested });
 }
 
-export async function withPage(browser, url, fn) {
+function sendFile({ outDir, res, mock, filePath }) {
+  let body;
+  try {
+    body = readFileSync(filePath);
+  } catch {
+    if (extname(filePath) === ".html") {
+      mock?.recordError(`构建产物缺失：${filePath}`);
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" }).end("build output missing");
+      return;
+    }
+    // 带扩展名却读不到，说明静态资源真的缺了，必须让测试失败而不是静默 404。
+    mock?.recordError(`静态资源缺失：${filePath.slice(outDir.length)}`);
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }).end("not found");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": MIME[extname(filePath)] ?? "application/octet-stream",
+    "Cache-Control": "no-store",
+  });
+  res.end(body);
+}
+
+// 拦截只做一件事：确认请求没出网。回归全程必须离线，任何外部请求都记错并掐断。
+async function attachGuard(page, mock) {
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    if (request.isInterceptResolutionHandled()) return;
+    let host = "";
+    try {
+      host = new URL(request.url()).hostname;
+    } catch {
+      host = "";
+    }
+    if (host !== "127.0.0.1" && host !== "localhost") {
+      mock.recordError(`出现外部网络请求（回归要求全程离线）：${request.url()}`);
+      request.abort("blockedbyclient").catch(() => {});
+      return;
+    }
+    request.continue().catch((error) => {
+      // 页面关闭时未完成的请求会在这里失败，这是唯一允许忽略的收尾场景。
+      if (page.isClosed()) return;
+      mock.recordError(`放行本地请求失败：${request.url()}（${error.message}）`);
+    });
+  });
+}
+
+export async function withPage(browser, app, fn) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+  const mock = app.mockForPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
-  const mock = await attachMock(page);
+  await attachGuard(page, mock);
+
+  let result;
+  let failure = null;
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(app.url, { waitUntil: "domcontentloaded" });
     await page.waitForSelector(CHAT_TEXTAREA, { timeout: 10000 });
     await sleep(500);
-    return await fn({ page, mock, errors });
-  } finally {
-    await page.close();
+    result = await fn({ page, mock, errors });
+  } catch (error) {
+    failure = error;
   }
+
+  await page.close().catch(() => {});
+
+  if (failure) {
+    if (mock.errors.length) {
+      failure.message += `\n\nmock / 拦截记录到的异常：\n- ${mock.errors.join("\n- ")}`;
+    }
+    throw failure;
+  }
+  // mock 与拦截异常一律算失败，不允许默默吞掉。
+  if (mock.errors.length) {
+    throw new Error(`mock / 拦截记录到异常：\n- ${mock.errors.join("\n- ")}`);
+  }
+  return result;
 }
 
 export const bodyText = (page) => page.evaluate(() => document.body.innerText.replace(/\n+/g, " | "));
+export const chatText = (page) =>
+  page.$eval("[data-chat-scroll]", (el) => el.innerText).catch(() => "");
 export const waitForText = (page, text, timeout = 10000) =>
   page.waitForFunction((needle) => document.body.innerText.includes(needle), { timeout }, text);
 
@@ -245,6 +514,13 @@ export async function typeVisible(page, selector, text) {
 export async function waitForPause(page, timeout = 8000) {
   await page.waitForFunction(
     () => [...document.querySelectorAll("button")].some((b) => b.getAttribute("aria-label") === "暂停生成"),
+    { timeout },
+  );
+}
+
+export async function waitForIdle(page, timeout = 8000) {
+  await page.waitForFunction(
+    () => ![...document.querySelectorAll("button")].some((b) => b.getAttribute("aria-label") === "暂停生成"),
     { timeout },
   );
 }
