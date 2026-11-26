@@ -79,8 +79,44 @@ async function clickInDialog(page, text) {
   return clicked;
 }
 
-const waitDialogClosed = (page) =>
-  page.waitForFunction(() => !document.querySelector('[role="dialog"]'), { timeout: 8000 });
+const waitDialogClosed = (page, label) =>
+  page
+    .waitForFunction(() => !document.querySelector('[role="dialog"]'), { timeout: 8000 })
+    .catch((error) => {
+      // 不吞异常：带上有出处的信息再抛出去，方便定位是哪一种关闭方式没生效。
+      throw new Error(`等待弹窗关闭超时${label ? `（${label}）` : ""}：${error.message}`);
+    });
+
+// 等弹窗进入「可以接受外部点击」的状态，再去点遮罩。
+//
+// 为什么要这一步：Radix 的 DismissableLayer 会用 setTimeout(0) 延后把 document 上的
+// pointerdown 监听挂上（@radix-ui/react-dismissable-layer），目的就是让「打开弹窗的
+// 那一次点击」不要顺手把弹窗关掉。合成点击偶尔会落在这个窗口里，
+// pointerdown 到了 document、但 Radix 的监听还没挂上，于是这次点击被忽略，
+// 弹窗留在原地（实测 15 次里偶发 2~3 次）。
+//
+// 这里等的是状态不是固定时长：确认遮罩上的入场动画已经跑完（动画没开时退化为
+// 等浏览器渲染两帧）。一帧之后 Radix 的 setTimeout(0) 必然已经执行完，
+// 监听也就挂好了。真人不可能在弹窗出现后十几毫秒内点遮罩，所以这不是产品缺陷。
+async function waitDialogReadyForPointer(page) {
+  await page.waitForFunction(
+    () =>
+      new Promise((resolve) => {
+        const overlay = document.querySelector('[data-slot="dialog-overlay"]');
+        if (!overlay) {
+          resolve(false);
+          return;
+        }
+        const running = (overlay.getAnimations?.() ?? []).some((a) => a.playState === "running");
+        if (running) {
+          resolve(false);
+          return;
+        }
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+      }),
+    { timeout: 8000, polling: "raf" },
+  );
+}
 
 async function openInstructionDialog(page) {
   const opened = await page.evaluate(() => {
@@ -342,6 +378,7 @@ test("放弃草稿：取消 / 关闭按钮 / Esc / 点遮罩关闭后，重新�
       {
         name: "点击遮罩",
         run: async () => {
+          await waitDialogReadyForPointer(page);
           await page.mouse.click(6, 6);
           return true;
         },
@@ -359,7 +396,7 @@ test("放弃草稿：取消 / 关闭按钮 / Esc / 点遮罩关闭后，重新�
       assert.equal(draft.confirmDisabled, false, `${way.name}：有草稿时「确定」应可点击`);
 
       await way.run();
-      await waitDialogClosed(page);
+      await waitDialogClosed(page, way.name);
 
       // 重新打开必须还是原值：草稿既没保存，也没残留到下一次打开。
       await openInstructionDialog(page);
@@ -491,6 +528,22 @@ test("项目成员：确认后保留选择与角色，取消后恢复原选择",
     );
 
     // 改一版再取消：必须回到已保存的那一版。
+    //
+    // 先把已保存成员的角色改成另一个角色（吴那：管理员 → 使用者），
+    // 并先断言草稿里的角色确实变了，再去点取消。
+    await chooseMemberRole(page, "吴那", "使用者");
+    const roleDraft = await readMembersDialog(page);
+    assert.deepEqual(
+      roleDraft.roles.sort(),
+      ["吴那角色：使用者", "钱桂英角色：使用者"],
+      "草稿里的角色应已改成另一个角色",
+    );
+    assert.notDeepEqual(
+      roleDraft.roles.sort(),
+      reopened.roles.sort(),
+      "草稿角色应与已保存角色不同，否则这条用例没意义",
+    );
+
     await removeMember(page, "钱桂英");
     await selectMember(page, "赵玉芝");
     await page.waitForFunction(
@@ -502,6 +555,11 @@ test("项目成员：确认后保留选择与角色，取消后恢复原选择",
     );
     const changed = await readMembersDialog(page);
     assert.deepEqual(changed.selected.sort(), ["选择吴那", "选择赵玉芝"], "改后的选择应生效");
+    assert.deepEqual(
+      changed.roles.sort(),
+      ["吴那角色：使用者", "赵玉芝角色：使用者"],
+      "草稿里的角色改动应仍在",
+    );
 
     assert.ok(await clickInDialog(page, "取消"), "应能取消成员修改");
     await waitDialogClosed(page);
@@ -513,7 +571,7 @@ test("项目成员：确认后保留选择与角色，取消后恢复原选择",
     assert.deepEqual(
       restored.roles.sort(),
       ["吴那角色：管理员", "钱桂英角色：使用者"],
-      "取消后应恢复原角色",
+      "取消后角色应恢复为之前保存的值",
     );
 
     const panelAfter = await readMembersPanel(page);
