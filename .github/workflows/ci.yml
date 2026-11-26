@@ -1,0 +1,36 @@
+name: CI
+
+# PR 和推 main 都跑同一套检查，保证 main 上永远是验证过的版本。
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 同一个分支的多次推送只保留最新一次运行。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 测试 + 类型检查 + 构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm 版本必须显式钉住：仓库的 lockfile 依赖 pnpm 10 的 overrides 语义，
+      # 用最新 pnpm 装会直接 ERR_PNPM_LOCKFILE_CONFIG_MISMATCH。
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # = pnpm test && pnpm typecheck && pnpm build:check
+      - run: pnpm check

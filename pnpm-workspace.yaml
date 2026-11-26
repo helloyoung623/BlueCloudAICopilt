@@ -3,8 +3,27 @@ packages:
 supportedArchitectures:
   os:
     - linux
+    # darwin 必须显式列出：supportedArchitectures 是白名单而不是补充，
+    # 只写 linux 会导致 macOS 上装不到 rollup/esbuild 的平台原生二进制（vite 构建直接失败）。
+    - darwin
   cpu:
     - x64
     - arm64
   libc:
     - glibc
+
+# pnpm 11+ 不再读取 package.json 里的 pnpm 字段，overrides 迁到这里才不会被忽略。
+overrides:
+  vite: 6.3.5
+
+# pnpm 10 默认拦截依赖的构建脚本，esbuild / tailwindcss 的原生二进制靠 postinstall 落盘，
+# 不显式放行则换机器或上 CI 必然构建失败。
+onlyBuiltDependencies:
+  - esbuild
+  - '@tailwindcss/oxide'
+  - '@tailwindcss/oxide-darwin-arm64'
+  - '@tailwindcss/oxide-darwin-x64'
+  - '@tailwindcss/oxide-linux-arm64-gnu'
+  - '@tailwindcss/oxide-linux-arm64-musl'
+  - '@tailwindcss/oxide-linux-x64-gnu'
+  - '@tailwindcss/oxide-linux-x64-musl'

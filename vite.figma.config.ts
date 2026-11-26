@@ -13,6 +13,13 @@ import siteConfiguration from './.figma/make/site.json'
 import packageAliases from './.figma/make/migrated-package-aliases.json'
 import userConfig from './vite.config'
 
+// vite.config.ts 导出的是对象，但这份包装代码同时要兼容「函数式 config」，
+// 而默认导出的类型只标成 UserConfig，typeof 收窄后函数分支会变成 never。
+// 显式声明联合类型，让两种形态都能通过类型检查。
+const resolvedUserConfig = userConfig as
+  | UserConfig
+  | ((env: ConfigEnv) => UserConfig | Promise<UserConfig>)
+
 const FIGMA_ASSET_PREFIX = 'figma:asset/'
 const ASSET_FILENAME_ALIASES_PATH = '.figma/make/asset-filename-aliases.json'
 
@@ -81,7 +88,9 @@ export default defineConfig(async (env) =>
 )
 
 async function resolveUserConfig(env: ConfigEnv): Promise<UserConfig> {
-  return typeof userConfig === 'function' ? await userConfig(env) : await userConfig
+  return typeof resolvedUserConfig === 'function'
+    ? await resolvedUserConfig(env)
+    : await resolvedUserConfig
 }
 
 function figmaPackageSchemeResolver(): Plugin {
