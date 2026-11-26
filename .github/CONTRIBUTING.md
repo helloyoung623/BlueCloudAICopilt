@@ -137,6 +137,16 @@ cp .env.example .env
 
 同一分支多次推送会自动取消旧运行。
 
+浏览器回归是单独的可选命令，不进 `pnpm check`（CI 容器不保证有本机 Chrome）：
+
+```bash
+pnpm test:browser
+```
+
+它会在临时目录跑一次生产构建并起本地静态服务，所有 `/api/chat` 由测试内可控 SSE
+拦截，不访问真实模型。需要本机 Chrome；不在默认路径时设置 `CHROME_PATH`，
+也可以设置 `APP_URL` 复用已启动的预览。
+
 ---
 
 ## 四、main 分支保护规则
