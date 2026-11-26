@@ -8,8 +8,6 @@ import lottieData from "../assets/radar-arc.light.json";
 type Keyframe = { t: number; v: number; hold: boolean };
 type Dot = { cx: number; cy: number; r: number; color: string; kf: Keyframe[] };
 
-const CANVAS_W = lottieData.w;
-const CANVAS_H = lottieData.h;
 const FPS = lottieData.fr;
 const IN_FRAME = lottieData.ip;
 const OUT_FRAME = lottieData.op;
@@ -34,6 +32,20 @@ const DOTS: Dot[] = (lottieData.layers as LottieLayer[]).map(layer => {
   const [r, g, b] = (fill?.c?.k ?? [0, 0, 0, 1]).map(n => Math.round(n * 255));
   return { cx, cy, r: size / 2, color: `rgb(${r},${g},${b})`, kf };
 });
+
+// Lottie 画布是 360×360，但图形只占 15~345（四周各留 15 的空白）。若直接拿画布当 viewBox，
+// 16px 下可见图形只有 330/360×16 ≈ 14.7px，比同样标 16px 的点阵图标（精确铺满 16px）小一圈。
+// 这里按所有圆点的实际外沿算 viewBox，让墨迹填满 size 指定的方框。
+const INK = DOTS.reduce(
+  (box, dot) => ({
+    minX: Math.min(box.minX, dot.cx - dot.r),
+    minY: Math.min(box.minY, dot.cy - dot.r),
+    maxX: Math.max(box.maxX, dot.cx + dot.r),
+    maxY: Math.max(box.maxY, dot.cy + dot.r)
+  }),
+  { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+);
+const VIEW_BOX = `${INK.minX} ${INK.minY} ${INK.maxX - INK.minX} ${INK.maxY - INK.minY}`;
 
 // Lottie 的关键帧 h:1 表示保持上一帧的值直到下一个关键帧（阶梯变化）
 function opacityAt(kf: Keyframe[], frame: number): number {
@@ -76,7 +88,7 @@ export function RadarArcLoader({ size = 16, opacityScale = 1, className }: { siz
   return (
     <svg
       ref={svgRef}
-      viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
+      viewBox={VIEW_BOX}
       width={size}
       height={size}
       aria-hidden
