@@ -161,6 +161,7 @@ function createSession({ res, call, mock }) {
     body: call.body,
     sentText: "",
     answerStarted: false,
+    answerEnded: false,
     clientClosed: false,
     finished: false,
     closed,
@@ -207,6 +208,43 @@ function createSession({ res, call, mock }) {
         followUps: [],
       }),
     );
+    session.finished = true;
+    res.end();
+    return true;
+  };
+
+  // 只发 answer.end：正文结束，推荐追问还在服务端生成，连接保持打开。
+  // 用来验证「正文一到 answer.end 就恢复发送按钮」，以及之后旧轮次迟到的 run.end。
+  session.answerEnd = () => {
+    if (!session.open) return false;
+    if (!session.answerStarted) throw new Error("正文还没开始：answer.end 不能早于 answer.start");
+    res.write(sseFrame("answer.end", {}));
+    session.answerEnded = true;
+    return true;
+  };
+
+  // 只发 run.end：模拟「正文早就结束、剩下的内容现在才到」的迟到收尾。
+  session.runEnd = (options = {}) => {
+    if (!session.open) return false;
+    const text = options.text ?? session.sentText;
+    res.write(sseFrame("run.end", { text, plainText: text, followUps: options.followUps ?? [] }));
+    session.finished = true;
+    res.end();
+    return true;
+  };
+
+  // 连接直接结束（EOF），不发任何结束事件：模拟服务端中途断开。
+  session.endStream = () => {
+    if (!session.open) return false;
+    session.finished = true;
+    res.end();
+    return true;
+  };
+
+  // 正文发完后连接直接结束：正文完整、后续内容缺失。
+  session.endAfterAnswer = () => {
+    if (!session.open) return false;
+    session.answerEnd();
     session.finished = true;
     res.end();
     return true;
@@ -549,6 +587,41 @@ export async function waitForIdle(page, timeout = 8000) {
     () => ![...document.querySelectorAll("button")].some((b) => b.getAttribute("aria-label") === "暂停生成"),
     { timeout },
   );
+}
+
+// 回答下方的操作项（重新生成 / 复制 / 来源）。
+// 自动化卡片还没到时（消息上挂着 automationPending）这些操作项不会出现，
+// 所以「操作项恢复」这样断言：看 AI 回答这一行的按钮真的挂到了 DOM 上。
+// 注意用户消息也有一个「复制」按钮，所以这里必须限定在 .ac-actions 这一行里。
+export const hasVisibleActions = (page) =>
+  page.evaluate(
+    () =>
+      [...document.querySelectorAll(".ac-actions button")].some(
+        (b) => b.getAttribute("aria-label") === "复制" && !!b.offsetParent,
+      ),
+  );
+
+export async function waitForActions(page, timeout = 8000) {
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".ac-actions button")].some(
+        (b) => b.getAttribute("aria-label") === "复制" && !!b.offsetParent,
+      ),
+    { timeout },
+  );
+}
+
+export async function waitForCalls(mock, count, timeout = 10000) {
+  // 旧连接可能一直没关（正文结束但追问还在生成），所以要按「第几个请求」等，
+  // 不能只看「当前还开着的最后一个会话」。
+  const started = Date.now();
+  while (mock.calls.length < count) {
+    if (Date.now() - started > timeout) {
+      throw new Error(`等待第 ${count} 个请求超时：目前只收到 ${mock.calls.length} 个`);
+    }
+    await sleep(50);
+  }
+  return mock.sessions.at(-1);
 }
 
 export async function sendMessage(page, text) {

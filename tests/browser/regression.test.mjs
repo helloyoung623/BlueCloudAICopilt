@@ -12,6 +12,7 @@ import {
   clickAria,
   clickSidebarTask,
   clickText,
+  hasVisibleActions,
   hasVisibleButton,
   makeFixtureFiles,
   resolveChrome,
@@ -22,6 +23,8 @@ import {
   waitForIdle,
   waitForPause,
   waitForText,
+  waitForActions,
+  waitForCalls,
   withPage,
 } from "./harness.mjs";
 
@@ -33,6 +36,10 @@ const RUNNING_TEXT = "读取邮箱里的未读邮件";
 // 执行过程结束（含暂停）后，界面会把「正在…」改写成「已…」，断言用不受前缀影响的片段。
 const RUNNING_SUMMARY = `正在${RUNNING_TEXT}`;
 const LATE_CHUNK = "暂停后不应出现的追加内容";
+// 自动化创建这一轮收到的一段正文
+const AUTOMATION_BODY = "已收到，正在创建自动化任务";
+// 旧轮次迟到送来的正文：不该出现在会话里
+const LATE_OLD_TEXT = "旧轮次迟到的正文";
 
 let app;
 let browser;
@@ -253,8 +260,156 @@ test("请求失败：按失败处理并保留失败提示，不与主动停止�
   });
 });
 
-test("自动化卡片状态同步：卡片暂停后列表同步为已暂停", { timeout: 90000 }, async () => {
+// 从「新建自动化任务」弹窗发起一轮真实会话：
+// 条件以 seed 传给服务端，自动化卡片要等 run.end 兜底生成（正文先到、卡片后到）。
+// 这一轮里回答会挂上 automationPending，卡片不到就一直等。
+async function startAutomationCreation(page, mock) {
+  mock.hold();
+  assert.ok(await clickText(page, "自动化任务"), "应能进入自动化任务页");
+  assert.ok(await clickText(page, "新建"), "应能打开新建自动化任务弹窗");
+  await page.waitForSelector('textarea[placeholder="希望我干什么？"]', { timeout: 8000 });
+  await page.type('textarea[placeholder="希望我干什么？"]', `每天早上${TITLE}`);
+  assert.ok(await clickText(page, "创建"), "应能提交创建");
+  const session = await mock.waitForSession();
+  assert.ok(session.body.automationSeed, "弹窗条件应以 seed 传给会话");
+  await waitForPause(page);
+  return session;
+}
+
+// 停止自动化创建：这一轮的卡片不会再兑现，等待标记必须清掉，
+// 否则回答永远停在「等卡片」状态，操作项也一直不出现。
+// 已经建出来的任务要保留，没建出来的不能伪造成功。
+test("停止自动化创建：清掉不会兑现的卡片等待，正文保留、操作项恢复", { timeout: 90000 }, async () => {
   await withPage(browser, app, async ({ page, mock, errors }) => {
+    const session = await startAutomationCreation(page, mock);
+
+    // 创建过程中先收到一部分正文
+    assert.equal(session.beginAnswer(AUTOMATION_BODY), true, "应能显式开始正文");
+    await waitForText(page, AUTOMATION_BODY, 10000);
+    // 卡片还没到：回答此刻在等卡片，操作项先不出现
+    assert.ok(!(await hasVisibleActions(page)), "卡片还没到时操作项应先压住");
+
+    // 用户在这一轮里点了暂停
+    assert.ok(await clickAria(page, "暂停生成"), "创建过程中应能暂停");
+    assert.equal(await session.waitForClientClose(10000), true, "暂停后服务端应看到连接关闭");
+    assert.equal(session.delta(LATE_CHUNK), false, "连接已关闭，不应再写入");
+
+    await waitForIdle(page);
+    await waitForActions(page);
+    const chat = await chatText(page);
+    assert.ok(chat.includes(AUTOMATION_BODY), "暂停前已收到的正文要保留");
+    assert.ok(!chat.includes(LATE_CHUNK), "暂停后不应再有内容追加");
+    assert.ok(!chat.includes("任务已完成"), "被中断的这一轮不能显示「任务已完成」");
+    // 没建出来的任务不能伪造成功：这一轮只收到了正文，没有工具创建任务。
+    assert.equal(
+      await page.$$eval("[data-automation-card]", (cards) => cards.length),
+      0,
+      "没建出来的自动化任务不应出现卡片",
+    );
+    // 操作项恢复：不能永远停在「等卡片」状态。
+    assert.ok(await hasVisibleActions(page), "回答下方的操作项应恢复");
+    assert.ok(await hasVisibleButton(page, "发送消息"), "暂停后发送按钮应恢复");
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
+// 连接先断了（EOF），但这一轮只写了一半正文：不能当成功，按既有失败处理。
+test("非完整 SSE 结束：正文没写完就断开，按失败处理不当成成功", { timeout: 90000 }, async () => {
+  await withPage(browser, app, async ({ page, mock, errors }) => {
+    mock.hold({ summary: RUNNING_SUMMARY, title: "读取未读邮件" });
+    assert.ok(await sendMessage(page, "半截就断"));
+    const session = await mock.waitForSession();
+    await waitForPause(page);
+
+    assert.equal(session.beginAnswer(CHUNK_1), true, "应能显式开始正文");
+    await waitForText(page, CHUNK_1, 10000);
+
+    // 服务端没发 answer.end 就把连接关了
+    assert.equal(session.endStream(), true, "应能直接结束连接");
+    await waitForIdle(page);
+    await waitForText(page, "模型调用失败", 8000);
+    await page.waitForFunction(
+      () => !!document.querySelector('button[aria-label="发送失败，点击重试"]'),
+      { timeout: 8000 },
+    );
+    const chat = await chatText(page);
+    assert.ok(!chat.includes("已停止生成"), "异常结束不是用户主动停止，不应显示已停止生成");
+    assert.ok(!chat.includes("任务已完成"), "没写完的回答不能显示任务已完成");
+    assert.ok(await hasVisibleButton(page, "发送消息"), "异常结束后应恢复发送按钮");
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
+// 连接先断了（EOF），但正文已经写完（answer.end 已到）：正文是真的，
+// 收尾即可，不当失败，也不能让生成状态停在「生成中」。
+// 这一轮用「从弹窗发起创建」来跑：回答本来在等卡片，连接断了就必须收尾，
+// 不能永远停在「等卡片」状态。
+test("非完整 SSE 结束：正文写完但追问没来，正文保留、不按失败处理", { timeout: 90000 }, async () => {
+  await withPage(browser, app, async ({ page, mock, errors }) => {
+    const session = await startAutomationCreation(page, mock);
+
+    assert.equal(session.beginAnswer(AUTOMATION_BODY), true, "应能显式开始正文");
+    await waitForText(page, AUTOMATION_BODY, 10000);
+
+    // answer.end 到了，推荐追问没来，连接直接关掉
+    assert.equal(session.endAfterAnswer(), true, "应能在正文结束后直接关掉连接");
+    await waitForIdle(page);
+    await waitForActions(page);
+    const chat = await chatText(page);
+    assert.ok(chat.includes(AUTOMATION_BODY), "已经写完的正文要保留");
+    assert.ok(!(await hasVisibleButton(page, "发送失败，点击重试")), "正文完成了就不该按失败处理");
+    assert.ok(await hasVisibleActions(page), "回答下方的操作项应恢复，不能一直等卡片");
+    assert.equal(
+      await page.$$eval("[data-automation-card]", (cards) => cards.length),
+      0,
+      "没建出来的自动化任务不应出现卡片",
+    );
+    assert.ok(await hasVisibleButton(page, "发送消息"), "发送按钮应恢复");
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
+// answer.end 单独到达（run.end 还没来）：发送按钮立刻恢复。
+// 此时再次发送，旧轮次迟到的 run.end 不能改到新一轮。
+test("answer.end 单独到达：发送按钮立即恢复，旧轮次迟到事件不影响新一轮", { timeout: 90000 }, async () => {
+  await withPage(browser, app, async ({ page, mock, errors }) => {
+    mock.hold({ summary: RUNNING_SUMMARY, title: "读取未读邮件", tool: RUNNING_TEXT });
+    assert.ok(await sendMessage(page, "第一轮只发正文"));
+    const session = await mock.waitForSession();
+    await waitForPause(page);
+
+    assert.equal(session.beginAnswer(CHUNK_1), true, "应能显式开始正文");
+    await waitForText(page, CHUNK_1, 10000);
+
+    // 只发 answer.end，连接保持打开（推荐追问还在服务端生成）
+    assert.equal(session.answerEnd(), true, "应能只发 answer.end");
+    await waitForIdle(page);
+    assert.ok(await hasVisibleButton(page, "发送消息"), "answer.end 后应立即恢复发送按钮");
+    assert.ok(!(await hasVisibleButton(page, "暂停生成")), "run.end 还没到，不该继续显示暂停");
+    assert.equal(session.open, true, "answer.end 之后连接应保持打开");
+
+    // 此时再次发送：新一轮开始，旧连接还开着
+    assert.ok(await sendMessage(page, "第二轮"));
+    const second = await waitForCalls(mock, 2);
+    assert.notEqual(second.index, session.index, "第二轮应是另一个请求");
+    await waitForPause(page);
+    assert.ok(await hasVisibleButton(page, "暂停生成"), "新一轮应在生成中");
+
+    // 旧轮次迟到的事件：服务端这时才把 run.end 送来
+    assert.equal(session.open, true, "旧连接此时仍应是打开的");
+    assert.equal(session.runEnd({ text: LATE_OLD_TEXT }), true, "旧轮次的迟到 run.end 应能送达");
+    await sleep(800);
+
+    const chat = await chatText(page);
+    assert.ok(!chat.includes(LATE_OLD_TEXT), "旧轮次迟到的结束事件不能改到新一轮");
+    assert.ok(chat.includes(CHUNK_1), "上一轮已收到的正文仍在");
+    assert.ok(await hasVisibleButton(page, "暂停生成"), "新一轮仍在生成中，不该被旧轮次的事件带偏");
+    assert.ok(!(await hasVisibleButton(page, "发送消息")), "新一轮生成中不该出现发送按钮");
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
+test("自动化卡片状态同步：卡片暂停后列表同步为已暂停", { timeout: 90000 }, async () => {  await withPage(browser, app, async ({ page, mock, errors }) => {
     await createAutomation(page, mock);
     const card = await page.$eval("[data-automation-card]", (el) => ({
       status: el.dataset.automationStatus,

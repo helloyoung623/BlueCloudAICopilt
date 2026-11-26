@@ -39,17 +39,52 @@ export const endGeneration = (state: GenerationState): GenerationState => ({
 
 export const isGenerating = (state: GenerationState | undefined): boolean => Boolean(state?.generating);
 
-// 一轮被中断（用户点「暂停生成」，或同一会话里又发起了新一轮）时的消息收尾：
+// 连接层面结束时这一轮属于哪种结局。
+//
+// 服务端可能只发一半就把连接关掉（EOF），既没有 answer.end 也没有 run.end。
+// 这时候必须分清四种情况，既不能让生成状态永久停在「生成中」，也不能把没写完的回答当成功：
+//   cancelled —— 用户主动停止：请求被中断，不是故障，已收到的内容保留。
+//   completed —— 整轮收齐（正文 + 推荐追问）。
+//   body-only —— 正文已发完，只是推荐追问没来：正文是真的，收尾但不报失败。
+//   failed    —— 正文都没写完：异常结束，按失败处理。
+export type StreamEndKind = "cancelled" | "completed" | "body-only" | "failed";
+
+export type StreamEndInput = {
+  // 请求是不是被中断（用户点「暂停生成」）。
+  aborted: boolean;
+  // 有没有收到 answer.end（正文结束）。
+  sawAnswerEnd: boolean;
+  // 有没有收到 run.end（整轮结束）。
+  sawRunEnd: boolean;
+};
+
+export function classifyStreamEnd({ aborted, sawAnswerEnd, sawRunEnd }: StreamEndInput): StreamEndKind {
+  if (aborted) return "cancelled";
+  if (sawRunEnd) return "completed";
+  if (sawAnswerEnd) return "body-only";
+  return "failed";
+}
+
+// 一轮被中断（用户点「暂停生成」，或同一会话里又发起了新一轮）时的收尾参数。
+export type FinalizeRoundOptions = {
+  // 这一轮的运行号：靠它精确认出「当前这一轮」的执行过程与正文，不误伤更早的轮次。
+  runId?: number;
+  // 这一轮是不是被打断的：是就把它的执行过程标成「已停止生成」。
+  interrupted?: boolean;
+  // 真的建出来的自动化任务卡片：挂回这一轮的回答；没有就不挂，绝不伪造成功。
+  automation?: Message["automation"];
+};
+
+// 收尾一轮被中断的消息：
 //   - 执行过程：保留已经记下的步骤，标记 stopped，界面显示「已停止生成」而不是「任务已完成」
 //   - 正文：保留已经收到的内容并结束打字机；一个字都没收到时不留下空回答
-//
-// stopRunId：被中断的是哪一轮。执行过程消息带 runId，靠它精确认出「当前这一轮」的执行过程，
-// 不会误伤更早、已经正常完成（显示「任务已完成」）的轮次。
+//   - 还在等自动化卡片的回答：卡片不会再来了，清掉等待标记，操作项照常出现
 export function finalizeInterruptedMessages(
   messages: readonly Message[],
-  options?: { stopRunId?: number },
+  options?: FinalizeRoundOptions,
 ): Message[] {
-  const stopRunId = options?.stopRunId;
+  const runId = options?.runId;
+  const card = options?.automation;
   let changed = false;
   const result: Message[] = [];
   for (const message of messages) {
@@ -61,7 +96,7 @@ export function finalizeInterruptedMessages(
     }
     // 当前这一轮的执行过程：哪怕工具已经跑完、正文还在流，也算「已停止生成」，
     // 不能让用户看到「任务已完成」。
-    if (message.role === "process" && stopRunId !== undefined && message.runId === stopRunId) {
+    if (message.role === "process" && options?.interrupted && runId !== undefined && message.runId === runId) {
       changed = true;
       result.push({ ...message, stopped: true });
       continue;
@@ -70,11 +105,62 @@ export function finalizeInterruptedMessages(
     if (message.role === "ai" && message.streaming) {
       changed = true;
       if (!(message.text ?? "").trim()) continue;
-      result.push({ ...message, streaming: false, bodyDone: true });
+      result.push(finalizeBodyMessage(message, runId, card));
+      continue;
+    }
+    // 还在等自动化卡片的回答：卡片不会再来了，不能让回答永远停在「等卡片」状态。
+    if (message.role === "ai" && message.automationPending) {
+      changed = true;
+      result.push({ ...message, automationPending: false });
       continue;
     }
     result.push(message);
   }
   // 没有任何残留就原样返回，调用方不必因为一次空操作多渲染一轮。
   return changed ? result : (messages as Message[]);
+}
+
+// 收尾「正文已写完、只是后续内容没来」的一轮（例如连接先断了，推荐追问没到）。
+// 正文是真的：保留内容、结束打字机、恢复操作项；执行过程已经跑完，不标「已停止生成」。
+export function finalizeBodyOnlyMessages(
+  messages: readonly Message[],
+  options?: FinalizeRoundOptions,
+): Message[] {
+  const runId = options?.runId;
+  const card = options?.automation;
+  let changed = false;
+  const result: Message[] = [];
+  for (const message of messages) {
+    if (message.role === "ai" && message.streaming) {
+      changed = true;
+      if (!(message.text ?? "").trim()) continue;
+      result.push(finalizeBodyMessage(message, runId, card));
+      continue;
+    }
+    // 还在等自动化卡片的回答：这一轮不会再有卡片了，不能让回答永远停在「等卡片」状态。
+    if (message.role === "ai" && message.automationPending) {
+      changed = true;
+      result.push({ ...message, automationPending: false });
+      continue;
+    }
+    result.push(message);
+  }
+  return changed ? result : (messages as Message[]);
+}
+
+// 正文消息的统一收尾：结束打字机、清掉「还在等卡片」的标记，必要时挂回真的建出来的卡片。
+function finalizeBodyMessage(
+  message: Message,
+  runId: number | undefined,
+  card: Message["automation"] | undefined,
+): Message {
+  const next: Message = {
+    ...message,
+    streaming: false,
+    bodyDone: true,
+    ...(message.automationPending ? { automationPending: false } : {}),
+  };
+  // 卡片只挂回它自己那一轮的回答；别的轮次不碰，也不凭空造一张。
+  if (card && message.runId === runId) next.automation = card;
+  return next;
 }

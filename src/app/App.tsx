@@ -44,7 +44,7 @@ import { ListPageHeader } from "./components/list-page-header";
 import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, useDismissOnOutside, TASK_OPERATIONS, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
 import type { AgentRound, HistoryItem, Message, ProcessPreset, ProcessVariant, ToolKind } from "./chat/types";
 import { deriveUnreadState, findLastIndex, freezePreviousMessages, getAnswerDoneKey, markConversationRead, toInstantMessages, updateConversationInHistory } from "./chat/conversation-state";
-import { beginBody, endGeneration, finalizeInterruptedMessages, isGenerating, startGeneration } from "./chat/generation-state";
+import { beginBody, classifyStreamEnd, endGeneration, finalizeBodyOnlyMessages, finalizeInterruptedMessages, isGenerating, startGeneration } from "./chat/generation-state";
 import type { GenerationState } from "./chat/generation-state";
 import type { OutlinePage, PptMode, PptPageCount, PptStage } from "./ppt/types";
 import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/launch";
@@ -691,6 +691,7 @@ export default function App() {
       activeRunId.current++;
       // 删掉正在执行的步骤：作废该会话的后台流程，避免回调又把消息补回来
       if (activeHistoryId !== null) {
+        const deletedRunId = runIdByConversation.current.get(activeHistoryId);
         runIdByConversation.current.delete(activeHistoryId);
         // 删的正是还在跑的那一步：把请求也断掉、生成状态清掉，
         // 否则发送按钮会一直停在「暂停生成」。
@@ -698,6 +699,12 @@ export default function App() {
           streamAbortByConversation.current.get(activeHistoryId)?.abort();
           streamAbortByConversation.current.delete(activeHistoryId);
           updateGeneration(activeHistoryId, () => undefined);
+          // 这一轮不会再兑现的等待：卡片缓存与弹窗发起参数一并清掉。
+          const deletedKey = deletedRunId !== undefined ? `${activeHistoryId}:${deletedRunId}` : undefined;
+          if (deletedKey) {
+            pendingAutomation.current.delete(deletedKey);
+            launchAutomation.current.delete(deletedKey);
+          }
         }
       }
     }
@@ -819,14 +826,31 @@ export default function App() {
     const processText = text || "处理上传的文件";
     // 同一会话里发起新一轮前，先把上一轮没收尾的残留收掉：断开旧请求、保留已收到的正文、
     // 把没跑完的执行过程标记为「已停止生成」。否则旧轮次会一直转圈，正文也永远打不完。
+    // 正文已经发完的上一轮例外：不掐断它的连接，让服务端把剩下的部分（推荐追问）发完；
+    // 它迟到的结束事件会被运行号守卫丢弃，不会改到新一轮。
+    let keepPreviousStream = false;
     if (!isNewConversation) {
       const previous = generationByConversation.get(convId);
       const wasGenerating = isGenerating(previous);
-      streamAbortByConversation.current.get(convId)?.abort();
-      streamAbortByConversation.current.delete(convId);
+      const previousRunId = previous?.runId;
+      keepPreviousStream = previous?.phase === "idle";
+      if (!keepPreviousStream) {
+        streamAbortByConversation.current.get(convId)?.abort();
+        streamAbortByConversation.current.delete(convId);
+      }
+      // 上一轮不会再兑现的等待：卡片缓存与弹窗发起参数。真的建出来的卡片挂回上一轮的回答，
+      // 没建出来的绝不伪造成功。
+      const previousKey = previousRunId !== undefined ? `${convId}:${previousRunId}` : undefined;
+      const previousCard = previousKey ? pendingAutomation.current.get(previousKey) : undefined;
+      if (previousKey) {
+        pendingAutomation.current.delete(previousKey);
+        launchAutomation.current.delete(previousKey);
+      }
       // 上一轮还在生成中才把它算作「已停止生成」；已经正常结束的轮次保持「任务已完成」。
       applyToConversation(convId, prev => finalizeInterruptedMessages(prev, {
-        stopRunId: wasGenerating ? previous?.runId : undefined,
+        runId: previousRunId,
+        interrupted: wasGenerating,
+        automation: previousCard,
       }));
     }
     // 真 agent 链路不预置任何本地工具步骤：模型没发 tool.call 前只显示中性的「正在理解」，
@@ -869,7 +893,8 @@ export default function App() {
 
     // 普通提问：走真实模型流式输出；PPT / 卡片演示仍保留原模拟链路
     if (useRealAgent) {
-      streamAbortByConversation.current.get(convId)?.abort();
+      // 上一轮正文已经发完时保留它的连接（让它自己走完）；其余情况一律掐断。
+      if (!keepPreviousStream) streamAbortByConversation.current.get(convId)?.abort();
       const abortController = new AbortController();
       streamAbortByConversation.current.set(convId, abortController);
       realToolMode.current.delete(convId);
@@ -889,6 +914,9 @@ export default function App() {
       let aiAppended = false;
       let fullText = "";
       let answerStarted = false;
+      // 这一轮收到过哪些结束事件：连接先断了（EOF）时靠它们分清结局
+      let sawAnswerEnd = false;
+      let sawRunEnd = false;
       // 结果自检结论：verify.result 在 answer.start 之前就到，先存着，建消息时带上
       let verifyState: Message["verify"];
       const isCurrent = () => runIdByConversation.current.get(convId) === runId && !abortController.signal.aborted;
@@ -1187,6 +1215,7 @@ export default function App() {
           // 正文已发完，推荐追问还在服务端生成：先标记 bodyDone，
           // 打字机收尾后操作项立即出现，不再跟推荐问题一起出来。
           // 正文结束＝整轮生成结束：恢复发送按钮，不因为推荐追问还在生成就一直是「暂停生成」。
+          sawAnswerEnd = true;
           updateGeneration(convId, state => (state && state.runId === runId ? endGeneration(state) : state));
           applyToConversation(convId, prev => {
             const next = [...prev];
@@ -1195,6 +1224,7 @@ export default function App() {
             return next;
           });
         } else if (event.type === "run.end") {
+          sawRunEnd = true;
           const finalText = typeof event.data.text === "string" && event.data.text ? event.data.text : fullText;
           const plainText = typeof event.data.plainText === "string" && event.data.plainText ? event.data.plainText : undefined;
           // 来源只有服务端真实下发且非空时才落到消息；无来源的回答不带此字段，徽标不显示。
@@ -1271,6 +1301,34 @@ export default function App() {
       };
 
       streamChat({ messages: apiMessages, runId, signal: abortController.signal, automationRun: options?.automationRun === true, automationSeed: options?.launch?.seed, onEvent: handleEvent })
+        .then(() => {
+          // 连接结束了，但这一轮可能没走完（服务端中途断开，或少了结束事件）。
+          // 靠 classifyStreamEnd 分清四种结局：主动取消 / 整轮收齐 / 正文完成但追问缺失 / 正文未完成的异常结束。
+          const kind = classifyStreamEnd({ aborted: abortController.signal.aborted, sawAnswerEnd, sawRunEnd });
+          // 主动取消与正常收齐都已经各自收尾，这里不重复处理。
+          if (kind === "cancelled" || kind === "completed") return;
+          // 已被同一会话的新一轮取代：迟到的收尾不许改当前轮次。
+          if (!isCurrent()) return;
+          if (streamAbortByConversation.current.get(convId) === abortController) {
+            streamAbortByConversation.current.delete(convId);
+          }
+          // 这一轮不会再兑现的等待：卡片缓存与弹窗发起参数。真的建出来的卡片挂回这条回答，
+          // 没建出来的绝不伪造成功。
+          const automationKey = `${convId}:${runId}`;
+          const card = pendingAutomation.current.get(automationKey);
+          pendingAutomation.current.delete(automationKey);
+          launchAutomation.current.delete(automationKey);
+          if (kind === "body-only") {
+            // 正文已经写完，只是推荐追问没来：正文保留、收尾，发送按钮恢复，不当故障。
+            updateGeneration(convId, state => (state && state.runId === runId ? endGeneration(state) : state));
+            applyToConversation(convId, prev => finalizeBodyOnlyMessages(prev, { runId, automation: card }));
+            return;
+          }
+          // 正文都没写完：异常结束，按既有失败处理，不把不完整回答当成功。
+          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
+          clearProcessAndFail();
+          if (activeHistoryIdRef.current === convId) toast.error("模型调用失败");
+        })
         .catch(error => {
           // 用户主动停止时请求会被中断：这不是故障，走停止分支，不弹失败提示。
           if (!isCurrent()) return;
@@ -1359,6 +1417,7 @@ export default function App() {
     const convId = activeHistoryIdRef.current;
     if (convId === null) return;
     const state = generationByConversation.get(convId);
+    const runId = state?.runId;
     activeRunId.current += 1;
     // 作废本会话的运行号：之后到达的迟到事件不再改消息，也不影响下一轮请求。
     runIdByConversation.current.delete(convId);
@@ -1366,9 +1425,21 @@ export default function App() {
     streamAbortByConversation.current.delete(convId);
     // 状态回到「未生成中」：发送按钮恢复成发送。
     updateGeneration(convId, current => (current ? endGeneration(current) : undefined));
+    // 清理这一轮不会再兑现的等待：卡片缓存与弹窗发起参数。
+    // 真的建出来的任务已经在列表里，卡片也挂回这条回答；没建出来的绝不伪造成功。
+    const automationKey = runId !== undefined ? `${convId}:${runId}` : undefined;
+    const card = automationKey ? pendingAutomation.current.get(automationKey) : undefined;
+    if (automationKey) {
+      pendingAutomation.current.delete(automationKey);
+      launchAutomation.current.delete(automationKey);
+    }
     // 保留已经收到的正文和已经记下的执行步骤；这一轮的执行过程显示「已停止生成」，
     // 不显示「任务已完成」，也不当成请求故障（不弹失败提示、不把消息标成发送失败）。
-    applyToConversation(convId, prev => finalizeInterruptedMessages(prev, { stopRunId: state?.runId }));
+    applyToConversation(convId, prev => finalizeInterruptedMessages(prev, {
+      runId,
+      interrupted: true,
+      automation: card,
+    }));
     setStage("idle");
   };
 
