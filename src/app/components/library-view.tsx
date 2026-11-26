@@ -5,8 +5,10 @@ import { OperationMenu } from "./operation-menu";
 import { SmallTip } from "./task-artifacts";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog";
 import { ListPageHeader } from "./list-page-header";
-import { FileFilterButton, formatByExtension, matchFileFilters } from "./file-filter";
+import { FileFilterButton, formatByExtension, hasActiveFileFilters, matchFileFilters } from "./file-filter";
 import type { FileFormat, TimeFilter } from "./file-filter";
+import { resolveLibraryEmptyState } from "./library-empty-state";
+import type { LibraryRecoveryAction } from "./library-empty-state";
 import "./library-view.css";
 
 type LibraryFile = {
@@ -170,6 +172,29 @@ export function LibraryView({ active, onAddToTask, projects, onUploadToProject, 
   }, [menu]);
 
   const visible = files.filter(file => matchFileFilters(file, { query, formats: selectedFormats, timeFilter }));
+  // 无结果时给什么文案、给哪个恢复操作，由这一处判定；组件只负责执行恢复动作。
+  const emptyState = resolveLibraryEmptyState({
+    totalCount: files.length,
+    query,
+    filtersActive: hasActiveFileFilters(selectedFormats, timeFilter),
+  });
+  const recovery = emptyState.recovery;
+
+  // 恢复操作只改当前搜索/筛选条件，不删文件、不重载页面、不动文件顺序
+  const applyRecovery = (action: LibraryRecoveryAction) => {
+    if (action === "clear-search") {
+      setQuery("");
+      return;
+    }
+    if (action === "reset-filters") {
+      setSelectedFormats([]);
+      setTimeFilter(null);
+      return;
+    }
+    setQuery("");
+    setSelectedFormats([]);
+    setTimeFilter(null);
+  };
 
   const chooseAction = (action: string, file: LibraryFile) => {
     setMenu(null);
@@ -219,9 +244,10 @@ export function LibraryView({ active, onAddToTask, projects, onUploadToProject, 
               <td className="library-col-size">{file.size}</td>
             </tr>)}</tbody>
           </table>
-        </div> : <div className="library-empty">
+        </div> : <div className={`library-empty${recovery ? " library-empty-recovery" : ""}`}>
           <img src="/assets/c0d09.png" alt="" />
-          <span>{files.length === 0 ? "暂无资料" : "没有符合筛选条件的资料"}</span>
+          <span>{emptyState.title}</span>
+          {recovery && <button type="button" className="library-empty-action" onClick={() => applyRecovery(recovery.action)}>{recovery.label}</button>}
         </div>}
       </div>
 
