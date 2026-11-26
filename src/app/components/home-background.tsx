@@ -4,15 +4,19 @@ import { ChishShader } from "./chish-shader";
 
 const INTRO_KEY = "home-bg-intro-last";              // localStorage：上次播放时间（跨会话，决定 3 小时间隔）
 const SESSION_KEY = "home-bg-intro-session";          // sessionStorage：本次会话是否已经播过
+const LOGIN_FLAG = "wb:login-success";                // 登录页登录成功后写的一次性标记（App 消费后删除）
 const INTRO_INTERVAL = 3 * 60 * 60 * 1000;           // 开场动效间隔：3 小时（仅同一次会话内生效）
 
 /**
  * 是否播开场：
- * - 每次登录/新会话进来（sessionStorage 无标记）→ 强制播，不受 3 小时限制；
+ * - 刚登录进来（sessionStorage 有 wb:login-success，登录页写入、跳转首页）→ 强制播，不受 3 小时限制；
+ * - 新会话（本组件标记为空）→ 同样强制播；
  * - 同一会话内切到别的页面再回首页 → 距上次播放不足 3 小时则不播。
+ * 注意：不删除 LOGIN_FLAG，留给 App 弹「登录成功」toast 用。
  */
 function shouldPlayIntro(): boolean {
   try {
+    if (sessionStorage.getItem(LOGIN_FLAG)) return true;
     if (!sessionStorage.getItem(SESSION_KEY)) {
       sessionStorage.setItem(SESSION_KEY, "1");
       return true;
