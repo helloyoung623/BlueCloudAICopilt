@@ -31,8 +31,5 @@
     "src",
     "vite.config.ts",
     "vite.figma.config.ts"
-  ],
-  "exclude": [
-    "src/imports/**/index.tsx"
   ]
 }

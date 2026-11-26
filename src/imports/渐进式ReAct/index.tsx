@@ -5,7 +5,7 @@ type loadingProps = {
   text1?: string;
 };
 
-function loading({ className, property1 = "1", text1 = "读取邮件" }: loadingProps) {
+function LoadingText({ className, property1 = "1", text1 = "读取邮件" }: loadingProps) {
   const is2 = property1 === "2";
   return (
     <div className={className || "relative"}>
@@ -326,7 +326,7 @@ function Component9() {
           </svg>
         </div>
       </div>
-      <loading className="relative shrink-0" text1="{正在搜索相关信息}" />
+      <LoadingText className="relative shrink-0" text1="{正在搜索相关信息}" />
     </div>
   );
 }
@@ -438,7 +438,7 @@ function Component11() {
           </svg>
         </div>
       </div>
-      <loading className="relative shrink-0" text1="{正在搜索相关信息}" />
+      <LoadingText className="relative shrink-0" text1="{正在搜索相关信息}" />
     </div>
   );
 }
@@ -453,7 +453,7 @@ function Component12() {
           </svg>
         </div>
       </div>
-      <loading className="relative shrink-0" text1="{搜索结果不够精确，正在重新筛选}" />
+      <LoadingText className="relative shrink-0" text1="{搜索结果不够精确，正在重新筛选}" />
     </div>
   );
 }
