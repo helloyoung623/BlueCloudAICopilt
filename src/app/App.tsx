@@ -905,8 +905,14 @@ export default function App() {
       const ownerMessages = isNewConversation
         ? []
         : (activeHistoryIdRef.current === convId ? messages : (history.find(item => item.id === convId)?.messages ?? []));
+      // 上下文要带上这一会话里已经说出口的内容。
+      // 正文已结束（answer.end 到了）但这一轮还没收尾（run.end 没到）时，这条回答的状态
+      // 还是 streaming，可它其实已经说完了 —— 不能因为状态没收尾就把这段 assistant 正文漏掉，
+      // 否则下一轮请求里模型看不到自己上一轮的回答。
       const prior = (isRegenerate ? ownerMessages.slice(0, options!.regenerateFrom!) : ownerMessages)
-        .filter(m => (m.role === "user" || m.role === "ai") && !m.streaming && !m.sendState)
+        .filter(m => (m.role === "user" || m.role === "ai") && !(m.streaming && !m.bodyDone) && !m.sendState)
+        // 空白的 assistant 轮次不发给服务端：模型会当成自己说过一句空话。
+        .filter(m => m.role === "user" || Boolean((m.plainText || m.text).trim()))
         .map(m => ({ role: (m.role === "ai" ? "assistant" : "user") as "user" | "assistant", content: (m.plainText || m.text).slice(0, 8000) }));
       const attachmentNote = sentAttachments.length ? `[附件：${sentAttachments.map(a => a.name).join("、")}] ` : "";
       const apiMessages = [...prior, { role: "user" as const, content: `${attachmentNote}${text}`.slice(0, 8000) }];

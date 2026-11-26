@@ -153,3 +153,41 @@ test("finalizeBodyOnlyMessages 已经收尾的回答原样保留", () => {
   const next = finalizeBodyOnlyMessages(messages);
   assert.equal(next[0], messages[0]);
 });
+
+test("finalizeInterruptedMessages 任务已建出但正文还没开始：补一条只挂卡片的回答", () => {
+  // create_automation 已经成功、answer.start 还没到：这一轮没有正文消息，
+  // 但真的建出来的任务要留在会话里。正文留空，不编造内容，也不伪造任务成功。
+  const card = { taskId: "automation-1", title: "每天早上汇总未读邮件" };
+  const messages = [
+    msg("user", { text: "建一个自动化任务" }),
+    msg("process", { thinking: true, runId: 7 }),
+  ];
+  const next = finalizeInterruptedMessages(messages, { runId: 7, interrupted: true, automation: card });
+
+  assert.equal(next.length, 3, "应补出一条挂卡片的消息");
+  const created = next[2];
+  assert.equal(created.role, "ai");
+  assert.equal(created.text, "", "不伪造正文");
+  assert.equal(created.automation, card, "真的建出来的卡片挂回会话");
+  assert.equal(created.automationPending, false, "不再等卡片");
+  assert.equal(created.runId, 7, "归属这一轮");
+  assert.equal(next[1].stopped, true, "没跑完的执行过程显示已停止生成");
+});
+
+test("finalizeInterruptedMessages 没有卡片时不补消息", () => {
+  const messages = [msg("process", { thinking: true, runId: 7 })];
+  const next = finalizeInterruptedMessages(messages, { runId: 7, interrupted: true });
+  assert.equal(next.length, 1, "没有真实卡片就不补空消息");
+  assert.equal(next[0].role, "process");
+});
+
+test("finalizeInterruptedMessages 这一轮已有正文消息时卡片挂在原回答上", () => {
+  const card = { taskId: "automation-1", title: "每天早上汇总未读邮件" };
+  const messages = [
+    msg("ai", { text: "已经建好了", streaming: true, runId: 7 }),
+  ];
+  const next = finalizeInterruptedMessages(messages, { runId: 7, interrupted: true, automation: card });
+  assert.equal(next.length, 1, "不再补第二条消息");
+  assert.equal(next[0].automation, card);
+  assert.equal(next[0].text, "已经建好了");
+});

@@ -79,45 +79,13 @@ export type FinalizeRoundOptions = {
 //   - 执行过程：保留已经记下的步骤，标记 stopped，界面显示「已停止生成」而不是「任务已完成」
 //   - 正文：保留已经收到的内容并结束打字机；一个字都没收到时不留下空回答
 //   - 还在等自动化卡片的回答：卡片不会再来了，清掉等待标记，操作项照常出现
+//   - 任务已经真的建出来、正文还没开始（answer.start 没到）时：补一条只挂卡片的回答，
+//     把真的建出来的任务留在会话里；不伪造正文，也不伪造任务成功
 export function finalizeInterruptedMessages(
   messages: readonly Message[],
   options?: FinalizeRoundOptions,
 ): Message[] {
-  const runId = options?.runId;
-  const card = options?.automation;
-  let changed = false;
-  const result: Message[] = [];
-  for (const message of messages) {
-    // 还在思考的执行过程：任何一轮被打断都要收尾，不能一直转圈。
-    if (message.role === "process" && message.thinking) {
-      changed = true;
-      result.push({ ...message, thinking: false, stopped: true });
-      continue;
-    }
-    // 当前这一轮的执行过程：哪怕工具已经跑完、正文还在流，也算「已停止生成」，
-    // 不能让用户看到「任务已完成」。
-    if (message.role === "process" && options?.interrupted && runId !== undefined && message.runId === runId) {
-      changed = true;
-      result.push({ ...message, stopped: true });
-      continue;
-    }
-    // 正在流式输出的正文：保留已收到的内容并结束打字机；一个字都没有就不留下空回答。
-    if (message.role === "ai" && message.streaming) {
-      changed = true;
-      if (!(message.text ?? "").trim()) continue;
-      result.push(finalizeBodyMessage(message, runId, card));
-      continue;
-    }
-    // 还在等自动化卡片的回答：卡片不会再来了，不能让回答永远停在「等卡片」状态。
-    if (message.role === "ai" && message.automationPending) {
-      changed = true;
-      result.push({ ...message, automationPending: false });
-      continue;
-    }
-    result.push(message);
-  }
-  // 没有任何残留就原样返回，调用方不必因为一次空操作多渲染一轮。
-  return changed ? result : (messages as Message[]);
+  return finalizeRound(messages, options, true);
 }
 
 // 收尾「正文已写完、只是后续内容没来」的一轮（例如连接先断了，推荐追问没到）。
@@ -126,25 +94,59 @@ export function finalizeBodyOnlyMessages(
   messages: readonly Message[],
   options?: FinalizeRoundOptions,
 ): Message[] {
+  return finalizeRound(messages, options, false);
+}
+
+function finalizeRound(
+  messages: readonly Message[],
+  options: FinalizeRoundOptions | undefined,
+  interrupted: boolean,
+): Message[] {
   const runId = options?.runId;
   const card = options?.automation;
   let changed = false;
+  // 这一轮有没有留下正文消息：决定卡片挂到已有回答上，还是单独补一条。
+  let keptBody = false;
   const result: Message[] = [];
   for (const message of messages) {
+    // 还在思考的执行过程：任何一轮被打断都要收尾，不能一直转圈。
+    if (message.role === "process" && message.thinking) {
+      changed = true;
+      result.push(interrupted ? { ...message, thinking: false, stopped: true } : { ...message, thinking: false });
+      continue;
+    }
+    // 当前这一轮的执行过程：哪怕工具已经跑完、正文还在流，也算「已停止生成」，
+    // 不能让用户看到「任务已完成」。
+    if (message.role === "process" && interrupted && options?.interrupted && runId !== undefined && message.runId === runId) {
+      changed = true;
+      result.push({ ...message, stopped: true });
+      continue;
+    }
+    // 正在流式输出的正文：保留已经收到的内容并结束打字机；一个字都没有就不留下空回答。
     if (message.role === "ai" && message.streaming) {
       changed = true;
       if (!(message.text ?? "").trim()) continue;
       result.push(finalizeBodyMessage(message, runId, card));
+      if (message.runId === runId) keptBody = true;
       continue;
     }
-    // 还在等自动化卡片的回答：这一轮不会再有卡片了，不能让回答永远停在「等卡片」状态。
+    // 还在等自动化卡片的回答：卡片不会再来了，不能让回答永远停在「等卡片」状态。
     if (message.role === "ai" && message.automationPending) {
       changed = true;
       result.push({ ...message, automationPending: false });
+      if (message.runId === runId) keptBody = true;
       continue;
     }
     result.push(message);
+    if (message.role === "ai" && message.runId === runId) keptBody = true;
   }
+  // 任务已经真的建出来、正文还没开始（answer.start 没到）时，这一轮还没有正文消息：
+  // 补一条只挂卡片的回答，把真的建出来的任务留在会话里。正文留空，不编造内容。
+  if (card && runId !== undefined && !keptBody) {
+    changed = true;
+    result.push({ role: "ai", text: "", automation: card, automationPending: false, runId, instant: true });
+  }
+  // 没有任何残留就原样返回，调用方不必因为一次空操作多渲染一轮。
   return changed ? result : (messages as Message[]);
 }
 

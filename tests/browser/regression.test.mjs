@@ -313,6 +313,48 @@ test("停止自动化创建：清掉不会兑现的卡片等待，正文保留�
   });
 });
 
+// 任务已经真的建出来、正文还没开始（answer.start 没到）时停止：
+// 这一轮没有正文消息，卡片只在等待缓存里。清缓存时不能把卡片一起丢掉 ——
+// 已创建的任务和会话里的卡片都要保留；没有正文就不编造正文。
+test("停止自动化创建（任务已建出、正文还没开始）：任务与卡片都保留", { timeout: 90000 }, async () => {
+  await withPage(browser, app, async ({ page, mock, errors }) => {
+    mock.hold();
+    assert.ok(await sendMessage(page, "建一个整理本周竞品动态的任务"));
+    const session = await mock.waitForSession();
+    await waitForPause(page);
+
+    // 模型真的调了 create_automation 并建出任务，但正文还没开始
+    assert.equal(session.createAutomationTask(), true, "应能模拟工具创建成功");
+    await waitForText(page, "创建自动化任务", 10000);
+    await sleep(400);
+
+    assert.ok(await clickAria(page, "暂停生成"), "创建过程中应能暂停");
+    assert.equal(await session.waitForClientClose(10000), true, "暂停后服务端应看到连接关闭");
+    await waitForIdle(page);
+
+    // 会话卡片要保留：任务是真的建出来了
+    await page.waitForFunction(() => !!document.querySelector("[data-automation-card]"), { timeout: 8000 });
+    const card = await page.$eval("[data-automation-card]", (el) => ({
+      status: el.dataset.automationStatus,
+      title: el.querySelector(".ac-title")?.textContent?.trim() ?? "",
+    }));
+    assert.ok(
+      card.title.includes("整理本周竞品动态"),
+      `会话卡片标题应来自建出来的任务，实际=${card.title}`,
+    );
+    assert.equal(card.status, "已启用", "建出来的任务仍是启用状态");
+    // 没有正文就不该出现占位回答：不伪造正文，也不伪造任务成功。
+    const chat = await chatText(page);
+    assert.ok(!chat.includes("（模型未返回内容）"), "没有正文就不该出现占位回答");
+    assert.ok(!chat.includes("任务已完成"), "被中断的这一轮不能显示「任务已完成」");
+
+    // 任务列表里也保留
+    assert.ok(await clickText(page, "自动化任务"), "应能进入自动化任务页");
+    await waitForText(page, "整理本周竞品动态", 8000);
+    assert.deepEqual(errors, [], "页面不应有 JS 错误");
+  });
+});
+
 // 连接先断了（EOF），但这一轮只写了一半正文：不能当成功，按既有失败处理。
 test("非完整 SSE 结束：正文没写完就断开，按失败处理不当成成功", { timeout: 90000 }, async () => {
   await withPage(browser, app, async ({ page, mock, errors }) => {
@@ -392,6 +434,19 @@ test("answer.end 单独到达：发送按钮立即恢复，旧轮次迟到事件
     assert.ok(await sendMessage(page, "第二轮"));
     const second = await waitForCalls(mock, 2);
     assert.notEqual(second.index, session.index, "第二轮应是另一个请求");
+    // 上一轮正文已经说完了（answer.end 到了，只是 run.end 没到）：
+    // 新的请求必须带上这段 assistant 正文，模型才看得见自己上一轮说了什么。
+    const secondCall = mock.calls[1];
+    assert.deepEqual(
+      secondCall.body.messages.map((m) => m.role),
+      ["user", "assistant", "user"],
+      "第二轮请求应带上上一轮已完成的 assistant 正文",
+    );
+    const assistantTurn = secondCall.body.messages.find((m) => m.role === "assistant");
+    assert.ok(
+      assistantTurn && assistantTurn.content.includes(CHUNK_1),
+      `请求里的 assistant 正文应是上一轮的回答，实际=${JSON.stringify(assistantTurn?.content ?? "")}`,
+    );
     await waitForPause(page);
     assert.ok(await hasVisibleButton(page, "暂停生成"), "新一轮应在生成中");
 

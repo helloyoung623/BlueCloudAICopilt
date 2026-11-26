@@ -213,6 +213,43 @@ function createSession({ res, call, mock }) {
     return true;
   };
 
+  // 模拟「模型调 create_automation 并真的建出任务」：tool.call + tool.result（created:true）。
+  // 此时还没发 answer.start：会话里还没有正文消息，卡片只在等待缓存里。
+  // 覆盖「任务已建出、正文还没开始就停下」这个窗口。
+  session.createAutomationTask = (options = {}) => {
+    if (!session.open) return false;
+    const title = options.title ?? "整理本周竞品动态";
+    res.write(sseFrame("tool.call", {
+      callId: `call-${call.index}`,
+      name: "create_automation",
+      label: "创建自动化任务",
+      icon: "react-generate",
+      running: "正在创建自动化任务",
+      round: 0,
+      args: {},
+    }));
+    res.write(sseFrame("tool.result", {
+      callId: `call-${call.index}`,
+      name: "create_automation",
+      label: "创建自动化任务",
+      ok: true,
+      round: 0,
+      output: {
+        created: true,
+        automation: {
+          title,
+          goal: options.goal ?? title,
+          cycle: options.cycle ?? "每天",
+          time: options.time ?? "09:00",
+          weekdays: options.weekdays ?? [],
+          monthDays: options.monthDays ?? [],
+          icon: { name: "mail", url: "" },
+        },
+      },
+    }));
+    return true;
+  };
+
   // 只发 answer.end：正文结束，推荐追问还在服务端生成，连接保持打开。
   // 用来验证「正文一到 answer.end 就恢复发送按钮」，以及之后旧轮次迟到的 run.end。
   session.answerEnd = () => {
