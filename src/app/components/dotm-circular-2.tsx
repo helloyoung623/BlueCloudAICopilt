@@ -50,11 +50,16 @@ export function DotmCircular2({
 }: DotmCircular2Props) {
   // 允许小数间距，保证点阵外框边长精确等于 size（四舍五入会让视觉尺寸偏差 1px）
   const gap = Math.max(0.5, (size - dotSize * MATRIX) / (MATRIX - 1));
+  const step = dotSize + gap;
   const span = dotSize * MATRIX + gap * (MATRIX - 1);
+  const radius = dotSize / 2;
+
+  // 用 SVG 圆点绘制，而不是 CSS grid + div 方块：
+  // 16px 框里点径会落在小数像素上（2.4px），div 会被取整成 2px / 3px 的块，
+  // 放大后时粗时细；SVG 圆走抗锯齿，和对话内 RadarArcLoader 的观感一致。
   const rootStyle = {
     width: span,
     height: span,
-    gap,
     "--dotm-speed": 1 / Math.max(speed, 0.01),
     "--dotm-base": opacityBase,
     "--dotm-mid": opacityMid,
@@ -65,26 +70,43 @@ export function DotmCircular2({
   for (let row = 0; row < MATRIX; row++) {
     for (let col = 0; col < MATRIX; col++) {
       const ringIndex = RING.findIndex(([r, c]) => r === row && c === col);
-      const style: CSSProperties = { width: dotSize, height: dotSize };
-      let dotClass = "dotm-c2-dot";
+      const style: CSSProperties = {};
+      let dotClass = "";
+      let opacity: number | undefined;
 
-      if (CORNERS.has(`${row},${col}`)) {
-        style.visibility = "hidden";
-      } else if (ringIndex >= 0) {
-        dotClass += " dotm-c2-ring";
+      if (CORNERS.has(`${row},${col}`)) continue;
+      if (ringIndex >= 0) {
+        dotClass = "dotm-c2-ring";
         (style as CSSProperties & Record<string, number>)["--dotm-order"] = ringIndex;
       } else {
         const isCenter = row === 2 && col === 2;
-        style.opacity = isCenter ? opacityBase + (opacityMid - opacityBase) * CENTER_T : opacityBase;
+        opacity = isCenter ? opacityBase + (opacityMid - opacityBase) * CENTER_T : opacityBase;
       }
 
-      dots.push(<span key={`${row}-${col}`} aria-hidden className={dotClass} style={style} />);
+      dots.push(
+        <circle
+          key={`${row}-${col}`}
+          cx={radius + col * step}
+          cy={radius + row * step}
+          r={radius}
+          fill="currentColor"
+          className={dotClass}
+          style={{ ...style, opacity }}
+        />
+      );
     }
   }
 
   return (
-    <div aria-hidden className={`dotm-c2 ${className}`.trim()} style={rootStyle}>
+    <svg
+      aria-hidden
+      className={`dotm-c2 ${className}`.trim()}
+      viewBox={`0 0 ${span} ${span}`}
+      width={span}
+      height={span}
+      style={rootStyle}
+    >
       {dots}
-    </div>
+    </svg>
   );
 }

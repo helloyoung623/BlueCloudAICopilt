@@ -1,19 +1,13 @@
 .dotm-c2 {
   --dotm-cycle: 1500ms;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  grid-template-rows: repeat(5, minmax(0, 1fr));
+  display: block;
   color: currentColor;
 }
 
-.dotm-c2-dot {
-  display: block;
-  border-radius: 999px;
-  background: currentColor;
-  will-change: opacity;
-}
+/* 圆点用 SVG <circle> 绘制，填充走 currentColor；这里只负责绕圈动画 */
 
 .dotm-c2-ring {
+  will-change: opacity;
   animation: dotm-c2-ring calc(var(--dotm-cycle) * var(--dotm-speed, 1)) steps(12, end) infinite;
   animation-delay: calc(var(--dotm-order, 0) * 0.0833333333 * var(--dotm-cycle) * var(--dotm-speed, 1));
 }
