@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
 import { ArtifactFileCard, SmallTip } from "../components/task-artifacts";
@@ -17,6 +17,8 @@ import type { AutomationIcon, AutomationCardStatus, ScheduleState } from "../com
 import { ExecutionProcess, MergedProcess, PROCESS_PRESETS } from "./execution-process";
 import { ChatInput } from "./ChatInput";
 import { getAnswerDoneKey } from "./conversation-state";
+import { ANCHOR_GAP, findLastUserIndex, resolveFollowMode } from "./follow-mode";
+import type { FollowMode } from "./follow-mode";
 import type { Message } from "./types";
 import type { PptMode, PptPageCount } from "../ppt/types";
 
@@ -529,45 +531,93 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   onRecommendationsShown?: (key: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  // 是否「跟随最新内容」：AI 回答流式增长时自动滚到底，新内容始终可见；
-  // 用户一旦自己往上滚（离底部超过 24px）就停止跟随，不跟用户抢滚动条；
-  // 用户滚回底部（或发新消息、切会话）自动恢复跟随。
-  const FOLLOW_THRESHOLD = 24;
-  const followRef = useRef(true);
-  const prevMessageCountRef = useRef(0);
+  // 「当前这一轮」＝最近一条用户提问。发消息后这一轮钉在视口顶部，之前那轮的回答
+  // 被整体推到上面（要回头看可以往上滚）——用户每次都像在开一个新对话。
+  const followModeRef = useRef<FollowMode>("anchor");
+  const anchorElRef = useRef<HTMLElement | null>(null);
+  const anchorIndexRef = useRef(-1);
+  // 把锚点顶到视口顶部时用的 scrollTop（内容不够长时浏览器会夹紧，这里记实际值）。
+  const anchorScrollTopRef = useRef(0);
   const prevConversationRef = useRef(conversationId);
-  // useLayoutEffect：切换会话/新消息时在绘制前就定位到底部，
+  const prevLastUserIndexRef = useRef(-1);
+  const lastUserIndex = useMemo(() => findLastUserIndex(messages), [messages]);
+  // 当前这一轮撑不满一屏时补的空白高度。
+  const spacerRef = useRef<HTMLDivElement>(null);
+  const [spacerHeight, setSpacerHeight] = useState(0);
+
+  // 当前这一轮（锚点 → 本轮末尾）的高度不够一屏就补一段空白：
+  // 这样这一轮永远能被滚到视口顶部，之前那轮的回答也就被顶上去了。
+  const syncSpacer = () => {
+    const el = scrollRef.current;
+    const spacer = spacerRef.current;
+    const anchor = anchorElRef.current;
+    if (!el || !spacer) return;
+    if (!anchor || !anchor.isConnected) { setSpacerHeight(0); return; }
+    const roundHeight = spacer.getBoundingClientRect().top - anchor.getBoundingClientRect().top;
+    const next = Math.max(0, Math.round(el.clientHeight - roundHeight));
+    setSpacerHeight(prev => (prev === next ? prev : next));
+  };
+
+  // 把当前这一轮钉到视口顶部，之前那轮的回答就被推到上面去了。
+  const scrollToAnchor = () => {
+    const el = scrollRef.current;
+    const anchor = anchorElRef.current;
+    if (!el || !anchor || !anchor.isConnected) return;
+    const offset = anchor.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+    el.scrollTop = Math.max(0, offset - ANCHOR_GAP);
+    anchorScrollTopRef.current = el.scrollTop;
+  };
+
+  // useLayoutEffect：切会话或新的一轮开始时，在绘制前就把这一轮定位到视口顶部，
   // 用 useEffect 会先画出「停在旧滚动位置」的一帧，看起来像内容重新加载了一次。
   // 图标/字体高度在下一帧才最终确定，补一次 rAF 校正，避免停在差十几像素的位置。
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // 消息条数变多 = 真有新消息（用户自己发的或系统插入），这时无论之前在哪都回到底部；
-    // 切会话同理：新会话一律从底部开始看。
-    if (conversationId !== prevConversationRef.current) {
+    // 切会话、或多了一条用户提问（= 新的一轮开始）：回到「钉住当前这一轮」。
+    if (conversationId !== prevConversationRef.current || lastUserIndex !== prevLastUserIndexRef.current) {
       prevConversationRef.current = conversationId;
-      followRef.current = true;
+      prevLastUserIndexRef.current = lastUserIndex;
+      followModeRef.current = "anchor";
+      anchorIndexRef.current = -1;
+      anchorElRef.current = null;
+      anchorScrollTopRef.current = 0;
     }
-    if (messages.length > prevMessageCountRef.current) followRef.current = true;
-    prevMessageCountRef.current = messages.length;
-    if (!followRef.current) return;
-    el.scrollTop = el.scrollHeight;
-    const id = requestAnimationFrame(() => { if (followRef.current) el.scrollTop = el.scrollHeight; });
+    if (lastUserIndex < 0) return;
+    if (lastUserIndex !== anchorIndexRef.current || !anchorElRef.current?.isConnected) {
+      // 锚点可能还在逐条揭示中，没渲染出来就等下一帧再找。
+      const anchor = el.querySelector<HTMLElement>(`[data-round-start="${lastUserIndex}"]`);
+      if (!anchor) return;
+      anchorIndexRef.current = lastUserIndex;
+      anchorElRef.current = anchor;
+    }
+    syncSpacer();
+    if (followModeRef.current !== "anchor") return;
+    scrollToAnchor();
+    const id = requestAnimationFrame(() => { if (followModeRef.current === "anchor") scrollToAnchor(); });
     return () => cancelAnimationFrame(id);
-  }, [messages, conversationId]);
+  });
 
   // 流式回答真正长高的是「消息行内部的打字机」，messages 引用不变，靠上面的 effect 跟不到。
-  // 直接观察内容高度：只要还在跟随（followRef）就把视口贴到最新；用户滚开后被 handleScroll 关掉。
+  // 直接观察内容高度：钉在当前这一轮时重新贴一次锚点，贴底时继续跟到底，
+  // 用户自己在翻历史时不打扰。
   const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scrollRef.current;
     const inner = contentRef.current;
     if (!el || !inner) return;
     const observer = new ResizeObserver(() => {
-      if (!followRef.current) return;
+      syncSpacer();
+      const mode = followModeRef.current;
+      if (mode === "anchor") {
+        // 内容长高都在当前这一轮下面，锚点位置不变，重新贴一次即可。
+        scrollToAnchor();
+        return;
+      }
+      if (mode !== "tail") return;
       // 内容刚变高这一帧的 scrollHeight 可能还没算完，放到下一帧再贴底，避免永远差几十像素
       el.scrollTop = el.scrollHeight;
-      requestAnimationFrame(() => { if (followRef.current) el.scrollTop = el.scrollHeight; });
+      requestAnimationFrame(() => { if (followModeRef.current === "tail") el.scrollTop = el.scrollHeight; });
     });
     observer.observe(inner);
     return () => observer.disconnect();
@@ -577,17 +627,20 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   const [showBackToBottom, setShowBackToBottom] = useState(false);
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
+    const anchor = anchorElRef.current;
     if (!el) return;
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     setShowBackToBottom(distanceToBottom > 80);
-    // 只在「用户主动滚开」时停跟随：贴底（含程序自己滚到底）都算跟随中，
-    // 这样流式增长时不会被自己的滚动事件误判成用户滚动。
-    followRef.current = distanceToBottom <= FOLLOW_THRESHOLD;
-  }, [FOLLOW_THRESHOLD]);
+    // 拿「上次把锚点顶到顶部时记下的位置」做比较，而不是现场量：
+    // 上面那一轮的高度会变（执行过程收起等），现场量会把程序自己的滚动误判成用户滚动。
+    const anchorDelta = anchor ? el.scrollTop - anchorScrollTopRef.current : null;
+    // 停在锚点附近＝还在「当前这一轮」上；贴底＝在读最新一段；其余＝用户自己在翻历史。
+    followModeRef.current = resolveFollowMode({ anchorDelta, distanceToBottom });
+  }, []);
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    followRef.current = true;
+    followModeRef.current = "tail";
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
@@ -625,7 +678,7 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   return (
     <div className="flex-1 min-h-0 bg-white flex flex-col">
       <style>{`@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}@keyframes followUpIn{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:translateY(0)}}${RICH_TEXT_CSS}${RESULT_CARD_CSS}`}</style>
-      <div ref={scrollRef} data-chat-scroll onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={scrollRef} data-chat-scroll onScroll={handleScroll} className="flex-1 min-h-0 overflow-y-auto [overflow-anchor:none]">
         <div className="conversation-gutter min-h-full pt-[16px]">
           <div className="conversation-content mx-auto w-full">
             <div ref={contentRef} className="conversation-messages flex flex-col pt-[16px] pb-[56px]">
@@ -639,11 +692,13 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
                   return i === firstProcessIndex ? <div key={rowKey} className={`w-full ${spacingBefore(i)}`}><MergedProcess presets={processPresets} /></div> : null;
                 }
                 return (
-                  <div key={rowKey} data-message-index={i} className={`flex w-full flex-col ${spacingBefore(i)}`}>
+                  <div key={rowKey} data-message-index={i} data-round-start={msg.role === "user" ? i : undefined} className={`flex w-full flex-col ${spacingBefore(i)}`}>
                     <ChatMessageRow msg={msg} index={i} isLastAi={i === lastAiIndex} instant={Boolean(msg.instant)} advance={advance} onOpenPpt={onOpenPpt} onRegeneratePpt={onRegeneratePpt} onDownloadArtifact={artifact => toast.success(`本地示例：开始下载${artifact.name}`)} onOpenAutomation={onOpenAutomation} onAutomationOperate={onAutomationOperate} onFollowUp={onSend} onQuote={onQuote} onEditMessage={onEditMessage} onDeleteMessage={onDeleteMessage} onRetryMessage={onRetryMessage} onRegenerateMessage={onRegenerateMessage} onProcessProgress={onProcessProgress} recommendationKey={i === lastAiIndex ? answerDoneKey : null} onRecommendationsShown={onRecommendationsShown} />
                   </div>
                 );
               })}
+              {/* 当前这一轮撑不满一屏时补的空白：保证这一轮能被顶到视口顶部，之前那轮的回答被推上去 */}
+              <div ref={spacerRef} aria-hidden style={{ height: spacerHeight }} />
             </div>
           </div>
         </div>
