@@ -1430,6 +1430,67 @@ function DeleteChatTaskDialog({ open, onOpenChange, onConfirm }: {
 }
 
 /* ------------------------------------------------------------------ *
+ * 退出登录确认弹窗 — Figma 2740:14632
+ * 480 宽 / 8 圆角 / 内边距 24 16 0；标题行（24 info-fill + 20/28 中黑 + 右上关闭，gap 8）、
+ * 说明文案左缩进 32（与标题文字对齐）、底部上下 16 留白 + 右对齐「取消 / 确定」（gap 24）。
+ * 与删除任务弹窗同构，只有图标和文案不同。
+ * ------------------------------------------------------------------ */
+function LogoutDialog({ open, onOpenChange, onConfirm }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="w-[480px] max-w-[calc(100%-32px)] gap-0 overflow-hidden rounded-[8px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[calc(100%-32px)] [&>button]:hidden"
+      >
+        <div className="flex flex-col gap-[16px] px-[16px] pt-[24px]">
+          <div className="flex items-center gap-[8px]">
+            <img src="/assets/c6dca.svg" alt="" className="size-[24px] shrink-0" />
+            <DialogTitle className="min-w-0 flex-1 truncate text-[20px] font-medium leading-[28px] tracking-[0.001em] text-[rgba(0,0,0,0.88)]">
+              确认退出登录？
+            </DialogTitle>
+            <DialogClose asChild>
+              <button
+                type="button"
+                aria-label="关闭退出登录弹窗"
+                className="flex size-[24px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f2f2f2]"
+              >
+                <img src="/assets/search-dialog-close.svg" alt="" className="size-[20px]" />
+              </button>
+            </DialogClose>
+          </div>
+          <p className="pl-[32px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
+            退出登录不会丢失任何数据，你仍可以登录此账号。
+          </p>
+          <div className="flex items-center justify-end gap-[24px] pb-[16px] pt-[16px]">
+            <DialogClose asChild>
+              <button
+                type="button"
+                className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f2f2f2]"
+              >
+                取消
+              </button>
+            </DialogClose>
+            <DialogClose asChild>
+              <button
+                type="button"
+                onClick={onConfirm}
+                className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1]"
+              >
+                确定
+              </button>
+            </DialogClose>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * 搜索弹窗 — Figma「AI Chat Component / - Search」(8844:40946)
  * 弹窗固定 560 高；搜索框激活仅放大镜 icon 变色；
  * 列表滚动到底部自动加载，每批 10 条，「没有更多了」仅在发生一次加载后出现
@@ -1655,6 +1716,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   const [sidebarEditProjectId, setSidebarEditProjectId] = useState<number | null>(null);
   const [profileHovered, setProfileHovered] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  // 退出登录先弹确认，确定后才跳回登录页
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
@@ -2325,7 +2388,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
             <button
               type="button"
               role="menuitem"
-              onClick={() => setProfileMenuOpen(false)}
+              onClick={() => { setProfileMenuOpen(false); setLogoutConfirmOpen(true); }}
               className="flex h-[44px] w-full cursor-pointer items-center gap-[8px] rounded-[8px] px-[8px] text-left text-[14px] font-normal leading-[22px] tracking-[0.014px] hover:bg-[#f7f7f7]"
             >
               <img src="/assets/9a53a.svg" alt="" className="size-[16px] shrink-0" />
@@ -2390,6 +2453,19 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           )}
         </button>
       </div>
+      <LogoutDialog
+        open={logoutConfirmOpen}
+        onOpenChange={setLogoutConfirmOpen}
+        onConfirm={() => {
+          setLogoutConfirmOpen(false);
+          try {
+            window.sessionStorage.removeItem("wb:login-success");
+          } catch {
+            // 无痕模式忽略
+          }
+          window.location.href = "/login.html";
+        }}
+      />
       <CreateProjectDialog
         open={createProjectOpen}
         onOpenChange={open => {

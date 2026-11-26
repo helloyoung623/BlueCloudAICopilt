@@ -6,6 +6,7 @@ import { loadModelConfig, validateModelConfig, checkEnvFileSafety } from './env.
 import { TOOL_SCHEMAS, TOOL_META, executeTool } from './tools.mjs'
 import { verifyAnswer, buildRewritePrompt } from './verify.mjs'
 import { readIconSvg, readKubaiAsset } from './icons.mjs'
+import { sanitizeAutomationSeed } from './automation-seed.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const STATIC_DIR = path.join(ROOT, 'dist')
@@ -564,7 +565,8 @@ export async function handleChat(req, res) {
     : TOOL_SCHEMAS
   // 新建自动化任务弹窗发起的一轮：四项条件在弹窗里已经填齐。
   // 带着结构化 seed 进来，一是让模型不用再追问、直接调工具，二是参数以用户填的为准。
-  const automationSeed = body.automationSeed && typeof body.automationSeed === 'object' ? body.automationSeed : null
+  // 前端 payload 不可信：字段白名单 / 类型 / 长度 / 控制字符在独立模块里校验后再拼进 prompt。
+  const automationSeed = sanitizeAutomationSeed(body.automationSeed)
   // 带 tools 的会话上下文：system + 历史 + 本轮用户消息。工具结果以 role:tool 回灌到这个数组。
   const conversation = [{ role: 'system', content: body.automationRun === true
     // 自动化任务的「立即执行」：这条消息本身就是任务的执行内容，不是新建任务的指令。
