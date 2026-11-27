@@ -534,7 +534,9 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
     >
       {/* head —— 只有 logo / 搜索 / 新任务固定；新任务以下全部进入下方滚动区 */}
       <div className="relative h-[124px] w-full shrink-0 bg-white">
-        <div className="absolute left-[calc(50%-15.8px)] top-[52px] h-[16px] w-[160.403px] -translate-x-1/2">
+        {/* logo：按设计稿的固定位置摆放（左边距 24px），不随侧栏宽度漂移 */}
+        {/* logo：按设计稿的固定位置摆放（左边距 24px），不随侧栏宽度漂移 */}
+        <div className="absolute left-[24px] top-[52px] h-[16px] w-[160.403px]">
           <img alt="世纪互联办公智能体" className="absolute inset-0 block size-full max-w-none" src="/assets/9d907.svg" />
         </div>
         {/* sidebar toggle (close) */}

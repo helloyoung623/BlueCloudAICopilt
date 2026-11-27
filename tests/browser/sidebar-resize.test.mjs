@@ -179,6 +179,70 @@ function assertInsideChat(state, label) {
   assert.ok(state.confirm?.hitIsSelf, `${label}：确认按钮那个点上最上层应是它自己（点得到）`);
 }
 
+test("拖动改变侧栏宽度时，logo 位置保持不变", { timeout: 60000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await resetWidth(page);
+    const logoLeft = () =>
+      page.evaluate(() => {
+        const img = document.querySelector('img[alt="世纪互联办公智能体"]');
+        return Math.round(img.getBoundingClientRect().left);
+      });
+
+    const before = await logoLeft();
+    await dragHandle(page, 120);
+    assert.equal((await measure(page)).sidebarWidth, DEFAULT_WIDTH + 120, "侧栏应变宽到 360");
+    assert.equal(await logoLeft(), before, "加宽后 logo 位置不应变化");
+
+    await dragHandle(page, -240);
+    assert.equal((await measure(page)).sidebarWidth, MIN_WIDTH, "侧栏应变窄到 200");
+    assert.equal(await logoLeft(), before, "变窄后 logo 位置也不应变化");
+  });
+});
+
+test("拖动时侧栏右边缘不出现额外的可见线条", { timeout: 60000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await resetWidth(page);
+    const handle = await page.$(HANDLE);
+    const box = await handle.boundingBox();
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y, { steps: 8 });
+
+    // 按住拖动中：手柄本身不该画任何可见元素，光标处也不该冒出蓝色细线
+    const paint = await page.evaluate(({ selector, px, py }) => {
+      const el = document.querySelector(selector);
+      const painted = [el, ...el.querySelectorAll("*")].filter((node) => {
+        const cs = getComputedStyle(node);
+        return cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent";
+      });
+      const blueAtCursor = document.elementsFromPoint(px, py).filter((node) => {
+        const cs = getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return cs.backgroundColor === "rgb(30, 99, 245)" && rect.width <= 4;
+      });
+      const cs = getComputedStyle(el);
+      return {
+        painted: painted.map((n) => `${n.tagName}.${String(n.className).slice(0, 40)}`),
+        blueAtCursor: blueAtCursor.map((n) => `${n.tagName}.${String(n.className).slice(0, 40)}`),
+        // 焦点环也是一条线：指针操作不该留下描边（outline-style: none 即不绘制）
+        outlineStyle: cs.outlineStyle,
+        focusVisible: el.matches(":focus-visible"),
+      };
+    }, { selector: HANDLE, px: x + 60, py: y });
+
+    await page.mouse.up();
+    await sleep(120);
+
+    assert.deepEqual(paint.painted, [], "拖动手柄不应画出任何可见元素");
+    assert.deepEqual(paint.blueAtCursor, [], "拖动时右边缘不应出现蓝色线条");
+    assert.equal(paint.focusVisible, false, "鼠标拖动不应触发焦点环");
+    assert.equal(paint.outlineStyle, "none", "拖动时不应有描边");
+  });
+});
+
 test("侧边栏默认 240，拖右边缘可以改宽，主内容区跟着让位", { timeout: 60000 }, async () => {
   await withPage(browser, app, async ({ page }) => {
     await resetWidth(page);
