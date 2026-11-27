@@ -11,17 +11,19 @@ import {
 
 // 侧边栏右边缘的拖拽手柄：按住左右拖动改宽，双击回到默认宽度，方向键微调。
 // 交互与右侧详情栏的手柄（use-detail-panel-width）保持一致。
-export function SidebarResizeHandle({ width, onWidthChange }: {
+export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange }: {
   width: number;
   onWidthChange: (width: number) => void;
+  // 拖动状态回报给外层：拖动时把侧栏右边缘那条分隔线换成品牌蓝，作为拖动反馈
+  onDraggingChange?: (dragging: boolean) => void;
 }) {
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   // 双击复位：pointerdown 里自己记时间戳判断，不依赖 dblclick
   // （手柄上有 preventDefault + 指针捕获，部分路径下 dblclick 不会触发）
   const lastDown = useRef<{ time: number; x: number; y: number } | null>(null);
   // 拖动过程要读最新的宽度与回调，避免闭包拿到旧值
-  const live = useRef({ width, onWidthChange });
-  live.current = { width, onWidthChange };
+  const live = useRef({ width, onWidthChange, onDraggingChange });
+  live.current = { width, onWidthChange, onDraggingChange };
 
   useEffect(() => () => {
     document.body.style.userSelect = "";
@@ -33,6 +35,7 @@ export function SidebarResizeHandle({ width, onWidthChange }: {
     drag.current = null;
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
+    live.current.onDraggingChange?.(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -63,6 +66,7 @@ export function SidebarResizeHandle({ width, onWidthChange }: {
       // 焦点环留给键盘（Tab 过来时显示），鼠标拖动只留 col-resize 光标。
       event.currentTarget.setPointerCapture(event.pointerId);
       drag.current = { startX: event.clientX, startWidth: live.current.width };
+      live.current.onDraggingChange?.(true);
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
     },
