@@ -28,7 +28,7 @@ const CALC_TOOL = {
   type: 'function',
   function: {
     name: 'calculate',
-    description: '精确计算复杂数学表达式（加减乘除、百分比、括号、幂）。仅在表达式较复杂、用户明确要求精确计算或你无法可靠心算时使用；简单加减乘除不要调用。',
+    description: '精确计算复杂数学表达式（加减乘除、百分比、括号、幂：用 ^ 或 **）。仅在表达式较复杂、用户明确要求精确计算或你无法可靠心算时使用；简单加减乘除不要调用。',
     parameters: {
       type: 'object',
       properties: {
@@ -129,10 +129,11 @@ export const TOOL_META = {
 function safeCalculate(expression) {
   const expr = String(expression ?? '').replace(/\s+/g, '')
   if (!expr) throw new Error('表达式为空')
-  if (!/^[\d+\-*/().%]+$/.test(expr)) throw new Error('表达式包含不支持的字符，仅允许数字和 + - * / ( ) . %')
+  if (!/^[\d+\-*/().%^]+$/.test(expr)) throw new Error('表达式包含不支持的字符，仅允许数字和 + - * / ( ) . % ^')
   if (expr.length > 200) throw new Error('表达式过长')
 
-  // 递归下降解析：expr → term ((+|-) term)*；term → factor ((*|/|%) factor)*；factor → number | (expr) | -factor
+  // 递归下降解析：expr → term ((+|-) term)*；term → factor ((*|/|%) factor)*；
+  // factor → (+|-) factor | power；power → atom ((^|**) factor)?（右结合，且高于一元负号：-2^2 = -4）；atom → number | (expr)
   let pos = 0
   const peek = () => expr[pos]
   function parseExpr() {
@@ -157,6 +158,21 @@ function safeCalculate(expression) {
   function parseFactor() {
     if (peek() === '-') { pos++; return -parseFactor() }
     if (peek() === '+') { pos++; return parseFactor() }
+    return parsePower()
+  }
+  function parsePower() {
+    const base = parseAtom()
+    if (peek() === '^') {
+      pos++
+    } else if (peek() === '*' && expr[pos + 1] === '*') {
+      pos += 2
+    } else {
+      return base
+    }
+    // 指数用 parseFactor：既允许 2^-1，也让 2^3^2 按右结合算成 2^(3^2)
+    return base ** parseFactor()
+  }
+  function parseAtom() {
     if (peek() === '(') {
       pos++
       const value = parseExpr()
