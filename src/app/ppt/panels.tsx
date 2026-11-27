@@ -8,7 +8,7 @@ import svgPptToggle from "@/imports/Container/svg-ky29gei8j7";
 import imgStyle1 from "@/imports/需求确认-1/29d4a489057188d7298a9a9f8b923d2d9c630925.png";
 import imgStyle2 from "@/imports/需求确认-1/f49f63a62b02589f759f36fc0961c6709a8e1bdf.png";
 import imgStyle3 from "@/imports/需求确认-1/9b2936619dc23e46dde47ce229cadb09c1b911ab.png";
-import type { OutlinePage, PptMode, PptPageCount } from "./types";
+import type { OutlinePage, PptPageCount } from "./types";
 
 function mockOutlinePages(): OutlinePage[] {
   return [
@@ -146,12 +146,10 @@ function CloseBtn({ onClick, label }: { onClick: () => void; label: string }) {
 
 // ── panel footer with countdown ───────────────────────────────────────────────
 
-function PanelFooter({ count, cancelled, onConfirm, pptMode, onPptModeChange }: {
+function PanelFooter({ count, cancelled, onConfirm }: {
   count: number;
   cancelled: boolean;
   onConfirm: () => void;
-  pptMode: PptMode;
-  onPptModeChange: (mode: PptMode) => void;
 }) {
   return (
     <div className="shrink-0 px-[16px] py-[16px] flex flex-wrap items-center gap-[16px] bg-[rgba(255,255,255,0.92)] border-t border-[#f2f2f2]">
@@ -160,7 +158,6 @@ function PanelFooter({ count, cancelled, onConfirm, pptMode, onPptModeChange }: 
           <><span className="text-[#1e63f5] font-medium">{count}S</span><span className="text-[rgba(0,0,0,0.38)]"> 后自动确认</span></>
         )}
       </p>
-      <PptSettingPicker kind="mode" value={pptMode} onChange={onPptModeChange} footer />
       <button onClick={onConfirm} className="bg-[#1e63f5] text-white text-[14px] leading-[22px] font-normal px-[16px] py-[5px] rounded-[8px] cursor-pointer hover:opacity-90 transition-opacity">
         确认
       </button>
@@ -172,7 +169,7 @@ function PanelFooter({ count, cancelled, onConfirm, pptMode, onPptModeChange }: 
 
 function OptionItem({ label, selected, onClick, image }: { label: string; selected: boolean; onClick: () => void; image?: string }) {
   return (
-    <div onClick={onClick} className="relative rounded-[8px] cursor-pointer flex-1 min-w-0">
+    <div onClick={onClick} className="relative rounded-[8px] cursor-pointer min-w-0">
       <div aria-hidden className={`absolute inset-0 rounded-[8px] border pointer-events-none ${selected ? "border-[#1e63f5]" : "border-[#e6e6e6]"}`} />
       <div className="flex items-center px-[12px] py-[8px] gap-[10px]">
         <span className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] whitespace-nowrap">{label}</span>
@@ -193,12 +190,10 @@ function GridItem({ label, selected, onClick }: { label: string; selected: boole
   );
 }
 
-function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChange, initialPages }: {
+function RequirementPanel({ visible, onClose, onConfirm, initialPages }: {
   visible: boolean;
   onClose: () => void;
   onConfirm: () => void;
-  pptMode: PptMode;
-  onPptModeChange: (mode: PptMode) => void;
   initialPages: PptPageCount;
 }) {
   const [style, setStyle] = useState("科技现代");
@@ -293,7 +288,7 @@ function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChang
         {/* 演示场景 */}
         <div className="flex flex-col gap-[12px]">
           <span className="text-[14px] font-medium leading-[22px] text-[rgba(0,0,0,0.88)]">演示场景（可多选）</span>
-          <div className="flex gap-[12px]">
+          <div className="grid grid-cols-2 gap-[12px] @min-[520px]:grid-cols-3">
             {["商业路演", "内部汇报", "其他"].map(s => (
               <OptionItem key={s} label={s} selected={scenes.includes(s)} onClick={() => toggle(scenes, s, setScenes)} />
             ))}
@@ -313,7 +308,7 @@ function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChang
         {/* 页数 */}
         <div className="flex flex-col gap-[12px]">
           <span className="text-[14px] font-medium leading-[22px] text-[rgba(0,0,0,0.88)]">页数</span>
-          <div className="flex gap-[12px]">
+          <div className="grid grid-cols-2 gap-[12px] @min-[520px]:grid-cols-3">
             {(["5～8页", "8～12页", "12～18页"] as PptPageCount[]).map(s => (
               <OptionItem key={s} label={s} selected={pages === s} onClick={() => setPages(s as "5～8页" | "8～12页" | "12～18页")} />
             ))}
@@ -330,7 +325,7 @@ function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChang
         </div>
       </div>
 
-      <PanelFooter count={count} cancelled={cancelled} onConfirm={handleConfirm} pptMode={pptMode} onPptModeChange={onPptModeChange} />
+      <PanelFooter count={count} cancelled={cancelled} onConfirm={handleConfirm} />
     </SlidePanel>
   );
 }
@@ -630,93 +625,4 @@ function PptGenerationToggle({ selected, onChange, borderless = false }: { selec
   );
 }
 
-type PptSettingPickerProps =
-  | { kind: "mode"; value: PptMode; onChange: (value: PptMode) => void; footer?: boolean }
-  | { kind: "pages"; value: PptPageCount; onChange: (value: PptPageCount) => void; footer?: false };
-
-function PptSettingPicker(props: PptSettingPickerProps) {
-  const [open, setOpen] = useState(false);
-  const pickerRef = useRef<HTMLDivElement>(null);
-  const isMode = props.kind === "mode";
-  const options = isMode
-    ? [
-        { value: "标准" as const, description: "快速；适合常规汇报" },
-        { value: "PowerPoint" as const, description: "PowerPoint原生文件" },
-      ]
-    : [
-        { value: "智能匹配" as const },
-        { value: "5～8页" as const },
-        { value: "8～12页" as const },
-        { value: "12～18页" as const },
-      ];
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!pickerRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, [open]);
-
-  return (
-    <div ref={pickerRef} className="relative shrink-0">
-      {open && (
-        <OperationMenu anchor={pickerRef.current?.querySelector(":scope > button") ?? null} className={`overflow-hidden rounded-[12px] border border-[#f2f2f2] bg-white px-[8px] py-[4px] shadow-[0_0_12px_rgba(0,0,0,0.08)] ${isMode ? "w-[232px]" : "w-[192px]"}`}>
-          <div className="flex max-h-[480px] w-full flex-col overflow-y-auto py-[4px]">
-            {!isMode && (
-              <p className="px-[8px] text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.38)]">
-                生成的PPT页面数量
-              </p>
-            )}
-            {options.map((option, index) => {
-              const selected = props.value === option.value;
-              return (
-                <div key={option.value}>
-                  {!isMode && index === 1 && <div className="h-px w-full bg-[#f2f2f2]" />}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (props.kind === "mode") props.onChange(option.value as PptMode);
-                      else props.onChange(option.value as PptPageCount);
-                      setOpen(false);
-                    }}
-                    className="relative flex w-full cursor-pointer items-center justify-between rounded-[8px] p-[8px] text-left hover:bg-[#f7f7f7]"
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className={`block truncate text-[14px] leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] ${selected ? "font-medium" : "font-normal"}`}>
-                        {option.value}
-                      </span>
-                      {"description" in option && (
-                        <span className="block truncate text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.38)]">
-                          {option.description}
-                        </span>
-                      )}
-                    </span>
-                    {selected && <img src="/assets/9e503.svg" alt="" className="shrink-0" />}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </OperationMenu>
-      )}
-      <button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen(value => !value)}
-        className={`flex cursor-pointer items-center gap-[4px] rounded-full ${props.footer ? "px-[4px] py-[3px]" : "border border-[#f2f2f2] px-[8px] py-[4px] hover:bg-[#f7f7f7]"}`}
-      >
-        <img src={props.footer ? "/assets/985b1.svg" : isMode ? "/assets/a80d5.svg" : "/assets/b3301.svg"} alt="" className="shrink-0" />
-        <span className="whitespace-nowrap text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)]">
-          {props.value}
-        </span>
-        {props.footer && <img src="/assets/27bf2.svg" alt="" className="shrink-0" />}
-      </button>
-    </div>
-  );
-}
-
-export { AIIcon, RequirementPanel, OutlinePanel, PptGenerationToggle, PptSettingPicker, mockOutlinePages };
-export type { PptSettingPickerProps };
+export { AIIcon, RequirementPanel, OutlinePanel, PptGenerationToggle, mockOutlinePages };

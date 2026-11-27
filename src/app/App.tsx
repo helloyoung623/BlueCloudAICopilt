@@ -46,7 +46,7 @@ import type { AgentRound, HistoryItem, Message, ProcessPreset, ProcessVariant, T
 import { deriveUnreadState, findLastIndex, freezePreviousMessages, getAnswerDoneKey, markConversationRead, toInstantMessages, updateConversationInHistory } from "./chat/conversation-state";
 import { beginBody, classifyStreamEnd, endGeneration, finalizeBodyOnlyMessages, finalizeInterruptedMessages, isGenerating, startGeneration } from "./chat/generation-state";
 import type { GenerationState } from "./chat/generation-state";
-import type { OutlinePage, PptMode, PptPageCount, PptStage } from "./ppt/types";
+import type { OutlinePage, PptPageCount, PptStage } from "./ppt/types";
 import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/launch";
 import { addSourcesToProject, buildImportTasks, parseFileSize } from "./projects/project-files";
 import { AIIcon, OutlinePanel, PptGenerationToggle, RequirementPanel } from "./ppt/panels";
@@ -217,7 +217,6 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [pptGeneration, setPptGeneration] = useState(false);
-  const [pptMode, setPptMode] = useState<PptMode>("PowerPoint");
   const [pptPages, setPptPages] = useState<PptPageCount>("智能匹配");
   const [stage, setStage] = useState<PptStage>("idle");
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1466,7 +1465,6 @@ export default function App() {
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
-    setPptMode("PowerPoint");
     setPptPages("智能匹配");
     setStage("idle");
     setProjectListOpen(false);
@@ -2041,8 +2039,6 @@ export default function App() {
               onRegeneratePpt={handleOutlineConfirm}
               pptGeneration={pptGeneration}
               onPptGenerationChange={setPptGeneration}
-              pptMode={pptMode}
-              onPptModeChange={setPptMode}
               pptPages={pptPages}
               onPptPagesChange={setPptPages}
               agentRunning={agentRunning}
@@ -2086,8 +2082,6 @@ export default function App() {
                   onRemoveAttachment: handleRemoveAttachment,
                   pptGeneration,
                   onPptGenerationChange: setPptGeneration,
-                  pptMode,
-                  onPptModeChange: setPptMode,
                   pptPages,
                   onPptPagesChange: setPptPages,
                   onOpenConnectors: handleOpenConnectors,
@@ -2102,8 +2096,6 @@ export default function App() {
               onRemoveAttachment={handleRemoveAttachment}
               pptGeneration={pptGeneration}
               onPptGenerationChange={setPptGeneration}
-              pptMode={pptMode}
-              onPptModeChange={setPptMode}
               pptPages={pptPages}
               onPptPagesChange={setPptPages}
               projects={projects}
@@ -2193,8 +2185,6 @@ export default function App() {
         visible={stage === "requirement"}
         onClose={resetPptFlow}
         onConfirm={handleRequirementConfirm}
-        pptMode={pptMode}
-        onPptModeChange={setPptMode}
         initialPages={pptPages}
       />
       <OutlinePanel

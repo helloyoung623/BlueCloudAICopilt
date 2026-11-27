@@ -308,6 +308,43 @@ test("侧栏拖宽、窗口 1024 时，PPT 大纲弹层同样落在对话区内"
   });
 });
 
+test("PPT 需求确认弹层：底栏不再有模式下拉框，四组选项宽度一致", { timeout: 120000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await setupNarrowWindowWithWideSidebar(page);
+    await openRequirementPanel(page);
+
+    const detail = await page.evaluate(() => {
+      const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
+      const labels = ["视觉风格", "演示场景（可多选）", "受众对象（可多选）", "页数"];
+      const groups = labels.map((label) => {
+        const labelEl = [...panel.querySelectorAll("span")].find((s) => s.textContent.trim() === label);
+        const grid = labelEl.parentElement.querySelector(".grid");
+        return {
+          label,
+          columns: getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+          widths: [...grid.children].map((c) => Math.round(c.getBoundingClientRect().width)),
+        };
+      });
+      return {
+        groups,
+        // 底栏（下边框上方那一行）里还有没有下拉按钮
+        footerHasMenu: [...panel.querySelectorAll('[aria-haspopup="menu"]')].length > 0,
+        footerText: panel.innerText,
+      };
+    });
+
+    assert.equal(detail.footerHasMenu, false, "弹层里不应再有下拉按钮");
+    assert.ok(!detail.footerText.includes("PowerPoint"), "底栏不应再出现 PPT 模式选项");
+
+    // 四组选项用同一套栅格 → 每个选项框宽度一致（不能一排三个一排两个）
+    const widths = detail.groups.flatMap((g) => g.widths);
+    assert.ok(widths.length >= 12, "应能取到四组选项的宽度");
+    assert.equal(new Set(widths).size, 1, `四组选项宽度应一致，实际是 ${JSON.stringify(detail.groups)}`);
+    const columns = new Set(detail.groups.map((g) => g.columns));
+    assert.equal(columns.size, 1, `四组选项列数应一致，实际是 ${JSON.stringify(detail.groups.map((g) => g.columns))}`);
+  });
+});
+
 test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的关闭按钮能真正关掉弹层", { timeout: 120000 }, async () => {
   await withPage(browser, app, async ({ page }) => {
     await setupNarrowWindowWithWideSidebar(page);

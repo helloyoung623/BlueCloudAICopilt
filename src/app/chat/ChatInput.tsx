@@ -7,7 +7,7 @@ import type { ChatAttachment } from "../components/attachment-tray";
 import { Popover, PopoverAnchor } from "../components/ui/popover";
 import type { ProjectFiles } from "../components/project-files";
 import { PptGenerationToggle } from "../ppt/panels";
-import type { PptMode, PptPageCount } from "../ppt/types";
+import type { PptPageCount } from "../ppt/types";
 
 function SendButton({ canSend, agentRunning = false, onSend, onStop }: {
   canSend: boolean;
@@ -58,7 +58,7 @@ function SendButton({ canSend, agentRunning = false, onSend, onStop }: {
   );
 }
 
-function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject = false, projectFiles, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning = false, onStop, onOpenConnectors, placeholder = "有问题，尽管问；/调用技能" }: {
+function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveAttachment, hasProject = false, projectFiles, pptGeneration, onPptGenerationChange, pptPages, onPptPagesChange, agentRunning = false, onStop, onOpenConnectors, placeholder = "有问题，尽管问；/调用技能" }: {
   value: string;
   onChange: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
@@ -69,8 +69,6 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
   projectFiles?: ProjectFiles;
   pptGeneration: boolean;
   onPptGenerationChange: (selected: boolean) => void;
-  pptMode: PptMode;
-  onPptModeChange: (mode: PptMode) => void;
   pptPages: PptPageCount;
   onPptPagesChange: (pages: PptPageCount) => void;
   agentRunning?: boolean;
