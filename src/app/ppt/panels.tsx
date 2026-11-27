@@ -60,6 +60,11 @@ function AIIcon({ uid }: { uid: string }) {
 
 // ── slide-up panel shell ──────────────────────────────────────────────────────
 
+// 弹层固定 800 宽。
+const PANEL_WIDTH = 800;
+// 弹层右边缘与窗口右边缘之间至少留的间距。
+const PANEL_VIEWPORT_GAP = 16;
+
 function SlidePanel({ visible, onClose, children, mainOffset = 0 }: {
   visible: boolean; onClose: () => void; children: React.ReactNode; mainOffset?: number;
 }) {
@@ -82,8 +87,12 @@ function SlidePanel({ visible, onClose, children, mainOffset = 0 }: {
     <div
       className="fixed left-1/2 z-50 flex flex-col bg-white rounded-[16px]"
       style={{
-        width: 800, maxHeight: 560, bottom: 22,
-        left: `calc(50% + ${mainOffset}px)`,
+        width: PANEL_WIDTH, maxHeight: 560, bottom: 22,
+        // 弹层默认居中在主内容区（mainOffset = 侧栏宽度的一半）。
+        // 侧栏可以拖宽，主内容区随之变窄，弹层跟着右移就会把右边缘顶出窗口，
+        // 关闭按钮落到屏幕外点不到 —— 这里把居中位置限制在「右边缘离窗口 16px」以内，
+        // 保证关闭 / 确认控件始终在屏幕内可点。
+        left: `min(calc(50% + ${mainOffset}px), calc(100% - ${PANEL_WIDTH / 2 + PANEL_VIEWPORT_GAP}px))`,
         transform: `translateX(-50%) translateY(${animIn ? "0%" : "120%"})`,
         transition: "transform 0.35s cubic-bezier(0.32,0.72,0,1)",
         boxShadow: "0 0 12px rgba(0,0,0,0.08)", border: "1px solid #e6e6e6",
@@ -122,9 +131,9 @@ function useCountdown(active: boolean, seconds: number, onDone: () => void) {
 
 // ── panel close button ────────────────────────────────────────────────────────
 
-function CloseBtn({ onClick }: { onClick: () => void }) {
+function CloseBtn({ onClick, label }: { onClick: () => void; label: string }) {
   return (
-    <button onClick={onClick} className="w-[24px] h-[24px] flex items-center justify-center rounded-[4px] hover:bg-[#f7f7f7] shrink-0 cursor-pointer">
+    <button onClick={onClick} aria-label={label} className="w-[24px] h-[24px] flex items-center justify-center rounded-[4px] hover:bg-[#f7f7f7] shrink-0 cursor-pointer">
       <svg width="11" height="11" viewBox="0 0 10.371 10.371" fill="none">
         <path d={svgPanel.p28244cc0} fill="black" fillOpacity="0.88" />
       </svg>
@@ -226,7 +235,7 @@ function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChang
       <div className="shrink-0 px-[16px] pt-[16px] pb-[8px]">
         <div className="flex items-center justify-between">
           <span className="text-[16px] font-medium leading-[24px] text-[rgba(0,0,0,0.88)]">确认制作需求</span>
-          <CloseBtn onClick={onClose} />
+          <CloseBtn label="关闭需求确认" onClick={onClose} />
         </div>
         <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.6)] mt-[2px]">确保 AI 生成的方向符合您的预期</p>
       </div>
@@ -508,7 +517,7 @@ function OutlinePanel({ visible, onClose, onConfirm, mainOffset = 0 }: {
       <div className="shrink-0 bg-[rgba(255,255,255,0.5)] px-[16px] pt-[16px] pb-[12px]">
         <div className="flex items-center justify-between w-full">
           <p className="text-[16px] font-medium leading-[24px] text-[rgba(0,0,0,0.88)] tracking-[0.016px]">PPT大纲</p>
-          <CloseBtn onClick={onClose} />
+          <CloseBtn label="关闭大纲" onClick={onClose} />
         </div>
         <p className="text-[14px] leading-[22px] text-[rgba(0,0,0,0.6)] tracking-[0.014px] mt-[2px] w-full">AI将依据此大纲生成PPT，请核对</p>
       </div>

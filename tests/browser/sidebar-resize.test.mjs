@@ -3,13 +3,15 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import puppeteer from "puppeteer-core";
-import { CHAT_TEXTAREA, resolveChrome, sleep, startApp, withPage } from "./harness.mjs";
+import { CHAT_TEXTAREA, resolveChrome, sendMessage, sleep, startApp, withPage } from "./harness.mjs";
 
 const HANDLE = '[role="separator"][aria-label="调整侧边栏宽度"]';
 const STORAGE_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 240;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
+// 复现验收场景：窗口 1024、侧栏拖到 480 时，PPT 需求确认弹层的关闭按钮会跑到屏幕外
+const NARROW_VIEWPORT = { width: 1024, height: 768 };
 
 let app;
 let browser;
@@ -65,6 +67,49 @@ async function resetWidth(page) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector(CHAT_TEXTAREA, { timeout: 10000 });
   await sleep(300);
+}
+
+// 窗口 1024 + 侧栏 480：验收里出问题的那个组合
+async function setupNarrowWindowWithWideSidebar(page) {
+  await page.setViewport({ ...NARROW_VIEWPORT, deviceScaleFactor: 1 });
+  await page.evaluate((key) => window.localStorage.setItem(key, "480"), STORAGE_KEY);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector(CHAT_TEXTAREA, { timeout: 10000 });
+  await sleep(300);
+  const width = await page.$eval(HANDLE, (el) => Math.round(el.parentElement.getBoundingClientRect().width));
+  assert.equal(width, 480, "侧栏宽度应被记成 480");
+}
+
+// 走产品自带的演示链路（正文提到 PPT → 本地脚本 → 约 15 秒后弹出需求确认）
+async function openRequirementPanel(page) {
+  await sendMessage(page, "帮我生成一份PPT");
+  await page.waitForFunction(() => document.body.innerText.includes("确认制作需求"), { timeout: 45000 });
+  await sleep(600); // 等弹层入场动画结束
+}
+
+// 弹层与两个控件的位置：rect 看是否在窗口内，hitIsSelf 看那个点上最上层是不是它自己（= 真的点得到）
+async function requirementPanelState(page) {
+  return page.evaluate(() => {
+    const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
+    if (!panel) return null;
+    const describe = (el) => {
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        hitIsSelf: hit === el || el.contains(hit),
+      };
+    };
+    const rect = panel.getBoundingClientRect();
+    return {
+      viewportWidth: window.innerWidth,
+      panel: { left: Math.round(rect.left), right: Math.round(rect.right) },
+      close: describe(panel.querySelector('[aria-label="关闭需求确认"]')),
+      confirm: describe([...panel.querySelectorAll("button")].find((b) => b.textContent.trim() === "确认")),
+    };
+  });
 }
 
 test("侧边栏默认 240，拖右边缘可以改宽，主内容区跟着让位", { timeout: 60000 }, async () => {
@@ -134,14 +179,75 @@ test("方向键可以微调宽度，双击手柄回到默认宽度", { timeout: 
     await sleep(80);
     assert.equal((await measure(page)).sidebarWidth, DEFAULT_WIDTH, "方向键左应减 16");
 
-    // 双击复位：连点两次手柄（间隔小于 320ms、位置几乎不动）
+    // 先把宽度调到非 240，再双击复位：
+    // 直接在 240 上双击的话，「双击后是 240」这条断言什么都没验到。
+    await dragHandle(page, 60);
+    assert.equal((await measure(page)).sidebarWidth, DEFAULT_WIDTH + 60, "拖动后宽度应为 300");
+
+    // 双击复位：两下连点（间隔 < 320ms、位置几乎不动）。
+    // 先等一下，让上一次按下（拖动那一下）的时间戳过期，免得被误判成双击。
+    await sleep(400);
     const handle = await page.$(HANDLE);
     const box = await handle.boundingBox();
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
     await page.mouse.click(x, y);
-    await page.mouse.click(x, y, { delay: 0 });
-    await sleep(150);
-    assert.equal((await measure(page)).sidebarWidth, DEFAULT_WIDTH, "双击手柄应回到默认宽度");
+    await page.mouse.click(x, y);
+    await sleep(200);
+    assert.equal((await measure(page)).sidebarWidth, DEFAULT_WIDTH, "双击手柄应回到默认宽度 240");
+  });
+});
+
+test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的关闭与确认按钮都还在屏幕内且点得到", { timeout: 120000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await setupNarrowWindowWithWideSidebar(page);
+    await openRequirementPanel(page);
+
+    const state = await requirementPanelState(page);
+    assert.ok(state, "需求确认弹层应已弹出");
+    assert.ok(
+      state.panel.right <= state.viewportWidth,
+      `弹层右边缘 ${state.panel.right} 应在窗口 ${state.viewportWidth} 内`,
+    );
+    assert.ok(state.close, "弹层里应有关闭按钮");
+    assert.ok(
+      state.close.right <= state.viewportWidth,
+      `关闭按钮右边缘 ${state.close.right} 应在窗口 ${state.viewportWidth} 内`,
+    );
+    assert.ok(state.close.hitIsSelf, "关闭按钮那个点上最上层应是它自己（点得到）");
+    assert.ok(state.confirm, "弹层里应有确认按钮");
+    assert.ok(
+      state.confirm.right <= state.viewportWidth,
+      `确认按钮右边缘 ${state.confirm.right} 应在窗口 ${state.viewportWidth} 内`,
+    );
+    assert.ok(state.confirm.hitIsSelf, "确认按钮那个点上最上层应是它自己（点得到）");
+  });
+});
+
+test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的关闭按钮能真正关掉弹层", { timeout: 120000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await setupNarrowWindowWithWideSidebar(page);
+    await openRequirementPanel(page);
+
+    await page.click('[aria-label="关闭需求确认"]');
+    await page.waitForFunction(() => !document.body.innerText.includes("确认制作需求"), { timeout: 8000 });
+    assert.equal(await requirementPanelState(page), null, "点关闭后弹层应消失");
+  });
+});
+
+test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的确认按钮能真正推进流程", { timeout: 120000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await setupNarrowWindowWithWideSidebar(page);
+    await openRequirementPanel(page);
+
+    const state = await requirementPanelState(page);
+    assert.ok(state?.confirm, "弹层里应有确认按钮");
+    await page.evaluate(() => {
+      const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
+      const button = [...panel.querySelectorAll("button")].find((b) => b.textContent.trim() === "确认");
+      button.click();
+    });
+    await page.waitForFunction(() => !document.body.innerText.includes("确认制作需求"), { timeout: 8000 });
+    assert.equal(await requirementPanelState(page), null, "点确认后需求确认弹层应消失");
   });
 });
