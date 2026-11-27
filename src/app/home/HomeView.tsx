@@ -6,7 +6,7 @@ import { HomeBackground } from "../components/home-background";
 import { useUserProfile } from "../user-profile";
 import { ChatInput } from "../chat/ChatInput";
 import { AIIcon } from "../ppt/panels";
-import type { PptMode, PptPageCount } from "../ppt/types";
+import type { PptPageCount } from "../ppt/types";
 import type { ChatAttachment } from "../components/attachment-tray";
 import type { ProjectItem } from "../projects/types";
 import { DEMO_PROJECT_FILES } from "../components/project-files";
@@ -132,7 +132,7 @@ function suggestInStyle(shift: number, delay: number): CSSProperties {
   } as unknown as CSSProperties;
 }
 
-function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, projects, selectedProjectId, onSelectProject, onCreateProject, onOpenConnectors }: {
+function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRemoveAttachment, pptGeneration, onPptGenerationChange, pptPages, onPptPagesChange, projects, selectedProjectId, onSelectProject, onCreateProject, onOpenConnectors }: {
   input: string;
   onInputChange: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
@@ -140,7 +140,6 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
   onAddFiles: (files: File[]) => void;
   onRemoveAttachment: (id: string) => void;
   pptGeneration: boolean; onPptGenerationChange: (selected: boolean) => void;
-  pptMode: PptMode; onPptModeChange: (mode: PptMode) => void;
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
   projects: ProjectItem[];
   selectedProjectId: number | null;
@@ -198,8 +197,6 @@ function HomeView({ input, onInputChange, onSend, attachments, onAddFiles, onRem
               onRemoveAttachment={onRemoveAttachment}
               pptGeneration={pptGeneration}
               onPptGenerationChange={onPptGenerationChange}
-              pptMode={pptMode}
-              onPptModeChange={onPptModeChange}
               pptPages={pptPages}
               onPptPagesChange={onPptPagesChange}
               onOpenConnectors={onOpenConnectors}

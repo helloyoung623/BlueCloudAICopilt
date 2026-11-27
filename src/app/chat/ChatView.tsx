@@ -21,7 +21,7 @@ import { getAnswerDoneKey } from "./conversation-state";
 import { ANCHOR_GAP, findLastUserIndex, resolveFollowMode } from "./follow-mode";
 import type { FollowMode } from "./follow-mode";
 import type { Message } from "./types";
-import type { PptMode, PptPageCount } from "../ppt/types";
+import type { PptPageCount } from "../ppt/types";
 
 const AUTOMATION_CARD_CSS = `
 @keyframes ac-bg{from{opacity:0}to{opacity:1}}
@@ -503,7 +503,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   );
 }
 
-function ChatView({ input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, onStop, onOpenAutomation, onAutomationOperate, onOpenConnectors }: {
+function ChatView({ input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptPages, onPptPagesChange, onStop, onOpenAutomation, onAutomationOperate, onOpenConnectors }: {
   input: string;
   onInputChange: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
@@ -516,7 +516,6 @@ function ChatView({ input, onInputChange, onSend, onQuote, attachments, onAddFil
   showInput?: boolean;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   pptGeneration: boolean; onPptGenerationChange: (selected: boolean) => void;
-  pptMode: PptMode; onPptModeChange: (mode: PptMode) => void;
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
   onStop: () => void;
   onOpenAutomation?: (taskId: string) => void;
@@ -729,8 +728,6 @@ function ChatView({ input, onInputChange, onSend, onQuote, attachments, onAddFil
               onRemoveAttachment={onRemoveAttachment}
               pptGeneration={pptGeneration}
               onPptGenerationChange={onPptGenerationChange}
-              pptMode={pptMode}
-              onPptModeChange={onPptModeChange}
               pptPages={pptPages}
               onPptPagesChange={onPptPagesChange}
               agentRunning={agentRunning}

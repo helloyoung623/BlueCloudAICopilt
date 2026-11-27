@@ -53,7 +53,7 @@ import { createDeferredTimers } from "./chat/deferred-timers";
 import { finalizeBodyOnlyMessages, finalizeInterruptedMessages, isGenerating } from "./chat/generation-state";
 import { useGenerationRuns } from "./chat/use-generation-runs";
 import { startAgentStream } from "./chat/agent-stream";
-import type { OutlinePage, PptMode, PptPageCount, PptStage } from "./ppt/types";
+import type { OutlinePage, PptPageCount, PptStage } from "./ppt/types";
 import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/launch";
 import { addSourcesToProject, buildImportTasks, parseFileSize } from "./projects/project-files";
 import { AIIcon, OutlinePanel, PptGenerationToggle, RequirementPanel } from "./ppt/panels";
@@ -64,6 +64,7 @@ import type { ProjectItem } from "./projects/types";
 import { CreateProjectDialog, ProjectActionsMenu, TaskProjectMoveMenu, TransferConfirmDialog } from "./projects/ProjectViews";
 import { ProjectArchivePage, ProjectHeaderActionsHost, ProjectHomePage, ProjectListPage } from "./projects/ProjectPages";
 import { SidebarHost } from "./sidebar/SidebarHost";
+import { readStoredSidebarWidth, storeSidebarWidth } from "./sidebar/sidebar-width";
 import { DeleteChatTaskDialog, DeleteProjectDialog, SearchDialog } from "./dialogs/AppDialogs";
 import { HomeView } from "./home/HomeView";
 import { ChatHeader, TaskHeaderActions } from "./chat/ChatHeader";
@@ -267,10 +268,11 @@ export default function App() {
   }, [dispatchConversation]);
   const [input, setInput] = useState("");
   const [pptGeneration, setPptGeneration] = useState(false);
-  const [pptMode, setPptMode] = useState<PptMode>("PowerPoint");
   const [pptPages, setPptPages] = useState<PptPageCount>("智能匹配");
   const [stage, setStage] = useState<PptStage>("idle");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 侧边栏宽度：桌面端可拖右边缘调整，记住上次拖到的宽度
+  const [sidebarWidth, setSidebarWidth] = useState(() => readStoredSidebarWidth());
   const [searchOpen, setSearchOpen] = useState(false);
   const [projectConfigurationOpen, setProjectConfigurationOpen] = useState(true);
   // 项目详情页宽度 < 800px 时进入紧凑布局：右侧「指令 / 成员」边栏收起，内容并入「配置」页签
@@ -561,6 +563,11 @@ export default function App() {
   useEffect(() => {
     if (!isMobile) setMobileNavigationOpen(false);
   }, [isMobile]);
+
+  // 记住侧边栏宽度：刷新 / 重开页面还是上次拖到的大小
+  useEffect(() => {
+    storeSidebarWidth(sidebarWidth);
+  }, [sidebarWidth]);
 
   // 详情栏是「内容 320 + 详情 320」的双栏：再加 240 导航共需 880。
   // 窗口窄于 880 时先自动收起左侧导航（腾出 240，两栏都保住 320），而不是把两栏压窄
@@ -1443,7 +1450,6 @@ export default function App() {
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
-    setPptMode("PowerPoint");
     setPptPages("智能匹配");
     setStage("idle");
     setProjectListOpen(false);
@@ -1913,8 +1919,13 @@ export default function App() {
   return (
     <Sheet open={isMobile && mobileNavigationOpen} onOpenChange={setMobileNavigationOpen}>
     {/* relative：详情栏铺满态（内容区 < 640）要按「前一个兄弟」的偏移定位，
-        祖先没有定位容器就只能按视口算，会话页会盖住左侧导航 */}
-    <div className="w-screen h-screen flex flex-row overflow-hidden relative">
+        祖先没有定位容器就只能按视口算，会话页会盖住左侧导航。
+        --nav-width：左侧导航实际占掉的宽度（收起或移动端时为 0）。
+        PPT 弹层按它对齐到对话区里，不越过导航、也不越过窗口右边缘。 */}
+    <div
+      className="w-screen h-screen flex flex-row overflow-hidden relative"
+      style={{ "--nav-width": `${isMobile || !sidebarOpen ? 0 : sidebarWidth}px` } as React.CSSProperties}
+    >
       <ConversationDomainProvider value={conversationDomain}>
       <SidebarHost
         {...sidebarHandlers}
@@ -1922,6 +1933,8 @@ export default function App() {
         setProjects={setProjects}
         isMobile={isMobile}
         sidebarOpen={sidebarOpen}
+        width={sidebarWidth}
+        onWidthChange={setSidebarWidth}
         projectListOpen={projectListOpen}
         automationOpen={automationOpen}
         libraryOpen={libraryOpen}
@@ -2037,8 +2050,6 @@ export default function App() {
               onRegeneratePpt={handleOutlineConfirm}
               pptGeneration={pptGeneration}
               onPptGenerationChange={setPptGeneration}
-              pptMode={pptMode}
-              onPptModeChange={setPptMode}
               pptPages={pptPages}
               onPptPagesChange={setPptPages}
               onStop={handleStop}
@@ -2071,8 +2082,6 @@ export default function App() {
                   onRemoveAttachment: handleRemoveAttachment,
                   pptGeneration,
                   onPptGenerationChange: setPptGeneration,
-                  pptMode,
-                  onPptModeChange: setPptMode,
                   pptPages,
                   onPptPagesChange: setPptPages,
                   onOpenConnectors: handleOpenConnectors,
@@ -2087,8 +2096,6 @@ export default function App() {
               onRemoveAttachment={handleRemoveAttachment}
               pptGeneration={pptGeneration}
               onPptGenerationChange={setPptGeneration}
-              pptMode={pptMode}
-              onPptModeChange={setPptMode}
               pptPages={pptPages}
               onPptPagesChange={setPptPages}
               projects={projects}
@@ -2178,16 +2185,12 @@ export default function App() {
         visible={stage === "requirement"}
         onClose={resetPptFlow}
         onConfirm={handleRequirementConfirm}
-        pptMode={pptMode}
-        onPptModeChange={setPptMode}
         initialPages={pptPages}
-        mainOffset={!isMobile && sidebarOpen ? 120 : 0}
       />
       <OutlinePanel
         visible={stage === "outline"}
         onClose={resetPptFlow}
         onConfirm={handleOutlineConfirm}
-        mainOffset={!isMobile && sidebarOpen ? 120 : 0}
       />
     </div>
     <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
