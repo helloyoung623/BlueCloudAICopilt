@@ -20,7 +20,7 @@ import { getAnswerDoneKey } from "./conversation-state";
 import { ANCHOR_GAP, findLastUserIndex, resolveFollowMode } from "./follow-mode";
 import type { FollowMode } from "./follow-mode";
 import type { Message } from "./types";
-import type { PptMode, PptPageCount } from "../ppt/types";
+import type { PptPageCount } from "../ppt/types";
 
 const AUTOMATION_CARD_CSS = `
 @keyframes ac-bg{from{opacity:0}to{opacity:1}}
@@ -502,7 +502,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptMode, onPptModeChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onAutomationOperate, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, onRecommendationsShown }: {
+function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onAutomationOperate, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, onRecommendationsShown }: {
   conversationId: number | null;
   messages: Message[];
   input: string;
@@ -517,7 +517,6 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   showInput?: boolean;
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   pptGeneration: boolean; onPptGenerationChange: (selected: boolean) => void;
-  pptMode: PptMode; onPptModeChange: (mode: PptMode) => void;
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
   agentRunning: boolean; onStop: () => void;
   onOpenAutomation?: (taskId: string) => void;
@@ -726,8 +725,6 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
               onRemoveAttachment={onRemoveAttachment}
               pptGeneration={pptGeneration}
               onPptGenerationChange={onPptGenerationChange}
-              pptMode={pptMode}
-              onPptModeChange={onPptModeChange}
               pptPages={pptPages}
               onPptPagesChange={onPptPagesChange}
               agentRunning={agentRunning}

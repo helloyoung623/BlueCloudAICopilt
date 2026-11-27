@@ -6,6 +6,8 @@ import { OperationMenu } from "../components/operation-menu";
 import { SmallTip } from "../components/task-artifacts";
 import { UserAvatar } from "../components/user-avatar";
 import { useUserProfile } from "../user-profile";
+import { SidebarResizeHandle } from "./SidebarResizeHandle";
+import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT } from "./sidebar-width";
 import svgSidebar from "@/imports/历史对话操作项/svg-1dh84d0t2n";
 import { CreateProjectDialog, ProjectActionsMenu, TaskProjectMoveMenu, showArchiveToast } from "../projects/ProjectViews";
 import type { HistoryItem } from "../chat/types";
@@ -335,9 +337,12 @@ function LogoutDialog({ open, onOpenChange, onConfirm }: {
  * 列表滚动到底部自动加载，每批 10 条，「没有更多了」仅在发生一次加载后出现
  * ------------------------------------------------------------------ */
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onOpenConnectors, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, connectorOpen, activeId, activeProjectId, runningTaskIds, unreadTaskIds, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
+function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onOpenConnectors, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, connectorOpen, activeId, activeProjectId, runningTaskIds, unreadTaskIds, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false, width, onWidthChange }: {
   onSearch: () => void;
   mobile?: boolean;
+  // 侧边栏宽度：桌面端可拖右边缘调整，由 App 持有（窄屏自动收起的阈值要跟着实际宽度走）
+  width?: number;
+  onWidthChange?: (width: number) => void;
   history: HistoryItem[];
   setHistory: React.Dispatch<React.SetStateAction<HistoryItem[]>>;
   projects: ProjectItem[];
@@ -519,9 +524,14 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
     setMenuId(null);
     setProjectMenuId(null);
   };
+  // 移动端是抽屉，宽度固定 240；桌面端按用户拖出来的宽度走
+  const sidebarWidth = clampSidebarWidth(width ?? SIDEBAR_WIDTH_DEFAULT);
 
   return (
-    <div className={`relative w-[240px] shrink-0 self-stretch border-r border-[#f2f2f2] bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}>
+    <div
+      className={`relative shrink-0 self-stretch border-r border-[#f2f2f2] bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
+      style={{ width: mobile ? SIDEBAR_WIDTH_DEFAULT : sidebarWidth }}
+    >
       {/* head —— 只有 logo / 搜索 / 新任务固定；新任务以下全部进入下方滚动区 */}
       <div className="relative h-[124px] w-full shrink-0 bg-white">
         <div className="absolute left-[calc(50%-15.8px)] top-[52px] h-[16px] w-[160.403px] -translate-x-1/2">
@@ -553,7 +563,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
         <button
           type="button"
           onClick={onNewChat}
-          className={`absolute left-[12px] top-[84px] flex h-[40px] w-[216px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
+          className={`absolute left-[12px] right-[12px] top-[84px] flex h-[40px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
             !projectListOpen && !automationOpen && !libraryOpen && !connectorOpen && activeId === null && activeProjectId === null ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
           }`}
         >
@@ -664,7 +674,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
               type="button"
               aria-label="新建项目"
               onClick={() => setCreateProjectOpen(true)}
-              className="absolute left-[188px] top-[3px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
+              className="absolute right-[4px] top-[3px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
             >
               <img src="/assets/project-add.svg" alt="" className="shrink-0" />
             </button>
@@ -676,7 +686,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
                 type="button"
                 aria-label="折叠所有项目"
                 onClick={() => setExpandedProjectIds(new Set())}
-                className="absolute left-[156px] top-[3px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
+                className="absolute right-[36px] top-[3px] flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
               >
                 <img src="/assets/sidebar-collapse.svg" alt="" className="shrink-0" />
               </button>
@@ -1151,6 +1161,10 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
         }}
       />
       {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
+      {/* 右边缘的拖拽手柄：只在桌面端出现，移动端是固定宽度的抽屉 */}
+      {!mobile && onWidthChange && (
+        <SidebarResizeHandle width={sidebarWidth} onWidthChange={onWidthChange} />
+      )}
     </div>
   );
 }
