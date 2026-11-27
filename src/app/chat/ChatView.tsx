@@ -16,6 +16,7 @@ import { TASK_OPERATIONS, automationIconSrc, cardSubtitle, useDismissOnOutside }
 import type { AutomationIcon, AutomationCardStatus, ScheduleState } from "../components/automation-view";
 import { ExecutionProcess, MergedProcess, PROCESS_PRESETS } from "./execution-process";
 import { ChatInput } from "./ChatInput";
+import { useChatDomain } from "./chat-domain";
 import { getAnswerDoneKey } from "./conversation-state";
 import { ANCHOR_GAP, findLastUserIndex, resolveFollowMode } from "./follow-mode";
 import type { FollowMode } from "./follow-mode";
@@ -502,9 +503,7 @@ function ChatMessageRow({ msg, index, isLastAi, instant, advance, onOpenPpt, onR
   );
 }
 
-function ChatView({ conversationId, messages, input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptPages, onPptPagesChange, agentRunning, onStop, onOpenAutomation, onAutomationOperate, onOpenConnectors, onEditMessage, onDeleteMessage, onRetryMessage, onRegenerateMessage, onProcessProgress, onRecommendationsShown }: {
-  conversationId: number | null;
-  messages: Message[];
+function ChatView({ input, onInputChange, onSend, onQuote, attachments, onAddFiles, onRemoveAttachment, hasProject, projectFiles, showInput = true, onOpenPpt, onRegeneratePpt, pptGeneration, onPptGenerationChange, pptPages, onPptPagesChange, onStop, onOpenAutomation, onAutomationOperate, onOpenConnectors }: {
   input: string;
   onInputChange: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
@@ -518,17 +517,21 @@ function ChatView({ conversationId, messages, input, onInputChange, onSend, onQu
   onOpenPpt?: () => void; onRegeneratePpt?: () => void;
   pptGeneration: boolean; onPptGenerationChange: (selected: boolean) => void;
   pptPages: PptPageCount; onPptPagesChange: (pages: PptPageCount) => void;
-  agentRunning: boolean; onStop: () => void;
+  onStop: () => void;
   onOpenAutomation?: (taskId: string) => void;
   onAutomationOperate?: (label: string, taskId: string) => void;
   onOpenConnectors?: () => void;
-  onEditMessage?: (index: number) => void;
-  onDeleteMessage?: (index: number) => void;
-  onRetryMessage?: (index: number) => void;
-  onRegenerateMessage?: (index: number) => void;
-  onProcessProgress?: (index: number, progress: { shown: number; batchStart: number }) => void;
-  onRecommendationsShown?: (key: string) => void;
 }) {
+  // 会话与生成属于聊天域：从 Context 取，不再由 App 一层层传下来。
+  const { conversationId, messages, running: agentRunning, actions } = useChatDomain();
+  const {
+    editMessage: onEditMessage,
+    deleteMessage: onDeleteMessage,
+    retryMessage: onRetryMessage,
+    regenerateMessage: onRegenerateMessage,
+    processProgress: onProcessProgress,
+    recommendationsShown: onRecommendationsShown,
+  } = actions;
   const scrollRef = useRef<HTMLDivElement>(null);
   // 「当前这一轮」＝最近一条用户提问。发消息后这一轮钉在视口顶部，之前那轮的回答
   // 被整体推到上面（要回头看可以往上滚）——用户每次都像在开一个新对话。

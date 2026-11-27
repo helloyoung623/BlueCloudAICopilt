@@ -12,7 +12,7 @@ import { ArtifactFileCard, SmallTip, TaskArtifactsButton } from "./components/ta
 import { KubaiIcon, kubaiNameFromUrl } from "./components/kubai-icon";
 import type { LocatedTaskArtifact, TaskArtifact } from "./components/task-artifacts";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./components/ui/dialog";
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "./components/ui/sheet";
+import { Sheet } from "./components/ui/sheet";
 import { useIsMobile } from "./components/ui/use-mobile";
 import { OperationMenu } from "./components/operation-menu";
 import { AddContentMenu } from "./components/add-content-menu";
@@ -37,15 +37,22 @@ import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./compo
 import { Popover, PopoverAnchor } from "./components/ui/popover";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
-import { streamChat, type AgentEvent, type AgentSource } from "./agent-client";
+import { type AgentEvent, type AgentSource } from "./agent-client";
 import { condenseAutomationTitle } from "./automation-title";
 import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
 import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, useDismissOnOutside, TASK_OPERATIONS, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
 import type { AgentRound, HistoryItem, Message, ProcessPreset, ProcessVariant, ToolKind } from "./chat/types";
-import { deriveUnreadState, findLastIndex, freezePreviousMessages, getAnswerDoneKey, markConversationRead, toInstantMessages, updateConversationInHistory } from "./chat/conversation-state";
-import { beginBody, classifyStreamEnd, endGeneration, finalizeBodyOnlyMessages, finalizeInterruptedMessages, isGenerating, startGeneration } from "./chat/generation-state";
-import type { GenerationState } from "./chat/generation-state";
+import { deriveRunningTaskIds, findLastIndex, freezePreviousMessages, getAnswerDoneKey, sameIdSet, sameSidebarTasks, toInstantMessages, toSidebarTasks } from "./chat/conversation-state";
+import { ConversationDomainProvider, useLatestHandlers, useStableValue } from "./chat/conversation-context";
+import type { ConversationActions } from "./chat/conversation-context";
+import { ChatDomainProvider } from "./chat/chat-domain";
+import { useConversationStore } from "./chat/use-conversation-store";
+import { clearConversationCaches } from "./chat/run-caches";
+import { createDeferredTimers } from "./chat/deferred-timers";
+import { finalizeBodyOnlyMessages, finalizeInterruptedMessages, isGenerating } from "./chat/generation-state";
+import { useGenerationRuns } from "./chat/use-generation-runs";
+import { startAgentStream } from "./chat/agent-stream";
 import type { OutlinePage, PptPageCount, PptStage } from "./ppt/types";
 import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/launch";
 import { addSourcesToProject, buildImportTasks, parseFileSize } from "./projects/project-files";
@@ -54,8 +61,9 @@ import { ExecutionProcess, MergedProcess, PROCESS_PRESETS, intentIcon, runningAc
 import { ChatInput } from "./chat/ChatInput";
 import { ChatView } from "./chat/ChatView";
 import type { ProjectItem } from "./projects/types";
-import { ArchiveView, CreateProjectDialog, ProjectActionsMenu, ProjectHeaderActions, ProjectHomeView, ProjectListView, TaskProjectMoveMenu, TransferConfirmDialog, showArchiveToast } from "./projects/ProjectViews";
-import { Sidebar, TaskOperationsMenu } from "./sidebar/Sidebar";
+import { CreateProjectDialog, ProjectActionsMenu, TaskProjectMoveMenu, TransferConfirmDialog } from "./projects/ProjectViews";
+import { ProjectArchivePage, ProjectHeaderActionsHost, ProjectHomePage, ProjectListPage } from "./projects/ProjectPages";
+import { SidebarHost } from "./sidebar/SidebarHost";
 import { readStoredSidebarWidth, storeSidebarWidth } from "./sidebar/sidebar-width";
 import { DeleteChatTaskDialog, DeleteProjectDialog, SearchDialog } from "./dialogs/AppDialogs";
 import { HomeView } from "./home/HomeView";
@@ -197,6 +205,9 @@ const buildQueryProcess = (query: string, kind: "outlook" | "onedrive" = "outloo
 // ── root ──────────────────────────────────────────────────────────────────────
 
 // Figma ReAct 图标：文件路径映射（SVG 自带 fill-opacity 0.38，与 T2 文字同色）
+// 未选中会话时消息区展示的空数组；保持引用稳定，避免无关更新触发 ChatView 重渲染。
+const EMPTY_MESSAGES: Message[] = [];
+
 export default function App() {
   // 登录页跳转过来时带一个一次性标记：等 Toaster 挂载后弹「登录成功」
   useEffect(() => {
@@ -214,7 +225,47 @@ export default function App() {
 
   const isMobile = useIsMobile(800);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
+  // 会话域单一真相：当前草稿、历史会话、活动会话、未读都在一个 reducer 里。
+  // 活动会话消息直接从 conversations 查出，不再用 effect 在两份消息之间同步。
+  // 桥接只有一个实现（useConversationStore）：dispatch 只进同步 store，React 只采纳
+  // store 推来的整份快照，不会再跑一次带副作用的 updater。
+  const { state: conversationState, store: conversationStore, dispatch: dispatchConversation } = useConversationStore();
+  const history = conversationState.conversations;
+  const activeHistoryId = conversationState.activeId;
+  const messages = activeHistoryId === null
+    ? conversationState.draft
+    : (history.find(item => item.id === activeHistoryId)?.messages ?? EMPTY_MESSAGES);
+  const unreadTaskIds = conversationState.unread;
+  const shownRecommendationKeys = conversationState.shownRecommendations;
+  const activeHistoryIdRef = useRef<number | null>(null);
+  activeHistoryIdRef.current = activeHistoryId;
+  // 延迟发送（自动化立即执行、失败重试）只查同步 store：
+  // 新建会话已 dispatch 但 React 还没提交时，这里也已经能看到；删除同理立即不可见。
+  const deferredTimers = useRef(createDeferredTimers(
+    (callback, delay) => window.setTimeout(callback, delay),
+    handle => window.clearTimeout(handle),
+  ));
+  useEffect(() => () => deferredTimers.current.dispose(), []);
+  // 同一个事件里切换/新建会话后紧接着写消息：ref 先同步，消息才会落到新会话。
+  // 下面几个写入口都依赖 dispatchConversation（本身引用恒定）；写明依赖而不是空数组，
+  // 免得以后 dispatchConversation 一旦换实现就变成抓旧闭包。
+  const setActiveHistoryId = useCallback((id: number | null) => {
+    activeHistoryIdRef.current = id;
+    dispatchConversation({ type: "select", id });
+  }, [dispatchConversation]);
+  const setHistory = useCallback((updater: HistoryItem[] | ((current: HistoryItem[]) => HistoryItem[])) => {
+    dispatchConversation({ type: "updateConversations", updater });
+  }, [dispatchConversation]);
+  const setMessages = useCallback((updater: Message[] | ((current: Message[]) => Message[])) => {
+    dispatchConversation({ type: "updateMessages", id: activeHistoryIdRef.current, updater });
+  }, [dispatchConversation]);
+  // 离开会话页时清空的是「未建会话的草稿视图」，不是删掉历史会话里的消息。
+  const clearDraft = useCallback(() => {
+    dispatchConversation({ type: "updateMessages", id: null, updater: () => [] });
+  }, [dispatchConversation]);
+  const handleRecommendationsShown = useCallback((key: string) => {
+    dispatchConversation({ type: "recommendationsShown", key });
+  }, [dispatchConversation]);
   const [input, setInput] = useState("");
   const [pptGeneration, setPptGeneration] = useState(false);
   const [pptPages, setPptPages] = useState<PptPageCount>("智能匹配");
@@ -242,10 +293,8 @@ export default function App() {
   const requestTransfer = (projectId: number, member: string) => setTransferConfirm({ projectId, member });
   // 删除任务（会话）统一确认弹窗（Figma 459:38570）
   const [deleteChatTaskId, setDeleteChatTaskId] = useState<number | null>(null);
-  const [activeHistoryId, setActiveHistoryId] = useState<number | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
   // 自动化任务由 App 持有：点「创建」会进入新会话，自动化页会卸载，任务不能跟着丢
   const [automationTasks, setAutomationTasks] = useState<AutomationTask[]>(INITIAL_AUTOMATION_TASKS);
   // 模型调 create_automation 成功时，任务先落库、卡片先缓存；
@@ -278,7 +327,9 @@ export default function App() {
       });
       return changed ? mapped : list;
     };
-    setMessages(syncCards);
+    // 活动会话的消息就在 conversations 里，下面的 setHistory 已经覆盖；
+    // 只有「未建会话」的草稿才需要单独同步，避免同一份消息被写两次。
+    if (activeHistoryIdRef.current === null) setMessages(syncCards);
     setHistory(current => (
       current.some(item => item.messages.some(message => message.automation))
         ? current.map(item => {
@@ -353,74 +404,14 @@ export default function App() {
     importTimersRef.current = [];
   }, []);
   const nextHistoryId = useRef(1);
-  const activeRunId = useRef(0);
-  // 记录每个会话最新的运行 id：切到别的任务时，原任务的后台流程仍可继续推进，
-  // 只有当同一会话里又发起了新一轮运行时才作废旧的那一轮。
-  const runIdByConversation = useRef(new Map<number, number>());
-  // 每个会话正在进行的真实 SSE 流，停止/新一轮/切走时 abort 服务端请求
-  const streamAbortByConversation = useRef(new Map<number, AbortController>());
-  // 每个会话的生成状态：请求开始 → 正文结束（answer.end）之间算「生成中」，三个阶段都能停。
-  // 按会话隔离：切到别的会话不会中断后台生成，也不会把后台会话的暂停按钮带到当前会话。
-  const [generationByConversation, setGenerationByConversation] = useState<Map<number, GenerationState>>(() => new Map());
-  const updateGeneration = useCallback((conversationId: number, update: (state: GenerationState | undefined) => GenerationState | undefined) => {
-    setGenerationByConversation(current => {
-      const previous = current.get(conversationId);
-      const next = update(previous);
-      if (next === previous) return current;
-      const map = new Map(current);
-      if (next) map.set(conversationId, next);
-      else map.delete(conversationId);
-      return map;
-    });
-  }, []);
+  // 运行号、每个会话的生成状态、SSE 控制器和计时器统一由这个控制器按会话管理；
+  // App 只把状态快照用于 UI，把事件映射成消息，不再直接持有这些 ref / setState。
+  const { states: generationByConversation, controller: generationRuns } = useGenerationRuns();
   // 标记某会话本轮是否已收到真实工具事件：首个 tool.call 到来时清掉本地占位步骤
   const realToolMode = useRef(new Map<number, boolean>());
   // plan.summary 会预置本轮动作（先展示 loading），tool.call 按顺序认领这些动作，
   // 记下每轮已认领数量，避免同一条动作被追加两次。
   const confirmedByRound = useRef(new Map<string, number>());
-  // setTimeout 回调里读最新会话 id（state 会过期）
-  const activeHistoryIdRef = useRef<number | null>(null);
-  activeHistoryIdRef.current = activeHistoryId;
-  // 当前会话的消息实时回写历史条目。
-  // 之前只有「切走后由后台回调 applyToConversation 写入」才同步，历史条目的 messages 常年为空：
-  // 切换任务会丢内容，迟到的异步结果还会被追加到别的会话上（任务串台）。
-  const messagesOwnerRef = useRef<number | null>(null);
-  useEffect(() => { messagesOwnerRef.current = activeHistoryId; }, [activeHistoryId]);
-  useEffect(() => {
-    const owner = messagesOwnerRef.current;
-    if (owner === null) return;
-    setHistory(h => {
-      let changed = false;
-      const next = h.map(item => {
-        if (item.id !== owner || item.messages === messages) return item;
-        changed = true;
-        return { ...item, messages };
-      });
-      return changed ? next : h;
-    });
-  }, [messages]);
-
-  // 侧栏任务状态（Figma 5053:14694）：loading 由「仍有 thinking process」或「最新回答的延展问题还没渲染出来」派生。
-  // 即 AI 正文出来了也不算完成，必须等推荐问题真正挂到 DOM 上；未读则由「执行中 → 已完成且当前没在看」推导。
-  const [shownRecommendationKeys, setShownRecommendationKeys] = useState<Set<string>>(() => new Set());
-  const handleRecommendationsShown = useCallback((key: string) => {
-    setShownRecommendationKeys(current => current.has(key) ? current : new Set(current).add(key));
-  }, []);
-  const [unreadTaskIds, setUnreadTaskIds] = useState<Set<number>>(() => new Set());
-  const thinkingTaskRef = useRef<Map<number, boolean>>(new Map());
-  useEffect(() => {
-    setUnreadTaskIds(current => {
-      const derived = deriveUnreadState(history, thinkingTaskRef.current, activeHistoryIdRef.current, current);
-      thinkingTaskRef.current = derived.thinking;
-      return derived.unread;
-    });
-  }, [history]);
-  // 打开任务即视为已查看：覆盖侧栏点选、自动化定位等所有进入会话的路径
-  useEffect(() => {
-    if (activeHistoryId === null) return;
-    setUnreadTaskIds(current => markConversationRead(current, activeHistoryId));
-  }, [activeHistoryId]);
-
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const attachmentsRef = useRef<ChatAttachment[]>([]);
   const uploadTimers = useRef(new Map<string, number>());
@@ -582,8 +573,6 @@ export default function App() {
   // 窗口窄于 880 时先自动收起左侧导航（腾出 240，两栏都保住 320），而不是把两栏压窄
   // —— 自动化任务页的列表详情、会话页的会话详情都按这条走；
   // 窗口变宽或关掉详情栏时，把自己收起的那一次还原（用户手动收起的保持不动）。
-  // 这里按默认宽度 240 算：导航被用户拖宽后不再自动收起，免得打断正在进行的拖动；
-  // 内容区被挤窄时，详情栏会按自己的规则降级成整页详情（见 use-detail-panel-width）。
   const sidebarOpenRef = useRef(sidebarOpen);
   sidebarOpenRef.current = sidebarOpen;
   const autoCollapsedNav = useRef(false);
@@ -610,17 +599,11 @@ export default function App() {
 
   const resetPptFlow = useCallback(() => setStage("idle"), []);
 
-  // keep the active conversation's transcript in sync with the history list
-  useEffect(() => {
-    if (activeHistoryId === null) return;
-    setHistory(h => h.map(i => (i.id === activeHistoryId ? { ...i, messages } : i)));
-  }, [messages, activeHistoryId]);
-
   // deleting the open conversation returns to the home view
   useEffect(() => {
     if (activeHistoryId !== null && !history.some(i => i.id === activeHistoryId)) {
       setActiveHistoryId(null);
-      setMessages([]);
+      clearDraft();
       setStage("idle");
     }
   }, [history, activeHistoryId]);
@@ -636,6 +619,12 @@ export default function App() {
     if (activeHistoryId === null || !history.some(item => item.id === activeHistoryId)) return;
     setActiveProjectId(activeTaskProjectId ?? null);
   }, [activeHistoryId, activeTaskProjectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 后台会话的流式回调也按会话 id 直接写进它的消息列表：
+  // 当前在看哪一个会话不影响写入目标，切走的任务照样继续推进。
+  const applyToConversation = useCallback((conversationId: number, updater: (list: Message[]) => Message[]) => {
+    dispatchConversation({ type: "updateMessages", id: conversationId, updater });
+  }, []);
 
   const handleSelectHistory = (id: number) => {
     const item = history.find(i => i.id === id);
@@ -653,17 +642,9 @@ export default function App() {
     setSelectedProjectId(null);
     // 从历史载入的消息打上 instant 标记：直接完整显示，不重播打字动画
     // 同时清掉 needsTypewriter，避免切回来又逐字打一遍
-    setMessages(toInstantMessages(item.messages));
-  };
-
-  // 把一次更新写回指定会话：当前正在看的就是 setMessages，否则写进历史列表，
-  // 保证切走的任务在后台继续推进（进度、完成态都不丢）。
-  const applyToConversation = (conversationId: number, updater: (list: Message[]) => Message[]) => {
-    if (activeHistoryIdRef.current === conversationId) {
-      setMessages(updater);
-    } else {
-      setHistory(h => updateConversationInHistory(h, conversationId, updater));
-    }
+    // 按 id 在 reducer 里取当前消息再标记 instant；不能用切会话前拿到的 item.messages 快照，
+    // 否则同一批里刚落地的后台流式内容会被旧快照盖掉。
+    applyToConversation(id, toInstantMessages);
   };
 
   // 执行过程把已展开的步骤数回写到消息上：切走再回来能续上，工具 loading 态不会丢
@@ -673,8 +654,8 @@ export default function App() {
 
   const handleSelectProject = (id: number) => {
     setMobileNavigationOpen(false);
-    activeRunId.current += 1;
-    setMessages([]);
+    generationRuns.invalidateGlobal();
+    clearDraft();
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
@@ -697,17 +678,16 @@ export default function App() {
     const target = messages[index];
     setMessages(prev => prev.filter((_, i) => i !== index));
     if (target?.role === "process" || target?.role === "result") {
-      activeRunId.current++;
+      generationRuns.invalidateGlobal();
       // 删掉正在执行的步骤：作废该会话的后台流程，避免回调又把消息补回来
       if (activeHistoryId !== null) {
-        const deletedRunId = runIdByConversation.current.get(activeHistoryId);
-        runIdByConversation.current.delete(activeHistoryId);
+        const deletedRunId = generationRuns.runIdOf(activeHistoryId);
+        generationRuns.invalidateRun(activeHistoryId);
         // 删的正是还在跑的那一步：把请求也断掉、生成状态清掉，
         // 否则发送按钮会一直停在「暂停生成」。
         if (target.role === "process" && target.thinking) {
-          streamAbortByConversation.current.get(activeHistoryId)?.abort();
-          streamAbortByConversation.current.delete(activeHistoryId);
-          updateGeneration(activeHistoryId, () => undefined);
+          generationRuns.abort(activeHistoryId);
+          generationRuns.clearState(activeHistoryId);
           // 这一轮不会再兑现的等待：卡片缓存与弹窗发起参数一并清掉。
           const deletedKey = deletedRunId !== undefined ? `${activeHistoryId}:${deletedRunId}` : undefined;
           if (deletedKey) {
@@ -721,10 +701,36 @@ export default function App() {
   const handleRetryMessage = (index: number) => {
     const target = messages[index];
     if (!target || target.role !== "user") return;
-    setMessages(prev => prev.map((m, i) => i === index ? { ...m, sendState: undefined } : m));
+    // 目标会话在点击这一刻就定下来：写入与请求都用它，不再混用旧闭包和当前会话 ref。
+    const targetId = conversationStore.getState().activeId;
     // 重试即重新走一次发送流程（去掉「模拟失败」前缀后作为真实提问）
     const retryText = target.text.replace(/模拟失败|模拟提示/g, "").trim() || "找出近一周的邮件";
-    window.setTimeout(() => handleSend(retryText, target.attachments), 0);
+    const clearFailed = (list: Message[]) => (
+      list[index]?.role === "user" && list[index]?.text === target.text
+        ? list.map((message, i) => (i === index ? { ...message, sendState: undefined } : message))
+        : list
+    );
+    deferredTimers.current.schedule(() => {
+      const snapshot = conversationStore.getState();
+      if (targetId === null) {
+        // 草稿重试：期间切到别的会话就放弃，不把草稿消息投到新会话；仍在草稿才照常重试。
+        // 原来点击时就清掉失败标记，放弃后看起来像重试成功；现在标记留着并明确告知取消。
+        if (snapshot.activeId !== null) {
+          toast.info("已切换会话，重试已取消", { id: "retry-cancelled" });
+          return;
+        }
+        dispatchConversation({ type: "updateMessages", id: null, updater: clearFailed });
+        sendRunRef.current(retryText, target.attachments);
+        return;
+      }
+      // 会话在这 0ms 内被删：reducer 本来也会丢弃迟到写入，这里连请求一起放弃，不复活会话。
+      if (!snapshot.conversations.some(item => item.id === targetId)) {
+        toast.info("会话已删除，重试已取消", { id: "retry-cancelled" });
+        return;
+      }
+      applyToConversation(targetId, clearFailed);
+      sendRunRef.current(retryText, target.attachments, { conversationId: targetId });
+    }, 0);
   };
 
   // 卡片「引用」：与「加号」上传的附件完全同款——真实文件类型图标 / 文件名 /「类型 · 大小」副标题 / 来源角标。
@@ -769,7 +775,7 @@ export default function App() {
     handleSend(query, [], { regenerateFrom: index });
   };
 
-  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = [], options?: { automationRun?: boolean; regenerateFrom?: number; launch?: LaunchAutomationPayload; conversationTitle?: string; forceNewConversation?: boolean; runningLabel?: string }) => {
+  const handleSend = (suggestion?: string, sentAttachments: ChatAttachment[] = [], options?: { automationRun?: boolean; regenerateFrom?: number; launch?: LaunchAutomationPayload; conversationTitle?: string; forceNewConversation?: boolean; runningLabel?: string; conversationId?: number }) => {
     const text = (suggestion ?? input).trim();
     if (!text) return;
     if (sentAttachments.some(attachment => attachment.status !== "ready")) return;
@@ -778,7 +784,7 @@ export default function App() {
     const forceNew = options?.forceNewConversation === true;
     const targetProjectId = forceNew ? null : (activeProjectId ?? selectedProjectId);
     const shouldGeneratePpt = !isRegenerate && (pptGeneration || isPPTIntent(text));
-    const runId = ++activeRunId.current;
+    const runId = generationRuns.nextRunId();
     // 重新生成不应清空用户正在编辑的草稿
     if (!isRegenerate) {
       setInput("");
@@ -789,9 +795,15 @@ export default function App() {
     // 由模型自己判断是自动化意图 → 条件齐全才调 create_automation 工具，
     // 前端在 tool.result 里落库并挂出任务卡片（条件不齐时模型会先追问，不会走到创建）。
     const historyTitle = options?.conversationTitle?.trim() || text || sentAttachments[0]?.name || "附件会话";
+    // 延迟触发的发送（自动化立即执行、失败重试）带显式落点：只写回这个会话，
+    // 不看用户此刻在看哪里；原定会话已删除就直接放弃，绝不另建或投到当前会话。
+    // 这里只查同步 store：新建会话即使 React 还没提交也已经存在，不会被误判为「已删除」。
+    const snapshot = conversationStore.getState();
+    const explicitConversationId = options?.conversationId;
+    if (explicitConversationId !== undefined && !snapshot.conversations.some(item => item.id === explicitConversationId)) return;
     // create a history entry when starting a brand-new conversation
-    const isNewConversation = activeHistoryId === null || forceNew;
-    let conversationId = isNewConversation ? null : activeHistoryId;
+    const isNewConversation = explicitConversationId === undefined && (snapshot.activeId === null || forceNew);
+    let conversationId = explicitConversationId ?? (isNewConversation ? null : snapshot.activeId);
     if (conversationId === null) {
       conversationId = nextHistoryId.current++;
       setHistory(h => [{ id: conversationId as number, title: historyTitle.slice(0, 20), createdAt: Date.now(), messages: [], ...(targetProjectId !== null ? { projectId: targetProjectId } : {}) }, ...h]);
@@ -799,8 +811,14 @@ export default function App() {
       setActiveProjectId(targetProjectId);
     }
     const convId = conversationId;
+    // 请求上下文在追加本轮消息之前取快照：否则 store 会把刚追加的用户消息也算进去，
+    // 请求里就多出一条重复提问。
+    const live = conversationStore.getState();
+    const ownerMessages = isNewConversation
+      ? []
+      : (live.conversations.find(item => item.id === convId)?.messages ?? (live.activeId === convId ? live.draft : []));
     // 该会话的最新运行轮次：切到别的任务不会作废它，只有本会话再发新一轮才会
-    runIdByConversation.current.set(convId, runId);
+    generationRuns.claimRun(convId, runId);
     // 弹窗创建自动化任务：这一轮的结构化条件按「会话+轮次」登记，
     // 服务端据此补齐工具参数（模型不用再追问），前端据此保证任务与卡片跟弹窗一致
     if (options?.launch) launchAutomation.current.set(`${convId}:${runId}`, options.launch);
@@ -839,14 +857,14 @@ export default function App() {
     // 它迟到的结束事件会被运行号守卫丢弃，不会改到新一轮。
     let keepPreviousStream = false;
     if (!isNewConversation) {
-      const previous = generationByConversation.get(convId);
+      // 读控制器里的实时状态，不读 React 快照：answer.end 到达即已 phase=idle，
+      // 但 React 可能还没提交这一帧，拿旧快照会把「正文已发完、等追问」的上一轮误判成仍在生成，
+      // 于是多掐断一条本该自己走完的连接（追问就永远不来了）。与延迟发送同一原则：不等提交。
+      const previous = generationRuns.stateOf(convId);
       const wasGenerating = isGenerating(previous);
       const previousRunId = previous?.runId;
       keepPreviousStream = previous?.phase === "idle";
-      if (!keepPreviousStream) {
-        streamAbortByConversation.current.get(convId)?.abort();
-        streamAbortByConversation.current.delete(convId);
-      }
+      if (!keepPreviousStream) generationRuns.abort(convId);
       // 上一轮不会再兑现的等待：卡片缓存与弹窗发起参数。真的建出来的卡片挂回上一轮的回答，
       // 没建出来的绝不伪造成功。
       const previousKey = previousRunId !== undefined ? `${convId}:${previousRunId}` : undefined;
@@ -898,22 +916,17 @@ export default function App() {
       if (isNewConversation) setMessages(appendRun); else applyToConversation(convId, appendRun);
     }
     // 这一轮进入「生成中」：请求开始 → 正文结束（answer.end）之间，发送按钮是「暂停生成」。
-    updateGeneration(convId, () => startGeneration(runId));
+    generationRuns.begin(convId, runId);
 
     // 普通提问：走真实模型流式输出；PPT / 卡片演示仍保留原模拟链路
     if (useRealAgent) {
-      // 上一轮正文已经发完时保留它的连接（让它自己走完）；其余情况一律掐断。
-      if (!keepPreviousStream) streamAbortByConversation.current.get(convId)?.abort();
-      const abortController = new AbortController();
-      streamAbortByConversation.current.set(convId, abortController);
+      // 上一轮正文已经发完时保留它的连接（让它自己走完）；其余情况在前面已掐断。
+      // 旧连接按 runId 单独登记，新一轮登记不会覆盖它，停止/删除/卸载仍能中止。
       realToolMode.current.delete(convId);
       for (const key of [...confirmedByRound.current.keys()]) {
         if (key.startsWith(`${convId}:`)) confirmedByRound.current.delete(key);
       }
 
-      const ownerMessages = isNewConversation
-        ? []
-        : (activeHistoryIdRef.current === convId ? messages : (history.find(item => item.id === convId)?.messages ?? []));
       // 上下文要带上这一会话里已经说出口的内容。
       // 正文已结束（answer.end 到了）但这一轮还没收尾（run.end 没到）时，这条回答的状态
       // 还是 streaming，可它其实已经说完了 —— 不能因为状态没收尾就把这段 assistant 正文漏掉，
@@ -929,12 +942,8 @@ export default function App() {
       let aiAppended = false;
       let fullText = "";
       let answerStarted = false;
-      // 这一轮收到过哪些结束事件：连接先断了（EOF）时靠它们分清结局
-      let sawAnswerEnd = false;
-      let sawRunEnd = false;
       // 结果自检结论：verify.result 在 answer.start 之前就到，先存着，建消息时带上
       let verifyState: Message["verify"];
-      const isCurrent = () => runIdByConversation.current.get(convId) === runId && !abortController.signal.aborted;
 
       const clearProcessAndFail = () => {
         applyToConversation(convId, prev => {
@@ -945,8 +954,8 @@ export default function App() {
         });
       };
 
+      // 会话 + runId 守卫和结束事件判定由 agent-stream 服务负责；这里只把事件映射成消息。
       const handleEvent = (event: AgentEvent) => {
-        if (!isCurrent()) return;
         if (event.type === "plan.summary") {
           // 「正在思考」结束后，先落一行用户可见的行动说明 / 下一步计划 / 推理摘要，
           // 再等 tool.call 推进「显示执行意图」里每条的状态。每一轮工具调用各自成块。
@@ -1191,7 +1200,6 @@ export default function App() {
           // 有真实工具调用时才收起执行过程供展开查看。
           answerStarted = true;
           // 正文开始流式输出：整轮仍在生成中，发送按钮继续是「暂停生成」。
-          updateGeneration(convId, state => (state && state.runId === runId ? beginBody(state) : state));
           const hadRealTools = realToolMode.current.get(convId) === true;
           applyToConversation(convId, prev => {
             const next = hadRealTools
@@ -1230,8 +1238,6 @@ export default function App() {
           // 正文已发完，推荐追问还在服务端生成：先标记 bodyDone，
           // 打字机收尾后操作项立即出现，不再跟推荐问题一起出来。
           // 正文结束＝整轮生成结束：恢复发送按钮，不因为推荐追问还在生成就一直是「暂停生成」。
-          sawAnswerEnd = true;
-          updateGeneration(convId, state => (state && state.runId === runId ? endGeneration(state) : state));
           applyToConversation(convId, prev => {
             const next = [...prev];
             const idx = findLastIndex(next, m => m.role === "ai" && m.streaming);
@@ -1239,7 +1245,6 @@ export default function App() {
             return next;
           });
         } else if (event.type === "run.end") {
-          sawRunEnd = true;
           const finalText = typeof event.data.text === "string" && event.data.text ? event.data.text : fullText;
           const plainText = typeof event.data.plainText === "string" && event.data.plainText ? event.data.plainText : undefined;
           // 来源只有服务端真实下发且非空时才落到消息；无来源的回答不带此字段，徽标不显示。
@@ -1302,63 +1307,49 @@ export default function App() {
             }
             return next;
           });
-          streamAbortByConversation.current.delete(convId);
-          // 这一轮彻底结束（正文 + 推荐追问都到齐）：清掉生成状态。
-          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
         } else if (event.type === "run.error") {
           const message = typeof event.data.message === "string" ? event.data.message : "模型调用失败";
           pendingAutomation.current.delete(`${convId}:${runId}`);
           clearProcessAndFail();
-          streamAbortByConversation.current.delete(convId);
-          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
           if (activeHistoryIdRef.current === convId) toast.error(message);
         }
       };
 
-      streamChat({ messages: apiMessages, runId, signal: abortController.signal, automationRun: options?.automationRun === true, automationSeed: options?.launch?.seed, onEvent: handleEvent })
-        .then(() => {
-          // 连接结束了，但这一轮可能没走完（服务端中途断开，或少了结束事件）。
-          // 靠 classifyStreamEnd 分清四种结局：主动取消 / 整轮收齐 / 正文完成但追问缺失 / 正文未完成的异常结束。
-          const kind = classifyStreamEnd({ aborted: abortController.signal.aborted, sawAnswerEnd, sawRunEnd });
-          // 主动取消与正常收齐都已经各自收尾，这里不重复处理。
-          if (kind === "cancelled" || kind === "completed") return;
-          // 已被同一会话的新一轮取代：迟到的收尾不许改当前轮次。
-          if (!isCurrent()) return;
-          if (streamAbortByConversation.current.get(convId) === abortController) {
-            streamAbortByConversation.current.delete(convId);
-          }
-          // 这一轮不会再兑现的等待：卡片缓存与弹窗发起参数。真的建出来的卡片挂回这条回答，
-          // 没建出来的绝不伪造成功。
-          const automationKey = `${convId}:${runId}`;
-          const card = pendingAutomation.current.get(automationKey);
-          pendingAutomation.current.delete(automationKey);
-          launchAutomation.current.delete(automationKey);
-          if (kind === "body-only") {
-            // 正文已经写完，只是推荐追问没来：正文保留、收尾，发送按钮恢复，不当故障。
-            updateGeneration(convId, state => (state && state.runId === runId ? endGeneration(state) : state));
+      // 请求生命周期（AbortController、事件守卫、连接结束后的四种结局）交给服务；
+      // 这里只负责把收尾结果写回消息和自动化卡片缓存。
+      const takePendingCard = () => {
+        const automationKey = `${convId}:${runId}`;
+        const card = pendingAutomation.current.get(automationKey);
+        pendingAutomation.current.delete(automationKey);
+        launchAutomation.current.delete(automationKey);
+        return card;
+      };
+      startAgentStream({
+        controller: generationRuns,
+        conversationId: convId,
+        runId,
+        messages: apiMessages,
+        automationRun: options?.automationRun === true,
+        automationSeed: options?.launch?.seed,
+        callbacks: {
+          onEvent: handleEvent,
+          onBodyOnly: () => {
+            // 正文写完、追问没来：正文保留并收尾，不按失败处理。
+            const card = takePendingCard();
             applyToConversation(convId, prev => finalizeBodyOnlyMessages(prev, { runId, automation: card }));
-            return;
-          }
-          // 正文都没写完：异常结束，按既有失败处理，不把不完整回答当成功。
-          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
-          clearProcessAndFail();
-          if (activeHistoryIdRef.current === convId) toast.error("模型调用失败");
-        })
-        .catch(error => {
-          // 用户主动停止时请求会被中断：这不是故障，走停止分支，不弹失败提示。
-          if (!isCurrent()) return;
-          if (abortController.signal.aborted) return;
-          clearProcessAndFail();
-          streamAbortByConversation.current.delete(convId);
-          updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
-          if (activeHistoryIdRef.current === convId) toast.error(error?.message ?? "模型调用失败");
-        });
+          },
+          onFailed: () => {
+            takePendingCard();
+            clearProcessAndFail();
+          },
+          onError: message => { if (activeHistoryIdRef.current === convId) toast.error(message); },
+        },
+      });
       return;
     }
 
     // 以下为演示态：PPT 生成 / OneDrive / Outlook 卡片仍使用本地脚本
-    setTimeout(() => {
-      if (runIdByConversation.current.get(convId) !== runId) return;
+    generationRuns.schedule(convId, runId, () => {
       if (shouldGeneratePpt) {
         applyToConversation(convId, prev => {
           const next = [...prev];
@@ -1367,7 +1358,7 @@ export default function App() {
           next.push({ role: "ai", text: "好的，我来帮您生成PPT。需要先确认演示场景、受众、页数和风格，以便提供针对性的内容结构。", followUps: PPT_FOLLOW_UPS });
           return next;
         });
-        setTimeout(() => { if (activeHistoryIdRef.current === convId && runIdByConversation.current.get(convId) === runId) setStage("requirement"); }, 400);
+        generationRuns.schedule(convId, runId, () => { if (activeHistoryIdRef.current === convId) setStage("requirement"); }, 400);
       } else if (cardDemo) {
         applyToConversation(convId, prev => {
           const next = [...prev];
@@ -1381,18 +1372,18 @@ export default function App() {
         });
       }
       // 演示链路跑完：这一轮不再生成中，发送按钮恢复。
-      updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
+      generationRuns.clearState(convId, runId);
     }, 15000);
   };
 
   const handleRequirementConfirm = () => {
-    const runId = ++activeRunId.current;
+    const runId = generationRuns.nextRunId();
     const convId = activeHistoryIdRef.current;
     setStage("outline_generating");
     setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "outline", runId }]);
-    if (convId !== null) updateGeneration(convId, () => startGeneration(runId));
-    setTimeout(() => {
-      if (activeRunId.current !== runId || convId === null) return;
+    if (convId !== null) generationRuns.begin(convId, runId);
+    generationRuns.scheduleGlobal(runId, () => {
+      if (convId === null) return;
       applyToConversation(convId, prev => {
         const next = [...prev];
         const idx = findLastIndex(next, m => m.role === "process" && m.thinking);
@@ -1400,19 +1391,19 @@ export default function App() {
         next.push({ role: "ai", text: "需求已确认，大纲生成完成，请确认以下结构。", followUps: PPT_FOLLOW_UPS });
         return next;
       });
-      updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
-      setTimeout(() => { if (activeRunId.current === runId) setStage("outline"); }, 400);
+      generationRuns.clearState(convId, runId);
+      generationRuns.scheduleGlobal(runId, () => setStage("outline"), 400);
     }, 24000);
   };
 
   const handleOutlineConfirm = () => {
-    const runId = ++activeRunId.current;
+    const runId = generationRuns.nextRunId();
     const convId = activeHistoryIdRef.current;
     setStage("ppt_generating");
     setMessages(prev => [...prev, { role: "process", text: "", thinking: true, variant: "ppt", runId }]);
-    if (convId !== null) updateGeneration(convId, () => startGeneration(runId));
-    setTimeout(() => {
-      if (activeRunId.current !== runId || convId === null) return;
+    if (convId !== null) generationRuns.begin(convId, runId);
+    generationRuns.scheduleGlobal(runId, () => {
+      if (convId === null) return;
       applyToConversation(convId, prev => {
         const next = [...prev];
         const idx = findLastIndex(next, m => m.role === "process" && m.thinking);
@@ -1420,8 +1411,8 @@ export default function App() {
         next.push({ role: "result", text: "", artifacts: [{ id: `${Date.now()}-pptx`, name: PPT_ARTIFACT_NAME, extension: "pptx", size: "12.6M" }] });
         return next;
       });
-      updateGeneration(convId, state => (state && state.runId === runId ? undefined : state));
-      setTimeout(() => { if (activeRunId.current === runId) setStage("preview"); }, 400);
+      generationRuns.clearState(convId, runId);
+      generationRuns.scheduleGlobal(runId, () => setStage("preview"), 400);
     }, 20000);
   };
 
@@ -1431,15 +1422,9 @@ export default function App() {
   const handleStop = () => {
     const convId = activeHistoryIdRef.current;
     if (convId === null) return;
-    const state = generationByConversation.get(convId);
-    const runId = state?.runId;
-    activeRunId.current += 1;
-    // 作废本会话的运行号：之后到达的迟到事件不再改消息，也不影响下一轮请求。
-    runIdByConversation.current.delete(convId);
-    streamAbortByConversation.current.get(convId)?.abort();
-    streamAbortByConversation.current.delete(convId);
-    // 状态回到「未生成中」：发送按钮恢复成发送。
-    updateGeneration(convId, current => (current ? endGeneration(current) : undefined));
+    const runId = generationRuns.stateOf(convId)?.runId;
+    // 作废本会话的轮次并中断请求；状态留在 idle（发送按钮恢复），迟到的事件按 runId 丢弃。
+    generationRuns.stop(convId);
     // 清理这一轮不会再兑现的等待：卡片缓存与弹窗发起参数。
     // 真的建出来的任务已经在列表里，卡片也挂回这条回答；没建出来的绝不伪造成功。
     const automationKey = runId !== undefined ? `${convId}:${runId}` : undefined;
@@ -1460,8 +1445,8 @@ export default function App() {
 
   const handleNewChat = () => {
     setMobileNavigationOpen(false);
-    activeRunId.current += 1;
-    setMessages([]);
+    generationRuns.invalidateGlobal();
+    clearDraft();
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
@@ -1496,8 +1481,8 @@ export default function App() {
   };
   const handleOpenProjects = () => {
     setMobileNavigationOpen(false);
-    activeRunId.current += 1;
-    setMessages([]);
+    generationRuns.invalidateGlobal();
+    clearDraft();
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
@@ -1511,9 +1496,8 @@ export default function App() {
     setActiveProjectId(null);
     setSelectedProjectId(null);
   };
-  // 「立即执行」复用真实发送流程：handleSend 每次渲染重建，用 ref 拿最新一份，
-  // 避免切换会话后闭包里的 activeHistoryId 还是旧值
-  const sendRunRef = useRef<(text?: string, attachments?: ChatAttachment[], options?: { automationRun?: boolean }) => void>(() => {});
+  // 延迟发送复用真实发送流程：用 ref 拿最新一份 handleSend，目标会话再由 options.conversationId 显式指定。
+  const sendRunRef = useRef<(text?: string, attachments?: ChatAttachment[], options?: { automationRun?: boolean; conversationId?: number }) => void>(() => {});
   sendRunRef.current = handleSend;
   // 新建自动化任务弹窗点「创建」：不是直接往列表塞一条，而是发起一个新会话（任务），
   // 由 AI 承接并完成创建。排期条件转成自然语言写进 AI 的过程与回复里。
@@ -1579,7 +1563,7 @@ export default function App() {
       if (activeHistoryIdRef.current !== convId) {
         // 切到创建会话：已有消息按历史处理（instant 不重播动画），任务消息接着往下发
         gotoConversation(convId);
-        setMessages(base.map(m => ({ ...m, instant: true, needsTypewriter: false })));
+        applyToConversation(convId, toInstantMessages);
       }
       // 正在看的就是创建会话：什么都不用动，消息直接续在后面
     } else {
@@ -1590,7 +1574,7 @@ export default function App() {
       setHistory(h => [{ id, title: task.title.slice(0, 20), createdAt: Date.now(), messages: [] }, ...h]);
       gotoConversation(id);
       setActiveProjectId(null);
-      setMessages([]);
+      clearDraft();
     }
     applyTasks(current => current.map(item => item.id === task.id
       ? {
@@ -1600,10 +1584,20 @@ export default function App() {
       }
       : item));
     toast.success("任务已开始执行", { id: "automation-task-status" });
-    // 等上面的切换（activeHistoryId）提交后再走真实发送流程；
+    // 等状态切换落定后再走真实发送流程；不依赖固定延迟是否足够 React 提交：
+    // 新建会话由同步 store 登记，提交慢也能识别；已删除则立即识别。
     // automationRun：跳过「创建自动化任务」意图识别（任务文案常含「创建」字样，不能又被拦去新建）；
-    // 附件随任务一起发出去：任务「就」里挂的文件就是这次执行的输入
-    window.setTimeout(() => sendRunRef.current(task.prompt, task.attachments ?? [], { automationRun: true }), 80);
+    // 附件随任务一起发出去：任务「就」里挂的文件就是这次执行的输入。
+    // 显式带上落点会话：窗口期内用户切到别的任务也不会改投当前会话；目标会话被删则
+    // 按「删除正在生成的会话」既有行为放弃这次延迟发送，不新建、不复活；卸载时清掉定时器。
+    deferredTimers.current.schedule(() => {
+      if (!conversationStore.getState().conversations.some(item => item.id === runConversationId)) {
+        // 点击时已经提示「任务已开始执行」：目标消失后必须更正，不能让用户以为跑过了。
+        toast.error("目标会话已删除，任务未执行", { id: "automation-task-status" });
+        return;
+      }
+      sendRunRef.current(task.prompt, task.attachments ?? [], { automationRun: true, conversationId: runConversationId });
+    }, 80);
   };
 
   // 运行记录右侧图钉：定位到这次执行所在的对话消息。
@@ -1628,7 +1622,7 @@ export default function App() {
     setSelectedProjectId(null);
     setActiveProjectId(target.projectId ?? null);
     setActiveHistoryId(target.id);
-    setMessages(target.messages.map(m => ({ ...m, instant: true, needsTypewriter: false })));
+    applyToConversation(target.id, toInstantMessages);
     // 等会话渲染完再滚过去：优先按记录里的消息位置，找不到再退回「含该任务卡片 / 任务文案的最后一条」
     window.setTimeout(() => {
       const rows = [...document.querySelectorAll<HTMLElement>("[data-message-index]")];
@@ -1651,8 +1645,8 @@ export default function App() {
   // Figma 9625:49728：左侧导航「自动化任务」→ 自动化任务页（与项目页互斥，复用同一套组件/响应式）
   const handleOpenAutomation = () => {
     setMobileNavigationOpen(false);
-    activeRunId.current += 1;
-    setMessages([]);
+    generationRuns.invalidateGlobal();
+    clearDraft();
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
@@ -1669,8 +1663,8 @@ export default function App() {
   // Figma 9446:47192 / 9423:124200 / 9638:46195：头像菜单「归档数据」→ 归档页（任务/项目两个 tab）
   const handleOpenArchive = () => {
     setMobileNavigationOpen(false);
-    activeRunId.current += 1;
-    setMessages([]);
+    generationRuns.invalidateGlobal();
+    clearDraft();
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
@@ -1687,8 +1681,8 @@ export default function App() {
   // Figma 10118:87777：输入框 + 菜单 / 头像菜单的「连接器」都进入同一页
   const handleOpenConnectors = () => {
     setMobileNavigationOpen(false);
-    activeRunId.current += 1;
-    setMessages([]);
+    generationRuns.invalidateGlobal();
+    clearDraft();
     clearDraftAttachments(true);
     setInput("");
     setPptGeneration(false);
@@ -1717,6 +1711,25 @@ export default function App() {
   const activeProject = projects.find(project => project.id === activeProjectId) ?? null;
   const activeTask = history.find(item => item.id === activeHistoryId) ?? null;
 
+  // 删除会话的唯一出口：会话本身（含未读 / 执行中记忆 / 已展示推荐 key）、这一会话的生成请求、
+  // 定时器、以及按「会话:轮次」登记的运行期缓存，全部在这里一次性回收。
+  // 三个入口（单删任务、删项目、侧栏兜底 removeProjectTasks）都走这里 —— 只从列表里移除的话，
+  // 后台还在跑的连接和计时器会继续往一个已经不存在的会话里写，缓存也会一直留着。
+  const forgetConversations = useCallback((ids: readonly number[]) => {
+    if (!ids.length) return;
+    dispatchConversation({ type: "deleteConversations", ids });
+    ids.forEach(id => {
+      // 删掉的会话即使还在后台生成，也要立刻中断并作废它的回调。
+      generationRuns.forget(id);
+      clearConversationCaches(id, {
+        pendingAutomation: pendingAutomation.current,
+        launchAutomation: launchAutomation.current,
+        confirmedByRound: confirmedByRound.current,
+        realToolMode: realToolMode.current,
+      });
+    });
+  }, [dispatchConversation, generationRuns]);
+
   // 删除项目：所有入口（侧栏「···」、项目列表卡片、项目详情、归档页）先弹确认窗，
   // 点「确定」才真正删除项目与项目内任务，并 toast「删除成功」
   const handleRequestDeleteProject = (id: number) => setDeleteProjectId(id);
@@ -1725,7 +1738,10 @@ export default function App() {
     const id = deleteProjectId;
     setDeleteProjectId(null);
     setProjects(current => current.filter(project => project.id !== id));
-    setHistory(current => current.filter(task => task.projectId !== id));
+    // 项目里的任务也是会话：删项目等于批量删会话，生成请求/计时器/缓存一并回收。
+    forgetConversations(
+      conversationStore.getState().conversations.filter(task => task.projectId === id).map(task => task.id),
+    );
     // 删的是当前打开的项目 → 退回项目列表，避免停留在已删除的项目页
     if (activeProjectId === id) handleOpenProjects();
     toast.success("删除成功");
@@ -1738,12 +1754,12 @@ export default function App() {
     if (deleteChatTaskId === null) return;
     const id = deleteChatTaskId;
     setDeleteChatTaskId(null);
-    setHistory(current => current.filter(task => task.id !== id));
+    // 会话本身（含未读、执行中记忆、已展示推荐 key）、生成请求、定时器和运行期缓存一起回收；
+    // 只清这个 id，其他会话的状态原样保留。
+    forgetConversations([id]);
     if (activeHistoryId === id) {
-      // 作废这条会话还在跑的后台流程，再清空会话区，避免停留在已删除的任务里
-      activeRunId.current += 1;
-      runIdByConversation.current.delete(id);
-      setMessages([]);
+      generationRuns.invalidateGlobal();
+      clearDraft();
       setActiveHistoryId(null);
       setChatAutomationId(null);
     }
@@ -1826,58 +1842,79 @@ export default function App() {
     else toast.error("暂不支持上传文件夹");
   };
 
-  // 当前会话的 messages 比 history 回写早一帧，补进去避免 loading 图标延迟出现。
-  // 完成判定（用户 2026-11-25 改）：本轮操作项出现即算执行完成，loading 立刻结束，不再等推荐问题。
-  const activeHasThinking = messages.some(message => message.role === "process" && message.thinking);
   // 当前会话是否在生成中：请求开始 → 正文结束（answer.end）之间为真，
   // 思考、工具执行、正文流式输出三个阶段都能停。
   // 按会话隔离：这里只看当前会话自己的状态，后台会话的生成不会把暂停按钮带过来。
   const agentRunning = activeHistoryId !== null && isGenerating(generationByConversation.get(activeHistoryId));
+
+  // ── 会话域 / 聊天域给组件消费的值 ──────────────────────────────────────────
+  // 侧栏只拿任务投影（不含 messages）：流式正文每来一个 token，投影内容不变、引用也不变，
+  // Context 就不会把整个侧栏带着重渲染。
+  const sidebarTasks = useStableValue(useMemo(() => toSidebarTasks(history), [history]), sameSidebarTasks);
+  // 当前会话的 messages 可能比 history 回写早一帧，活动会话的生成态单独补进来。
+  const activeHasThinking = messages.some(message => message.role === "process" && message.thinking);
   const activeAnswerDoneKey = getAnswerDoneKey(activeHistoryId, messages);
-  const answerPending = activeHistoryId !== null
+  const activeAnswerPending = activeHistoryId !== null
     && activeAnswerDoneKey !== null
     && !activeHasThinking
     && !shownRecommendationKeys.has(activeAnswerDoneKey);
-  const sidebarRunningTaskIds = new Set<number>(history
-    .filter(item => item.messages.some(message => message.role === "process" && message.thinking))
-    .map(item => item.id));
-  if (activeHistoryId !== null && (activeHasThinking || answerPending)) {
-    sidebarRunningTaskIds.add(activeHistoryId);
-  }
-
-  const sidebar = (
-        <Sidebar
-          history={history}
-          setHistory={setHistory}
-          projects={projects}
-          setProjects={setProjects}
-          mobile={isMobile}
-          width={sidebarWidth}
-          onWidthChange={setSidebarWidth}
-          onClose={() => isMobile ? setMobileNavigationOpen(false) : setSidebarOpen(false)}
-          onNewChat={handleNewChat}
-          onOpenProjects={handleOpenProjects}
-          onOpenAutomation={handleOpenAutomation}
-          onOpenArchive={handleOpenArchive}
-          onOpenLibrary={handleOpenLibrary}
-          onOpenConnectors={handleOpenConnectors}
-          onNewProjectTask={handleNewProjectTask}
-          projectListOpen={projectListOpen}
-          automationOpen={automationOpen}
-          libraryOpen={libraryOpen}
-          connectorOpen={connectorOpen}
-          activeId={activeHistoryId}
-          activeProjectId={activeProjectId}
-          runningTaskIds={sidebarRunningTaskIds}
-          unreadTaskIds={unreadTaskIds}
-          onSelect={handleSelectHistory}
-          onSelectProject={handleSelectProject}
-          onRequestDeleteProject={handleRequestDeleteProject}
-          onRequestDeleteTask={handleRequestDeleteChatTask}
-          onRequestTransfer={requestTransfer}
-          onSearch={() => setSearchOpen(true)}
-        />
+  const runningTaskIds = useStableValue(
+    useMemo(
+      () => deriveRunningTaskIds(history, activeHistoryId, activeHasThinking || activeAnswerPending),
+      [history, activeHistoryId, activeHasThinking, activeAnswerPending],
+    ),
+    sameIdSet,
   );
+  const conversationActions = useMemo<ConversationActions>(() => ({
+    togglePinned: (id, pinned) => setHistory(items => items.map(item => (item.id === id ? { ...item, pinned } : item))),
+    renameTask: (id, title) => setHistory(items => items.map(item => (item.id === id ? { ...item, title } : item))),
+    moveTask: (id, projectId) => setHistory(items => items.map(item => (item.id === id ? { ...item, projectId } : item))),
+    archiveTask: (id, archived) => setHistory(items => items.map(item => (item.id === id ? { ...item, archived } : item))),
+    archiveProjectTasks: (projectId, archived) => setHistory(items => items.map(item => (item.projectId === projectId ? { ...item, archived } : item))),
+    // 删项目内任务同样走「删会话」这一条路径，否则会漏掉生成请求/缓存/会话域状态的回收。
+    removeProjectTasks: projectId => forgetConversations(
+      conversationStore.getState().conversations.filter(item => item.projectId === projectId).map(item => item.id),
+    ),
+  }), [setHistory, forgetConversations, conversationStore]);
+  const conversationDomain = useMemo(() => ({
+    tasks: sidebarTasks,
+    activeId: activeHistoryId,
+    runningTaskIds,
+    unreadTaskIds,
+    actions: conversationActions,
+  }), [sidebarTasks, activeHistoryId, runningTaskIds, unreadTaskIds, conversationActions]);
+  // 消息级操作每次渲染都重建：处理函数是普通闭包（不是 useCallback），一旦缓存就会读到旧会话/旧消息。
+  // ChatView 本来就是流式正文的消费方，随父级重渲染即可，不需要在这里做引用稳定。
+  const chatDomain = {
+    conversationId: activeHistoryId,
+    messages,
+    running: agentRunning,
+    actions: {
+      editMessage: handleEditMessage,
+      deleteMessage: handleDeleteMessage,
+      retryMessage: handleRetryMessage,
+      regenerateMessage: handleRegenerateMessage,
+      processProgress: handleProcessProgress,
+      recommendationsShown: handleRecommendationsShown,
+    },
+  };
+  // 侧栏的回调引用保持稳定，配合 Sidebar 的 memo：流式正文重渲染不会把整个侧栏带着重渲染。
+  const sidebarHandlers = useLatestHandlers({
+    onClose: () => { if (isMobile) setMobileNavigationOpen(false); else setSidebarOpen(false); },
+    onNewChat: handleNewChat,
+    onOpenProjects: handleOpenProjects,
+    onOpenAutomation: handleOpenAutomation,
+    onOpenArchive: handleOpenArchive,
+    onOpenLibrary: handleOpenLibrary,
+    onOpenConnectors: handleOpenConnectors,
+    onNewProjectTask: handleNewProjectTask,
+    onSelect: handleSelectHistory,
+    onSelectProject: handleSelectProject,
+    onRequestDeleteProject: handleRequestDeleteProject,
+    onRequestDeleteTask: handleRequestDeleteChatTask,
+    onRequestTransfer: requestTransfer,
+    onSearch: () => setSearchOpen(true),
+  });
 
   return (
     <Sheet open={isMobile && mobileNavigationOpen} onOpenChange={setMobileNavigationOpen}>
@@ -1889,13 +1926,22 @@ export default function App() {
       className="w-screen h-screen flex flex-row overflow-hidden relative"
       style={{ "--nav-width": `${isMobile || !sidebarOpen ? 0 : sidebarWidth}px` } as React.CSSProperties}
     >
-      {!isMobile && sidebarOpen && sidebar}
-      {isMobile && (
-        <SheetContent side="left" aria-describedby={undefined} className="w-[240px] max-w-full gap-0 border-0 p-0 shadow-none sm:max-w-[240px] [&>button]:hidden">
-          <SheetTitle className="sr-only">导航</SheetTitle>
-          {sidebar}
-        </SheetContent>
-      )}
+      <ConversationDomainProvider value={conversationDomain}>
+      <SidebarHost
+        {...sidebarHandlers}
+        projects={projects}
+        setProjects={setProjects}
+        isMobile={isMobile}
+        sidebarOpen={sidebarOpen}
+        width={sidebarWidth}
+        onWidthChange={setSidebarWidth}
+        projectListOpen={projectListOpen}
+        automationOpen={automationOpen}
+        libraryOpen={libraryOpen}
+        connectorOpen={connectorOpen}
+        activeProjectId={activeProjectId}
+      />
+      </ConversationDomainProvider>
       {/* main content: header always at App level so sidebar can never affect it */}
       <div
         ref={detailContentRef}
@@ -1930,25 +1976,16 @@ export default function App() {
           title={chatTitle}
           projectOverview={activeProject && !activeTask && !projectListOpen ? { name: activeProject.name, onOpenProjects: handleOpenProjects } : undefined}
           actions={activeProject && !activeTask && !projectListOpen ? (
-            <ProjectHeaderActions
-              key={activeProject.id}
+            <ProjectHeaderActionsHost
               project={activeProject}
+              setProjects={setProjects}
+              setHistory={setHistory}
               panelOpen={projectConfigurationOpen}
               showPanelToggle={!detailCompact}
               onTogglePanel={() => setProjectConfigurationOpen(open => !open)}
-              onEdit={updates => setProjects(current => current.map(project => project.id === activeProject.id ? { ...project, name: updates.name, description: updates.description } : project))}
-              onTransfer={owner => requestTransfer(activeProject.id, owner)}
-              onArchive={() => {
-                const projectId = activeProject.id;
-                setProjects(current => current.map(project => project.id === projectId ? { ...project, archived: true } : project));
-                setHistory(current => current.map(task => task.projectId === projectId ? { ...task, archived: true } : task));
-                showArchiveToast(() => {
-                  setProjects(current => current.map(project => project.id === projectId ? { ...project, archived: false } : project));
-                  setHistory(current => current.map(task => task.projectId === projectId ? { ...task, archived: false } : task));
-                });
-                handleOpenProjects();
-              }}
-              onDelete={() => handleRequestDeleteProject(activeProject.id)}
+              onOpenProjects={handleOpenProjects}
+              onRequestDeleteProject={handleRequestDeleteProject}
+              onRequestTransfer={requestTransfer}
             />
           ) : activeTask && messages.length > 0 ? (
             <TaskHeaderActions
@@ -1975,56 +2012,30 @@ export default function App() {
         {libraryOpen ? null : automationOpen
           ? <AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} onLocateRun={handleLocateRunRecord} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
           : archiveOpen
-          ? <ArchiveView
+          ? <ProjectArchivePage
               projects={projects}
               tasks={history}
-              onUnarchiveProject={id => {
-                setProjects(current => current.map(project => project.id === id ? { ...project, archived: false } : project));
-                setHistory(current => current.map(task => task.projectId === id ? { ...task, archived: false } : task));
-                toast.success("项目已取消归档");
-              }}
-              onEditProject={(id, updates) => {
-                setProjects(current => current.map(project => project.id === id ? { ...project, name: updates.name, description: updates.description } : project));
-                toast.success("项目信息已更新");
-              }}
-              onTransferProject={requestTransfer}
-              onDeleteProject={handleRequestDeleteProject}
+              setProjects={setProjects}
+              setHistory={setHistory}
+              onRequestDeleteProject={handleRequestDeleteProject}
+              onRequestDeleteTask={handleRequestDeleteChatTask}
+              onRequestTransfer={requestTransfer}
               onSelectTask={id => { setArchiveOpen(false); setConnectorOpen(false); handleSelectHistory(id); }}
-              onUnarchiveTask={id => {
-                setHistory(current => current.map(task => task.id === id ? { ...task, archived: false } : task));
-                toast.success("任务已取消归档");
-              }}
-              onDeleteTask={handleRequestDeleteChatTask}
             />
           : connectorOpen
           ? <ConnectorsView />
           : projectListOpen
-          ? <ProjectListView
+          ? <ProjectListPage
               projects={projects}
+              setProjects={setProjects}
+              setHistory={setHistory}
               onSelectProject={handleSelectProject}
-              onCreateProject={project => {
-                const id = Date.now();
-                setProjects(current => [...current, { ...project, id }]);
-                handleSelectProject(id);
-              }}
-              onEditProject={(id, updates) => {
-                setProjects(current => current.map(project => project.id === id ? { ...project, name: updates.name, description: updates.description } : project));
-              }}
-              onArchiveProject={id => {
-                setProjects(current => current.map(project => project.id === id ? { ...project, archived: true } : project));
-                setHistory(current => current.map(item => item.projectId === id ? { ...item, archived: true } : item));
-                showArchiveToast(() => {
-                  setProjects(current => current.map(project => project.id === id ? { ...project, archived: false } : project));
-                  setHistory(current => current.map(item => item.projectId === id ? { ...item, archived: false } : item));
-                });
-              }}
-              onDeleteProject={handleRequestDeleteProject}
-              onTransferProject={requestTransfer}
+              onRequestDeleteProject={handleRequestDeleteProject}
+              onRequestTransfer={requestTransfer}
             />
           : messages.length > 0
-            ? <ChatView
-              conversationId={activeHistoryId}
-              messages={messages}
+            ? <ChatDomainProvider value={chatDomain}>
+              <ChatView
               input={input}
               onInputChange={setInput}
               onSend={handleSend}
@@ -2041,36 +2052,25 @@ export default function App() {
               onPptGenerationChange={setPptGeneration}
               pptPages={pptPages}
               onPptPagesChange={setPptPages}
-              agentRunning={agentRunning}
               onStop={handleStop}
               onOpenAutomation={setChatAutomationId}
               onAutomationOperate={handleChatCardOperate}
               onOpenConnectors={handleOpenConnectors}
-              onEditMessage={handleEditMessage}
-              onDeleteMessage={handleDeleteMessage}
-              onRetryMessage={handleRetryMessage}
-              onRegenerateMessage={handleRegenerateMessage}
-              onProcessProgress={handleProcessProgress}
-              onRecommendationsShown={handleRecommendationsShown}
             />
+            </ChatDomainProvider>
           : activeProject
-            ? <ProjectHomeView
-                key={activeProject.id}
+            ? <ProjectHomePage
                 project={activeProject}
-                onStartImport={startFileImport}
+                projects={projects}
+                tasks={history.filter(task => task.projectId === activeProject.id && !task.archived)}
                 configurationOpen={projectConfigurationOpen}
                 compact={detailCompact}
-                projects={projects}
-                onCreateProject={project => {
-                  const id = Date.now();
-                  setProjects(current => [...current, { ...project, id }]);
-                  return id;
-                }}
-                tasks={history.filter(task => task.projectId === activeProject.id && !task.archived)}
+                setProjects={setProjects}
+                setHistory={setHistory}
                 onSelectTask={handleSelectHistory}
-                onUpdateTask={(id, updates) => setHistory(current => current.map(task => task.id === id ? { ...task, ...updates } : task))}
-                onDeleteTask={handleRequestDeleteChatTask}
-                onUpdateProject={updates => setProjects(current => current.map(project => project.id === activeProject.id ? { ...project, ...updates } : project))}
+                onRequestDeleteTask={handleRequestDeleteChatTask}
+                onSelectProject={handleSelectProject}
+                onStartImport={startFileImport}
                 inputProps={{
                   hasProject: true,
                   projectFiles: activeProject.files ?? DEMO_PROJECT_FILES,

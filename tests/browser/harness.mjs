@@ -367,21 +367,35 @@ function createSession({ res, call, mock }) {
   return session;
 }
 
+// 探针页：同一份 store↔React 桥接，挂在 StrictMode 下由测试驱动。
+// 单独构建（不进产品构建），产物落在主构建目录的 probe/ 子目录。
+function buildProbe(outDir) {
+  const build = spawnSync(
+    process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+    ["exec", "vite", "build", "--config", "tests/browser/probe/vite.probe.config.mjs", "--outDir", outDir, "--emptyOutDir"],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  if (build.error || build.status !== 0) {
+    throw new Error(`探针构建失败：${build.error?.message ?? (build.stderr || "").slice(-1200)}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 静态站点 + /api/chat 同源服务：这样前端 fetch("/api/chat") 直接命中 mock，
 // 不需要再拦截这个请求，也不会碰到真实模型。
 // ---------------------------------------------------------------------------
-export async function startApp() {
+export async function startApp(options = {}) {
   const outDir = mkdtempSync(join(tmpdir(), "bluecloud-browser-"));
   try {
     const build = spawnSync(
       process.platform === "win32" ? "pnpm.cmd" : "pnpm",
-      ["exec", "vite", "build", "--config", "vite.figma.config.ts", "--outDir", outDir, "--emptyOutDir"],
+      ["exec", "vite", "build", "--config", options.configPath ?? "vite.figma.config.ts", "--outDir", outDir, "--emptyOutDir"],
       { cwd: repoRoot, encoding: "utf8" },
     );
     if (build.error || build.status !== 0) {
       throw new Error(`生产构建失败：${build.error?.message ?? (build.stderr || "").slice(-1200)}`);
     }
+    if (options.probe) buildProbe(join(outDir, "probe"));
   } catch (error) {
     rmSync(outDir, { recursive: true, force: true });
     throw error;
@@ -514,7 +528,7 @@ async function attachGuard(page, mock) {
   });
 }
 
-export async function withPage(browser, app, fn) {
+export async function withPage(browser, app, fn, options = {}) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   const mock = app.mockForPage();
@@ -525,9 +539,13 @@ export async function withPage(browser, app, fn) {
   let result;
   let failure = null;
   try {
-    await page.goto(app.url, { waitUntil: "domcontentloaded" });
-    await page.waitForSelector(CHAT_TEXTAREA, { timeout: 10000 });
-    await sleep(500);
+    await page.goto(app.url + (options.path ?? ""), { waitUntil: "domcontentloaded" });
+    if (options.ready) {
+      await options.ready(page);
+    } else {
+      await page.waitForSelector(CHAT_TEXTAREA, { timeout: 10000 });
+      await sleep(500);
+    }
     result = await fn({ page, mock, errors });
   } catch (error) {
     failure = error;
