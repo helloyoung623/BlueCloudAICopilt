@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import puppeteer from "puppeteer-core";
-import { CHAT_TEXTAREA, resolveChrome, sendMessage, sleep, startApp, withPage } from "./harness.mjs";
+import { CHAT_TEXTAREA, clickAria, resolveChrome, sendMessage, sleep, startApp, typeVisible, withPage } from "./harness.mjs";
 
 const HANDLE = '[role="separator"][aria-label="调整侧边栏宽度"]';
 const STORAGE_KEY = "sidebar-width";
@@ -12,6 +12,8 @@ const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
 // 复现验收场景：窗口 1024、侧栏拖到 480 时，PPT 需求确认弹层的关闭按钮会跑到屏幕外
 const NARROW_VIEWPORT = { width: 1024, height: 768 };
+// 移动端回归：375px 宽的窄屏
+const MOBILE_VIEWPORT = { width: 375, height: 667 };
 
 let app;
 let browser;
@@ -85,6 +87,30 @@ async function openRequirementPanel(page) {
   await sendMessage(page, "帮我生成一份PPT");
   await page.waitForFunction(() => document.body.innerText.includes("确认制作需求"), { timeout: 45000 });
   await sleep(600); // 等弹层入场动画结束
+}
+
+// 真实鼠标点击：按按钮中心派发鼠标事件（走命中测试，不是脚本直接调 .click()）
+async function realClickButton(page, panelTitle, text) {
+  const handle = await page.evaluateHandle((panelTitle, text) => {
+    const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes(panelTitle));
+    if (!panel) return null;
+    return [...panel.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+  }, panelTitle, text);
+  const element = handle.asElement();
+  assert.ok(element, `应能在「${panelTitle}」弹层里找到「${text}」按钮`);
+  await element.click();
+}
+
+// 弹层里某个选项的边框颜色（选中态是蓝色 #1e63f5）
+async function optionBorderColor(page, panelTitle, label) {
+  return page.evaluate(({ panelTitle, label }) => {
+    const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes(panelTitle));
+    if (!panel) return null;
+    const span = [...panel.querySelectorAll("span")].find((s) => s.textContent.trim() === label);
+    if (!span) return null;
+    const item = span.closest("div.relative");
+    return getComputedStyle(item.querySelector(":scope > div")).borderTopColor;
+  }, { panelTitle, label });
 }
 
 // 弹层、对话区（.chat-layout）、左侧导航与两个控件的位置。
@@ -289,20 +315,21 @@ test("窗口尺寸变化后，PPT 需求确认弹层跟着对话区收缩", { ti
   });
 });
 
-test("侧栏拖宽、窗口 1024 时，PPT 大纲弹层同样落在对话区内", { timeout: 180000 }, async () => {
+test("PPT 需求确认弹层的确认按钮用真实点击能推进到下一阶段（大纲弹层），大纲弹层也落在对话区内", { timeout: 180000 }, async () => {
   await withPage(browser, app, async ({ page }) => {
     await setupNarrowWindowWithWideSidebar(page);
     await openRequirementPanel(page);
 
-    // 确认需求 → 演示链路 24 秒后出大纲弹层
-    await page.evaluate(() => {
-      const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
-      [...panel.querySelectorAll("button")].find((b) => b.textContent.trim() === "确认").click();
-    });
+    // 真实点击「确认」：走命中测试，不是脚本直接派发 click
+    await realClickButton(page, "确认制作需求", "确认");
+    await page.waitForFunction(() => !document.body.innerText.includes("确认制作需求"), { timeout: 8000 });
+
+    // 流程确实进入下一阶段：演示链路 24 秒后出大纲弹层
     await page.waitForFunction(() => document.body.innerText.includes("PPT大纲"), { timeout: 60000 });
     await sleep(600);
 
     const state = await outlineState(page);
+    assert.ok(state, "应进入大纲阶段并弹出大纲弹层");
     assertInsideChat(state, "大纲弹层");
     assert.equal(state.panel.width, state.chat.width - 32, "大纲弹层宽度应随对话区收缩");
   });
@@ -363,12 +390,69 @@ test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的确认按钮能�
 
     const state = await requirementState(page);
     assert.ok(state?.confirm, "弹层里应有确认按钮");
-    await page.evaluate(() => {
-      const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
-      const button = [...panel.querySelectorAll("button")].find((b) => b.textContent.trim() === "确认");
-      button.click();
-    });
+    // 真实点击（鼠标事件），不是脚本调 .click()
+    await realClickButton(page, "确认制作需求", "确认");
     await page.waitForFunction(() => !document.body.innerText.includes("确认制作需求"), { timeout: 8000 });
     assert.equal(await requirementState(page), null, "点确认后需求确认弹层应消失");
+  });
+});
+
+test("375px 移动端：PPT 需求确认弹层落在对话区内，内容与控件可操作", { timeout: 120000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await page.setViewport({ ...MOBILE_VIEWPORT, deviceScaleFactor: 1 });
+    await sleep(500);
+
+    // 移动端是抽屉式导航，对话区占满窗口；宽窄两份输入框只给可见的那份输入
+    assert.ok(await typeVisible(page, CHAT_TEXTAREA, "帮我生成一份PPT"), "应能在移动端输入内容");
+    assert.ok(await clickAria(page, "发送消息"), "应有发送按钮");
+    await page.waitForFunction(() => document.body.innerText.includes("确认制作需求"), { timeout: 45000 });
+    await sleep(600);
+
+    const state = await requirementState(page);
+    assertInsideChat(state, "375 移动端");
+    assert.equal(state.chat.left, 0, "移动端对话区应从窗口最左边开始");
+    assert.equal(state.chat.right, MOBILE_VIEWPORT.width, "移动端对话区应到窗口右边缘");
+    assert.equal(state.panel.width, MOBILE_VIEWPORT.width - 32, "弹层宽度应为窗口宽减两侧留白");
+    assert.equal(state.sidebar, null, "移动端导航是抽屉，不占对话区宽度");
+
+    // 内容可读：各组选项的文字都完整落在自己的框里
+    const clipped = await page.evaluate(() => {
+      const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
+      const labels = ["科技现代", "商务风", "XXX", "商业路演", "内部汇报", "投资人", "管理层", "客户", "团队成员", "5～8页", "8～12页", "12～18页"];
+      const bad = [];
+      for (const label of labels) {
+        const span = [...panel.querySelectorAll("span")].find((s) => s.textContent.trim() === label);
+        if (!span) { bad.push(`${label}(找不到)`); continue; }
+        const item = span.closest("div.relative");
+        const ir = item.getBoundingClientRect();
+        const sr = span.getBoundingClientRect();
+        if (ir.width <= 0 || ir.height <= 0) bad.push(`${label}(框不可见)`);
+        else if (sr.right > ir.right + 1 || sr.left < ir.left - 1) bad.push(`${label}(文字超出框)`);
+      }
+      return bad;
+    });
+    assert.deepEqual(clipped, [], "移动端各选项文字应完整落在自己的框内");
+
+    // 内容可操作：真实点一个「演示场景」选项，它应变成选中态（蓝色边框）
+    const before = await optionBorderColor(page, "确认制作需求", "内部汇报");
+    assert.notEqual(before, "rgb(30, 99, 245)", "点之前「内部汇报」不应是选中态");
+    const point = await page.evaluate(() => {
+      const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
+      const span = [...panel.querySelectorAll("span")].find((s) => s.textContent.trim() === "内部汇报");
+      const r = span.closest("div.relative").getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await page.mouse.click(point.x, point.y);
+    await sleep(200);
+    assert.equal(
+      await optionBorderColor(page, "确认制作需求", "内部汇报"),
+      "rgb(30, 99, 245)",
+      "真实点击后「内部汇报」应变成选中态",
+    );
+
+    // 控件可操作：真实点关闭按钮，弹层应消失
+    await page.click('[aria-label="关闭需求确认"]');
+    await page.waitForFunction(() => !document.body.innerText.includes("确认制作需求"), { timeout: 8000 });
+    assert.equal(await requirementState(page), null, "点关闭后弹层应消失");
   });
 });
