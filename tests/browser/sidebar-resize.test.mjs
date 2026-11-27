@@ -87,10 +87,11 @@ async function openRequirementPanel(page) {
   await sleep(600); // 等弹层入场动画结束
 }
 
-// 弹层与两个控件的位置：rect 看是否在窗口内，hitIsSelf 看那个点上最上层是不是它自己（= 真的点得到）
-async function requirementPanelState(page) {
-  return page.evaluate(() => {
-    const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
+// 弹层、对话区（.chat-layout）、左侧导航与两个控件的位置。
+// rect 看彼此的边界关系，hitIsSelf 看那个点上最上层是不是它自己（= 真的点得到）。
+async function panelState(page, title, closeLabel) {
+  return page.evaluate(({ title, closeLabel }) => {
+    const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes(title));
     if (!panel) return null;
     const describe = (el) => {
       if (!el) return null;
@@ -102,14 +103,54 @@ async function requirementPanelState(page) {
         hitIsSelf: hit === el || el.contains(hit),
       };
     };
-    const rect = panel.getBoundingClientRect();
+    const box = (el) => {
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      return { left: Math.round(rect.left), right: Math.round(rect.right), width: Math.round(rect.width) };
+    };
+    const handle = document.querySelector('[role="separator"][aria-label="调整侧边栏宽度"]');
     return {
       viewportWidth: window.innerWidth,
-      panel: { left: Math.round(rect.left), right: Math.round(rect.right) },
-      close: describe(panel.querySelector('[aria-label="关闭需求确认"]')),
+      // 对话区 = 侧栏右边那块主内容区
+      chat: box(document.querySelector(".chat-layout")),
+      sidebar: box(handle ? handle.parentElement : null),
+      panel: box(panel),
+      close: describe(panel.querySelector(`[aria-label="${closeLabel}"]`)),
       confirm: describe([...panel.querySelectorAll("button")].find((b) => b.textContent.trim() === "确认")),
     };
-  });
+  }, { title, closeLabel });
+}
+
+const requirementState = (page) => panelState(page, "确认制作需求", "关闭需求确认");
+const outlineState = (page) => panelState(page, "PPT大纲", "关闭大纲");
+
+// 弹层必须整体落在对话区里：不越过左侧导航，右边缘不超出对话区
+function assertInsideChat(state, label) {
+  assert.ok(state, `${label}：弹层应存在`);
+  assert.ok(
+    state.panel.left >= state.chat.left - 1,
+    `${label}：弹层左边缘 ${state.panel.left} 不应越过对话区左边缘 ${state.chat.left}`,
+  );
+  assert.ok(
+    state.panel.right <= state.chat.right + 1,
+    `${label}：弹层右边缘 ${state.panel.right} 不应超出对话区右边缘 ${state.chat.right}`,
+  );
+  if (state.sidebar) {
+    assert.ok(
+      state.panel.left >= state.sidebar.right - 1,
+      `${label}：弹层左边缘 ${state.panel.left} 不应盖住左侧导航（右边缘 ${state.sidebar.right}）`,
+    );
+  }
+  assert.ok(
+    state.close && state.close.left >= state.chat.left - 1 && state.close.right <= state.chat.right + 1,
+    `${label}：关闭按钮应在对话区内`,
+  );
+  assert.ok(state.close?.hitIsSelf, `${label}：关闭按钮那个点上最上层应是它自己（点得到）`);
+  assert.ok(
+    state.confirm && state.confirm.left >= state.chat.left - 1 && state.confirm.right <= state.chat.right + 1,
+    `${label}：确认按钮应在对话区内`,
+  );
+  assert.ok(state.confirm?.hitIsSelf, `${label}：确认按钮那个点上最上层应是它自己（点得到）`);
 }
 
 test("侧边栏默认 240，拖右边缘可以改宽，主内容区跟着让位", { timeout: 60000 }, async () => {
@@ -198,29 +239,72 @@ test("方向键可以微调宽度，双击手柄回到默认宽度", { timeout: 
   });
 });
 
-test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的关闭与确认按钮都还在屏幕内且点得到", { timeout: 120000 }, async () => {
+test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层整体落在对话区内，宽度随对话区收缩", { timeout: 120000 }, async () => {
   await withPage(browser, app, async ({ page }) => {
     await setupNarrowWindowWithWideSidebar(page);
     await openRequirementPanel(page);
 
-    const state = await requirementPanelState(page);
-    assert.ok(state, "需求确认弹层应已弹出");
-    assert.ok(
-      state.panel.right <= state.viewportWidth,
-      `弹层右边缘 ${state.panel.right} 应在窗口 ${state.viewportWidth} 内`,
-    );
-    assert.ok(state.close, "弹层里应有关闭按钮");
-    assert.ok(
-      state.close.right <= state.viewportWidth,
-      `关闭按钮右边缘 ${state.close.right} 应在窗口 ${state.viewportWidth} 内`,
-    );
-    assert.ok(state.close.hitIsSelf, "关闭按钮那个点上最上层应是它自己（点得到）");
-    assert.ok(state.confirm, "弹层里应有确认按钮");
-    assert.ok(
-      state.confirm.right <= state.viewportWidth,
-      `确认按钮右边缘 ${state.confirm.right} 应在窗口 ${state.viewportWidth} 内`,
-    );
-    assert.ok(state.confirm.hitIsSelf, "确认按钮那个点上最上层应是它自己（点得到）");
+    const state = await requirementState(page);
+    assertInsideChat(state, "侧栏 480");
+
+    // 对话区 = 1024 - 480 = 544；弹层宽度应等于对话区宽度减两侧留白（32），而不是撑满 800
+    assert.equal(state.chat.left, 480, "对话区左边缘应贴着侧栏右边");
+    assert.equal(state.chat.right, 1024, "对话区右边缘应是窗口右边缘");
+    assert.equal(state.panel.width, state.chat.width - 32, "弹层宽度应随对话区收缩");
+    assert.ok(state.panel.width < 800, "对话区变窄后弹层不应还占 800");
+  });
+});
+
+test("侧栏收起后，PPT 需求确认弹层回到对话区中央且不越界", { timeout: 120000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await setupNarrowWindowWithWideSidebar(page);
+    await openRequirementPanel(page);
+
+    // 收起左侧导航：对话区变成整个窗口
+    await page.click('[aria-label="收起侧边栏"]');
+    await sleep(400);
+
+    const state = await requirementState(page);
+    assertInsideChat(state, "侧栏收起");
+    assert.equal(state.chat.left, 0, "侧栏收起后对话区应从窗口最左边开始");
+    assert.equal(state.panel.width, 800, "对话区够宽时弹层回到 800");
+    const panelCenter = Math.round((state.panel.left + state.panel.right) / 2);
+    const chatCenter = Math.round((state.chat.left + state.chat.right) / 2);
+    assert.equal(panelCenter, chatCenter, "弹层应居中在对话区里");
+  });
+});
+
+test("窗口尺寸变化后，PPT 需求确认弹层跟着对话区收缩", { timeout: 120000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await setupNarrowWindowWithWideSidebar(page);
+    await openRequirementPanel(page);
+
+    await page.setViewport({ width: 800, height: 700, deviceScaleFactor: 1 });
+    await sleep(400);
+
+    const state = await requirementState(page);
+    assertInsideChat(state, "窗口缩到 800");
+    assert.equal(state.chat.width, 320, "对话区应被压到最小宽度 320");
+    assert.equal(state.panel.width, 288, "弹层宽度应跟着对话区收缩到 288");
+  });
+});
+
+test("侧栏拖宽、窗口 1024 时，PPT 大纲弹层同样落在对话区内", { timeout: 180000 }, async () => {
+  await withPage(browser, app, async ({ page }) => {
+    await setupNarrowWindowWithWideSidebar(page);
+    await openRequirementPanel(page);
+
+    // 确认需求 → 演示链路 24 秒后出大纲弹层
+    await page.evaluate(() => {
+      const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
+      [...panel.querySelectorAll("button")].find((b) => b.textContent.trim() === "确认").click();
+    });
+    await page.waitForFunction(() => document.body.innerText.includes("PPT大纲"), { timeout: 60000 });
+    await sleep(600);
+
+    const state = await outlineState(page);
+    assertInsideChat(state, "大纲弹层");
+    assert.equal(state.panel.width, state.chat.width - 32, "大纲弹层宽度应随对话区收缩");
   });
 });
 
@@ -231,7 +315,7 @@ test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的关闭按钮能�
 
     await page.click('[aria-label="关闭需求确认"]');
     await page.waitForFunction(() => !document.body.innerText.includes("确认制作需求"), { timeout: 8000 });
-    assert.equal(await requirementPanelState(page), null, "点关闭后弹层应消失");
+    assert.equal(await requirementState(page), null, "点关闭后弹层应消失");
   });
 });
 
@@ -240,7 +324,7 @@ test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的确认按钮能�
     await setupNarrowWindowWithWideSidebar(page);
     await openRequirementPanel(page);
 
-    const state = await requirementPanelState(page);
+    const state = await requirementState(page);
     assert.ok(state?.confirm, "弹层里应有确认按钮");
     await page.evaluate(() => {
       const panel = [...document.querySelectorAll("div.fixed")].find((el) => el.textContent.includes("确认制作需求"));
@@ -248,6 +332,6 @@ test("侧栏拖宽、窗口 1024 时，PPT 需求确认弹层的确认按钮能�
       button.click();
     });
     await page.waitForFunction(() => !document.body.innerText.includes("确认制作需求"), { timeout: 8000 });
-    assert.equal(await requirementPanelState(page), null, "点确认后需求确认弹层应消失");
+    assert.equal(await requirementState(page), null, "点确认后需求确认弹层应消失");
   });
 });

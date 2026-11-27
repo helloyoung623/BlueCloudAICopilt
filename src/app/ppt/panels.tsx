@@ -60,13 +60,13 @@ function AIIcon({ uid }: { uid: string }) {
 
 // ── slide-up panel shell ──────────────────────────────────────────────────────
 
-// 弹层固定 800 宽。
+// 弹层最大宽度（不更宽时的常态宽度）。
 const PANEL_WIDTH = 800;
-// 弹层右边缘与窗口右边缘之间至少留的间距。
+// 弹层左右两侧与对话区边缘之间至少留的间距。
 const PANEL_VIEWPORT_GAP = 16;
 
-function SlidePanel({ visible, onClose, children, mainOffset = 0 }: {
-  visible: boolean; onClose: () => void; children: React.ReactNode; mainOffset?: number;
+function SlidePanel({ visible, onClose, children }: {
+  visible: boolean; onClose: () => void; children: React.ReactNode;
 }) {
   const [mounted, setMounted] = useState(false);
   const [animIn, setAnimIn] = useState(false);
@@ -85,14 +85,17 @@ function SlidePanel({ visible, onClose, children, mainOffset = 0 }: {
   if (!mounted) return null;
   return (
     <div
-      className="fixed left-1/2 z-50 flex flex-col bg-white rounded-[16px]"
+      // @container：弹层宽度随对话区变化，内容按容器宽度换行（窄了改两列）
+      className="@container fixed left-1/2 z-50 flex flex-col bg-white rounded-[16px]"
       style={{
-        width: PANEL_WIDTH, maxHeight: 560, bottom: 22,
-        // 弹层默认居中在主内容区（mainOffset = 侧栏宽度的一半）。
-        // 侧栏可以拖宽，主内容区随之变窄，弹层跟着右移就会把右边缘顶出窗口，
-        // 关闭按钮落到屏幕外点不到 —— 这里把居中位置限制在「右边缘离窗口 16px」以内，
-        // 保证关闭 / 确认控件始终在屏幕内可点。
-        left: `min(calc(50% + ${mainOffset}px), calc(100% - ${PANEL_WIDTH / 2 + PANEL_VIEWPORT_GAP}px))`,
+        // 弹层贴在「对话区」（侧栏右边那块）里：
+        //   --nav-width = 左侧导航占掉的宽度（收起时 0）
+        //   居中位置 = 对话区中心，宽度 = 对话区宽 - 两侧留白（最多 800）
+        // 对话区被侧栏挤窄时，弹层跟着收缩，左右边缘始终落在对话区内，
+        // 不会盖住左侧导航，也不会跑到窗口外。窗口尺寸变化同样自动跟随。
+        width: `min(${PANEL_WIDTH}px, calc(100% - var(--nav-width, 0px) - ${PANEL_VIEWPORT_GAP * 2}px))`,
+        maxHeight: 560, bottom: 22,
+        left: `calc(var(--nav-width, 0px) + (100% - var(--nav-width, 0px)) / 2)`,
         transform: `translateX(-50%) translateY(${animIn ? "0%" : "120%"})`,
         transition: "transform 0.35s cubic-bezier(0.32,0.72,0,1)",
         boxShadow: "0 0 12px rgba(0,0,0,0.08)", border: "1px solid #e6e6e6",
@@ -151,8 +154,8 @@ function PanelFooter({ count, cancelled, onConfirm, pptMode, onPptModeChange }: 
   onPptModeChange: (mode: PptMode) => void;
 }) {
   return (
-    <div className="shrink-0 px-[16px] py-[16px] flex items-center gap-[16px] bg-[rgba(255,255,255,0.92)] border-t border-[#f2f2f2]">
-      <p className="flex-1 text-[14px] leading-[22px]">
+    <div className="shrink-0 px-[16px] py-[16px] flex flex-wrap items-center gap-[16px] bg-[rgba(255,255,255,0.92)] border-t border-[#f2f2f2]">
+      <p className="min-w-[140px] flex-1 text-[14px] leading-[22px]">
         {!cancelled && (
           <><span className="text-[#1e63f5] font-medium">{count}S</span><span className="text-[rgba(0,0,0,0.38)]"> 后自动确认</span></>
         )}
@@ -190,14 +193,13 @@ function GridItem({ label, selected, onClick }: { label: string; selected: boole
   );
 }
 
-function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChange, initialPages, mainOffset = 0 }: {
+function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChange, initialPages }: {
   visible: boolean;
   onClose: () => void;
   onConfirm: () => void;
   pptMode: PptMode;
   onPptModeChange: (mode: PptMode) => void;
   initialPages: PptPageCount;
-  mainOffset?: number;
 }) {
   const [style, setStyle] = useState("科技现代");
   const [scenes, setScenes] = useState<string[]>(["商业路演"]);
@@ -230,7 +232,7 @@ function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChang
   const handleInteract = () => cancel();
 
   return (
-    <SlidePanel visible={visible} onClose={onClose} mainOffset={mainOffset}>
+    <SlidePanel visible={visible} onClose={onClose}>
       {/* header */}
       <div className="shrink-0 px-[16px] pt-[16px] pb-[8px]">
         <div className="flex items-center justify-between">
@@ -245,7 +247,7 @@ function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChang
         {/* 视觉风格 */}
         <div className="flex flex-col gap-[12px]">
           <span className="text-[14px] font-medium leading-[22px] text-[rgba(0,0,0,0.88)]">视觉风格</span>
-          <div className="grid grid-cols-3 gap-[12px]">
+          <div className="grid grid-cols-2 gap-[12px] @min-[520px]:grid-cols-3">
             <OptionItem label="科技现代" image={imgStyle1} selected={style === "科技现代"} onClick={() => setStyle("科技现代")} />
             <OptionItem label="商务风"   image={imgStyle2} selected={style === "商务风"}   onClick={() => setStyle("商务风")} />
             <OptionItem label="XXX"      image={imgStyle3} selected={style === "XXX"}      onClick={() => setStyle("XXX")} />
@@ -301,7 +303,7 @@ function RequirementPanel({ visible, onClose, onConfirm, pptMode, onPptModeChang
         {/* 受众对象 */}
         <div className="flex flex-col gap-[12px]">
           <span className="text-[14px] font-medium leading-[22px] text-[rgba(0,0,0,0.88)]">受众对象（可多选）</span>
-          <div className="grid grid-cols-3 gap-[12px]">
+          <div className="grid grid-cols-2 gap-[12px] @min-[520px]:grid-cols-3">
             {["投资人", "管理层", "客户", "团队成员", "其他"].map(s => (
               <GridItem key={s} label={s} selected={audience.includes(s)} onClick={() => toggle(audience, s, setAudience)} />
             ))}
@@ -470,8 +472,8 @@ function OutlinePageCard({ page, presentation, onPresentationChange }: {
   );
 }
 
-function OutlinePanel({ visible, onClose, onConfirm, mainOffset = 0 }: {
-  visible: boolean; onClose: () => void; onConfirm: () => void; mainOffset?: number;
+function OutlinePanel({ visible, onClose, onConfirm }: {
+  visible: boolean; onClose: () => void; onConfirm: () => void;
 }) {
   const [pages, setPages] = useState<OutlinePage[]>([]);
   const [showAiEdit, setShowAiEdit] = useState(false);
@@ -512,7 +514,7 @@ function OutlinePanel({ visible, onClose, onConfirm, mainOffset = 0 }: {
   };
 
   return (
-    <SlidePanel visible={visible} onClose={onClose} mainOffset={mainOffset}>
+    <SlidePanel visible={visible} onClose={onClose}>
       {/* header — matches Frame4 from design */}
       <div className="shrink-0 bg-[rgba(255,255,255,0.5)] px-[16px] pt-[16px] pb-[12px]">
         <div className="flex items-center justify-between w-full">
@@ -563,8 +565,8 @@ function OutlinePanel({ visible, onClose, onConfirm, mainOffset = 0 }: {
 
       {/* footer — matches Frame6: countdown | AI编辑 | 确认 */}
       <div className="shrink-0 bg-[rgba(255,255,255,0.5)] border-t border-[#f2f2f2]">
-        <div className="flex items-center gap-[12px] px-[16px] py-[16px]">
-          <p className="flex-1 text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">
+        <div className="flex flex-wrap items-center gap-[12px] px-[16px] py-[16px]">
+          <p className="min-w-[140px] flex-1 text-[14px] leading-[22px] text-[rgba(0,0,0,0.88)] tracking-[0.014px]">
             {!cancelled && <><span className="text-[#1e63f5] font-normal">{count}S</span><span className="text-[rgba(0,0,0,0.88)]"> 后自动确认</span></>}
           </p>
           {/* AI编辑 button */}

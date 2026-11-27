@@ -1884,8 +1884,13 @@ export default function App() {
   return (
     <Sheet open={isMobile && mobileNavigationOpen} onOpenChange={setMobileNavigationOpen}>
     {/* relative：详情栏铺满态（内容区 < 640）要按「前一个兄弟」的偏移定位，
-        祖先没有定位容器就只能按视口算，会话页会盖住左侧导航 */}
-    <div className="w-screen h-screen flex flex-row overflow-hidden relative">
+        祖先没有定位容器就只能按视口算，会话页会盖住左侧导航。
+        --nav-width：左侧导航实际占掉的宽度（收起或移动端时为 0）。
+        PPT 弹层按它对齐到对话区里，不越过导航、也不越过窗口右边缘。 */}
+    <div
+      className="w-screen h-screen flex flex-row overflow-hidden relative"
+      style={{ "--nav-width": `${isMobile || !sidebarOpen ? 0 : sidebarWidth}px` } as React.CSSProperties}
+    >
       {!isMobile && sidebarOpen && sidebar}
       {isMobile && (
         <SheetContent side="left" aria-describedby={undefined} className="w-[240px] max-w-full gap-0 border-0 p-0 shadow-none sm:max-w-[240px] [&>button]:hidden">
@@ -2191,13 +2196,11 @@ export default function App() {
         pptMode={pptMode}
         onPptModeChange={setPptMode}
         initialPages={pptPages}
-        mainOffset={!isMobile && sidebarOpen ? sidebarWidth / 2 : 0}
       />
       <OutlinePanel
         visible={stage === "outline"}
         onClose={resetPptFlow}
         onConfirm={handleOutlineConfirm}
-        mainOffset={!isMobile && sidebarOpen ? sidebarWidth / 2 : 0}
       />
     </div>
     <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
