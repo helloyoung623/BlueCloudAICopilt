@@ -12,7 +12,7 @@
     "env:check": "node server/env.mjs --check",
     "serve": "node server/index.mjs",
     "format": "oxfmt",
-    "test": "node --test src/app/components/*.test.mjs src/app/agent-client.test.mjs src/app/chat/*.test.mjs src/app/automation/*.test.mjs src/app/projects/*.test.mjs server/automation-seed.test.mjs",
+    "test": "node --test src/app/components/*.test.mjs src/app/agent-client.test.mjs src/app/chat/*.test.mjs src/app/automation/*.test.mjs src/app/projects/*.test.mjs src/app/sidebar/*.test.mjs server/automation-seed.test.mjs",
     "test:browser": "node --test tests/browser/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "build:check": "node scripts/build-check.mjs",

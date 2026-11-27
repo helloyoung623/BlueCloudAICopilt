@@ -56,6 +56,7 @@ import { ChatView } from "./chat/ChatView";
 import type { ProjectItem } from "./projects/types";
 import { ArchiveView, CreateProjectDialog, ProjectActionsMenu, ProjectHeaderActions, ProjectHomeView, ProjectListView, TaskProjectMoveMenu, TransferConfirmDialog, showArchiveToast } from "./projects/ProjectViews";
 import { Sidebar, TaskOperationsMenu } from "./sidebar/Sidebar";
+import { readStoredSidebarWidth, storeSidebarWidth } from "./sidebar/sidebar-width";
 import { DeleteChatTaskDialog, DeleteProjectDialog, SearchDialog } from "./dialogs/AppDialogs";
 import { HomeView } from "./home/HomeView";
 import { ChatHeader, TaskHeaderActions } from "./chat/ChatHeader";
@@ -220,6 +221,8 @@ export default function App() {
   const [pptPages, setPptPages] = useState<PptPageCount>("智能匹配");
   const [stage, setStage] = useState<PptStage>("idle");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 侧边栏宽度：桌面端可拖右边缘调整，记住上次拖到的宽度
+  const [sidebarWidth, setSidebarWidth] = useState(() => readStoredSidebarWidth());
   const [searchOpen, setSearchOpen] = useState(false);
   const [projectConfigurationOpen, setProjectConfigurationOpen] = useState(true);
   // 项目详情页宽度 < 800px 时进入紧凑布局：右侧「指令 / 成员」边栏收起，内容并入「配置」页签
@@ -571,10 +574,17 @@ export default function App() {
     if (!isMobile) setMobileNavigationOpen(false);
   }, [isMobile]);
 
+  // 记住侧边栏宽度：刷新 / 重开页面还是上次拖到的大小
+  useEffect(() => {
+    storeSidebarWidth(sidebarWidth);
+  }, [sidebarWidth]);
+
   // 详情栏是「内容 320 + 详情 320」的双栏：再加 240 导航共需 880。
   // 窗口窄于 880 时先自动收起左侧导航（腾出 240，两栏都保住 320），而不是把两栏压窄
   // —— 自动化任务页的列表详情、会话页的会话详情都按这条走；
   // 窗口变宽或关掉详情栏时，把自己收起的那一次还原（用户手动收起的保持不动）。
+  // 这里按默认宽度 240 算：导航被用户拖宽后不再自动收起，免得打断正在进行的拖动；
+  // 内容区被挤窄时，详情栏会按自己的规则降级成整页详情（见 use-detail-panel-width）。
   const sidebarOpenRef = useRef(sidebarOpen);
   sidebarOpenRef.current = sidebarOpen;
   const autoCollapsedNav = useRef(false);
@@ -1844,6 +1854,8 @@ export default function App() {
           projects={projects}
           setProjects={setProjects}
           mobile={isMobile}
+          width={sidebarWidth}
+          onWidthChange={setSidebarWidth}
           onClose={() => isMobile ? setMobileNavigationOpen(false) : setSidebarOpen(false)}
           onNewChat={handleNewChat}
           onOpenProjects={handleOpenProjects}
@@ -2179,13 +2191,13 @@ export default function App() {
         pptMode={pptMode}
         onPptModeChange={setPptMode}
         initialPages={pptPages}
-        mainOffset={!isMobile && sidebarOpen ? 120 : 0}
+        mainOffset={!isMobile && sidebarOpen ? sidebarWidth / 2 : 0}
       />
       <OutlinePanel
         visible={stage === "outline"}
         onClose={resetPptFlow}
         onConfirm={handleOutlineConfirm}
-        mainOffset={!isMobile && sidebarOpen ? 120 : 0}
+        mainOffset={!isMobile && sidebarOpen ? sidebarWidth / 2 : 0}
       />
     </div>
     <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
