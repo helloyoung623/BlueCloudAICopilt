@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>conversation store probe</title>
+  </head>
+  <body>
+    <!-- 只为浏览器挂载测试服务：把 App 里真实的 store↔React 桥接（useConversationStore）
+         挂到 StrictMode 下，暴露一个可被 puppeteer 驱动的窗口 API。不接业务 UI。 -->
+    <div id="root"></div>
+    <script type="module" src="./probe-entry.tsx"></script>
+  </body>
+</html>

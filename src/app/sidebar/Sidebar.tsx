@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { forwardRef, memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { DotmCircular2 } from "../components/dotm-circular-2";
@@ -8,7 +8,8 @@ import { UserAvatar } from "../components/user-avatar";
 import { useUserProfile } from "../user-profile";
 import svgSidebar from "@/imports/历史对话操作项/svg-1dh84d0t2n";
 import { CreateProjectDialog, ProjectActionsMenu, TaskProjectMoveMenu, showArchiveToast } from "../projects/ProjectViews";
-import type { HistoryItem } from "../chat/types";
+import { useConversationDomain } from "../chat/conversation-context";
+import type { SidebarTask } from "../chat/conversation-state";
 import type { ProjectItem } from "../projects/types";
 
 const initialMemories = [
@@ -205,7 +206,7 @@ function MemoryModal({ onClose }: { onClose: () => void }) {
 
 const TaskOperationsMenu = forwardRef<HTMLDivElement, {
   anchor: HTMLElement | null;
-  task: HistoryItem;
+  task: SidebarTask;
   projects: ProjectItem[];
   align?: "start" | "end";
   gap?: number;
@@ -335,11 +336,9 @@ function LogoutDialog({ open, onOpenChange, onConfirm }: {
  * 列表滚动到底部自动加载，每批 10 条，「没有更多了」仅在发生一次加载后出现
  * ------------------------------------------------------------------ */
 
-function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onOpenConnectors, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, connectorOpen, activeId, activeProjectId, runningTaskIds, unreadTaskIds, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
+function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects, onOpenAutomation, onOpenArchive, onOpenLibrary, onOpenConnectors, onNewProjectTask, projectListOpen, automationOpen, libraryOpen, connectorOpen, activeProjectId, onSelect, onSelectProject, onSearch, onRequestDeleteProject, onRequestDeleteTask, onRequestTransfer, mobile = false }: {
   onSearch: () => void;
   mobile?: boolean;
-  history: HistoryItem[];
-  setHistory: React.Dispatch<React.SetStateAction<HistoryItem[]>>;
   projects: ProjectItem[];
   setProjects: React.Dispatch<React.SetStateAction<ProjectItem[]>>;
   onRequestDeleteProject?: (id: number) => void;
@@ -360,14 +359,13 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   libraryOpen: boolean;
   // 连接器页不属于这些导航项：打开时所有导航都不选中
   connectorOpen: boolean;
-  activeId: number | null;
   activeProjectId: number | null;
-  // Figma 5053:14694 的任务状态图标：AI 执行中 / 已完成未查看
-  runningTaskIds: Set<number>;
-  unreadTaskIds: Set<number>;
   onSelect: (id: number) => void;
   onSelectProject: (id: number) => void;
 }) {
+  // 会话域：任务投影（不含 messages）、活动会话、执行中/未读标记，以及置顶/重命名/移动/归档这些操作。
+  // 从 Context 取而不是由 App 逐层传，流式正文变化时这里不会跟着重渲染。
+  const { tasks, activeId, runningTaskIds, unreadTaskIds, actions: taskActions } = useConversationDomain();
   // 底部用户信息：现在来自本地随机档案，接入真实登录后自动换成账号里的名字
   const profile = useUserProfile();
   const [hoverId, setHoverId] = useState<number | null>(null);
@@ -407,7 +405,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   const memoryRowRef = useRef<HTMLButtonElement>(null);
   const memoryPanelRef = useRef<HTMLDivElement>(null);
   const memoryPanelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const standaloneHistory = history.filter(item => item.projectId === undefined && !item.archived);
+  const standaloneTasks = tasks.filter(item => item.projectId === undefined && !item.archived);
   // 归档项目从侧栏「项目」分组移除（归档页仍可查看/取消归档），与项目列表页口径一致
   const visibleSidebarProjects = projects.filter(project => !project.archived);
   // 「折叠所有项目」只在有项目处于展开态时出现；全部收起或「项目」分组自身收起时隐藏
@@ -450,7 +448,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
 
   useEffect(() => {
     if (activeId === null) return;
-    const activeTask = history.find(item => item.id === activeId);
+    const activeTask = tasks.find(item => item.id === activeId);
     if (activeTask?.projectId === undefined) return;
     setExpandedProjectIds(current => {
       if (current.has(activeTask.projectId!)) return current;
@@ -461,7 +459,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
-  const menuTask = menuId === null ? null : history.find(item => item.id === menuId) ?? null;
+  const menuTask = menuId === null ? null : tasks.find(item => item.id === menuId) ?? null;
   const menuProject = projectMenuId === null ? null : projects.find(item => item.id === projectMenuId) ?? null;
   // 状态图标常驻 24px 位置；hover / 菜单展开时「...」直接盖在同一位置上，行内布局不移动（Figma 5053:14694）
   const renderStatusIcon = (isRunning: boolean, isUnread: boolean) => {
@@ -699,7 +697,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
         {projectsExpanded && visibleSidebarProjects.length > 0 && (
           <div className="flex w-full flex-col items-start">
             {visibleSidebarProjects.map(project => {
-              const projectTasks = history.filter(item => item.projectId === project.id && !item.archived);
+              const projectTasks = tasks.filter(item => item.projectId === project.id && !item.archived);
               // 10 条及以上先露 5 条；「更多 / 收起」只在展开的项目下出现
               const tasksCollapsed = projectTasks.length >= 10 && !expandedTaskProjectIds.has(project.id);
               const visibleProjectTasks = tasksCollapsed ? projectTasks.slice(0, 5) : projectTasks;
@@ -856,7 +854,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
       )}
 
       {/* tasks */}
-      {standaloneHistory.length > 0 && (
+      {standaloneTasks.length > 0 && (
       <div className="flex w-full flex-col items-start">
         {/* 分组标题吸顶：升到顶部时把「项目」标题顶走，任务列表从其下方滚过 */}
         <div className="group sticky top-0 z-20 flex w-full shrink-0 items-center bg-white p-0">
@@ -879,9 +877,9 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
         </div>
 
         {tasksExpanded && <div className="flex w-full flex-col">
-          {standaloneHistory.length === 0 ? (
+          {standaloneTasks.length === 0 ? (
             <p className="p-[12px] font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.26)]">暂无任务</p>
-          ) : standaloneHistory.map(item => {
+          ) : standaloneTasks.map(item => {
               const isActive = activeId === item.id;
               const isHover = hoverId === item.id;
               const hasMenu = menuId === item.id;
@@ -921,10 +919,10 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           onArchive={() => {
             const projectId = menuProject.id;
             setProjects(items => items.map(item => item.id === projectId ? { ...item, archived: true } : item));
-            setHistory(items => items.map(item => item.projectId === projectId ? { ...item, archived: true } : item));
+            taskActions.archiveProjectTasks(projectId, true);
             showArchiveToast(() => {
               setProjects(items => items.map(item => item.id === projectId ? { ...item, archived: false } : item));
-              setHistory(items => items.map(item => item.projectId === projectId ? { ...item, archived: false } : item));
+              taskActions.archiveProjectTasks(projectId, false);
             });
             onOpenProjects();
           }}
@@ -935,7 +933,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
               return;
             }
             setProjects(items => items.filter(item => item.id !== menuProject.id));
-            setHistory(items => items.filter(item => item.projectId !== menuProject.id));
+            taskActions.removeProjectTasks(menuProject.id);
           }}
         />
       )}
@@ -958,10 +956,10 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           anchor={menuAnchor}
           task={menuTask}
           projects={projects}
-          onTogglePin={() => setHistory(items => items.map(item => item.id === menuTask.id ? { ...item, pinned: !item.pinned } : item))}
-          onRename={title => setHistory(items => items.map(item => item.id === menuTask.id ? { ...item, title } : item))}
+          onTogglePin={() => taskActions.togglePinned(menuTask.id, !menuTask.pinned)}
+          onRename={title => taskActions.renameTask(menuTask.id, title)}
           onMove={projectId => {
-            setHistory(items => items.map(item => item.id === menuTask.id ? { ...item, projectId } : item));
+            taskActions.moveTask(menuTask.id, projectId);
             if (projectId !== undefined) setExpandedProjectIds(current => new Set(current).add(projectId));
           }}
           onCreateProject={() => {
@@ -969,8 +967,8 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
             setCreateProjectOpen(true);
           }}
           onArchive={() => {
-            setHistory(items => items.map(item => item.id === menuTask.id ? { ...item, archived: true } : item));
-            showArchiveToast(() => setHistory(items => items.map(item => item.id === menuTask.id ? { ...item, archived: false } : item)));
+            taskActions.archiveTask(menuTask.id, true);
+            showArchiveToast(() => taskActions.archiveTask(menuTask.id, false));
           }}
           onDelete={() => onRequestDeleteTask(menuTask.id)}
           onClose={closeContextMenu}
@@ -1142,7 +1140,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
           setProjects(current => [...current, { ...project, id }]);
           setProjectsExpanded(true);
           if (pendingTaskMoveId !== null) {
-            setHistory(items => items.map(item => item.id === pendingTaskMoveId ? { ...item, projectId: id } : item));
+            taskActions.moveTask(pendingTaskMoveId, id);
             setExpandedProjectIds(current => new Set(current).add(id));
             setPendingTaskMoveId(null);
           } else {
@@ -1158,4 +1156,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
 // ── chat input ────────────────────────────────────────────────────────────────
 
 
-export { Sidebar, TaskOperationsMenu };
+// 流式正文渲染时 App 会高频重渲染：数据 props（任务投影、执行中/未读集合）引用稳定，
+// 回调统一用 useLatestHandlers 包成稳定引用，所以这里的 memo 能真正跳过整侧栏重渲染。
+export const Sidebar = memo(SidebarImpl);
+export { TaskOperationsMenu };
