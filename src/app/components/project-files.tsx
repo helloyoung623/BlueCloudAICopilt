@@ -10,16 +10,9 @@ export { createCloudSourceFiles } from "../projects/project-files";
 import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./file-filter";
 import { SmallTip } from "./task-artifacts";
 
-// 状态口径与筛选「状态」字段共用一套（file-filter 的 FileStatus）
-export type SourceStatus = FileStatus;
-export type ProjectFile = {
-  id: string;
-  name: string;
-  owner: string;
-  createdAt: number;
-  status: SourceStatus;
-} & ({ blob: Blob; url?: never; size?: never } | { url: string; size: number; blob?: never });
-export type ProjectFiles = { sources: ProjectFile[]; artifacts: ProjectFile[] };
+// 类型的唯一定义处在 projects/types.ts；这里原样转出，保证现有 import 路径不变。
+import type { ProjectFile, ProjectFiles, SourceStatus } from "../projects/types";
+export type { ProjectFile, ProjectFiles, SourceStatus } from "../projects/types";
 
 const statuses: SourceStatus[] = ["enabled", "enabled", "disabled", "enabled", "enabled"];
 // 上传人样例：两字 / 三字姓名混用，拼音首字母（C L W S Z H）互不重复

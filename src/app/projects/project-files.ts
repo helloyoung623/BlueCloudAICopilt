@@ -1,4 +1,4 @@
-import type { ProjectFile, ProjectFiles } from "../components/project-files.ts";
+import type { ProjectFile, ProjectFiles } from "./types.ts";
 import type { ImportTask } from "../components/import-task-panel.tsx";
 import type { CloudSourceTab } from "../components/select-file-dialog.tsx";
 
