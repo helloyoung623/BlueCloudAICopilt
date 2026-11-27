@@ -526,10 +526,12 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
   };
   // 移动端是抽屉，宽度固定 240；桌面端按用户拖出来的宽度走
   const sidebarWidth = clampSidebarWidth(width ?? SIDEBAR_WIDTH_DEFAULT);
+  // 拖动时把右边缘那条分隔线换成品牌蓝：线还是这一条，只是颜色变了
+  const [resizing, setResizing] = useState(false);
 
   return (
     <div
-      className={`relative shrink-0 self-stretch border-r border-[#f2f2f2] bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
+      className={`relative shrink-0 self-stretch border-r ${resizing ? "border-[#1e63f5]" : "border-[#f2f2f2]"} bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
       style={{ width: mobile ? SIDEBAR_WIDTH_DEFAULT : sidebarWidth }}
     >
       {/* head —— 只有 logo / 搜索 / 新任务固定；新任务以下全部进入下方滚动区 */}
@@ -1165,7 +1167,7 @@ function Sidebar({ history, setHistory, projects, setProjects, onClose, onNewCha
       {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
       {/* 右边缘的拖拽手柄：只在桌面端出现，移动端是固定宽度的抽屉 */}
       {!mobile && onWidthChange && (
-        <SidebarResizeHandle width={sidebarWidth} onWidthChange={onWidthChange} />
+        <SidebarResizeHandle width={sidebarWidth} onWidthChange={onWidthChange} onDraggingChange={setResizing} />
       )}
     </div>
   );

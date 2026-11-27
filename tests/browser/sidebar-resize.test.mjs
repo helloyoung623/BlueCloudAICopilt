@@ -199,7 +199,7 @@ test("拖动改变侧栏宽度时，logo 位置保持不变", { timeout: 60000 }
   });
 });
 
-test("拖动时侧栏右边缘不出现额外的可见线条", { timeout: 60000 }, async () => {
+test("拖动时侧栏右边缘只有一条线，且这条线会变色", { timeout: 60000 }, async () => {
   await withPage(browser, app, async ({ page }) => {
     await resetWidth(page);
     const handle = await page.$(HANDLE);
@@ -230,6 +230,8 @@ test("拖动时侧栏右边缘不出现额外的可见线条", { timeout: 60000 
         // 焦点环也是一条线：指针操作不该留下描边（outline-style: none 即不绘制）
         outlineStyle: cs.outlineStyle,
         focusVisible: el.matches(":focus-visible"),
+        // 侧栏自己的右边缘分隔线：拖动时应变成品牌蓝
+        borderRightColor: getComputedStyle(el.parentElement).borderRightColor,
       };
     }, { selector: HANDLE, px: x + 60, py: y });
 
@@ -237,9 +239,14 @@ test("拖动时侧栏右边缘不出现额外的可见线条", { timeout: 60000 
     await sleep(120);
 
     assert.deepEqual(paint.painted, [], "拖动手柄不应画出任何可见元素");
-    assert.deepEqual(paint.blueAtCursor, [], "拖动时右边缘不应出现蓝色线条");
+    assert.deepEqual(paint.blueAtCursor, [], "拖动时右边缘不应出现额外的蓝色线条");
     assert.equal(paint.focusVisible, false, "鼠标拖动不应触发焦点环");
     assert.equal(paint.outlineStyle, "none", "拖动时不应有描边");
+    assert.equal(paint.borderRightColor, "rgb(30, 99, 245)", "拖动时分隔线应变成品牌蓝");
+
+    // 松手后恢复成原来的浅灰
+    const afterColor = await page.$eval(HANDLE, (el) => getComputedStyle(el.parentElement).borderRightColor);
+    assert.equal(afterColor, "rgb(242, 242, 242)", "松手后分隔线应恢复浅灰");
   });
 });
 
