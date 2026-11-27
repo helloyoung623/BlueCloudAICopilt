@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   clampSidebarWidth,
   resolveDraggedSidebarWidth,
@@ -16,7 +16,6 @@ export function SidebarResizeHandle({ width, onWidthChange }: {
   onWidthChange: (width: number) => void;
 }) {
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [dragging, setDragging] = useState(false);
   // 双击复位：pointerdown 里自己记时间戳判断，不依赖 dblclick
   // （手柄上有 preventDefault + 指针捕获，部分路径下 dblclick 不会触发）
   const lastDown = useRef<{ time: number; x: number; y: number } | null>(null);
@@ -32,7 +31,6 @@ export function SidebarResizeHandle({ width, onWidthChange }: {
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!drag.current) return;
     drag.current = null;
-    setDragging(false);
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -60,11 +58,11 @@ export function SidebarResizeHandle({ width, onWidthChange }: {
         return;
       }
       lastDown.current = { time: Date.now(), x: event.clientX, y: event.clientY };
-      // preventDefault 会拦掉默认聚焦，键盘微调（方向键）需要手动补一下焦点
-      event.currentTarget.focus({ preventScroll: true });
+      // 不在这里手动 focus：浏览器把程序化聚焦也当成 focus-visible，
+      // 会在右边缘画出一圈 2px 蓝色描边，拖动时看着像多出来的一条线。
+      // 焦点环留给键盘（Tab 过来时显示），鼠标拖动只留 col-resize 光标。
       event.currentTarget.setPointerCapture(event.pointerId);
       drag.current = { startX: event.clientX, startWidth: live.current.width };
-      setDragging(true);
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
     },
@@ -95,14 +93,11 @@ export function SidebarResizeHandle({ width, onWidthChange }: {
   return (
     <div
       {...handleProps}
-      className="group absolute right-0 top-0 z-30 flex h-full w-[8px] cursor-col-resize items-stretch justify-end focus-visible:outline-2 focus-visible:outline-[#1e63f5]"
-    >
-      {/* 悬停 / 拖动时在侧栏右边缘亮一条 2px 蓝线，提示这里可以拖 */}
-      <span className={`w-[2px] transition-colors ${
-        dragging
-          ? "bg-[#1e63f5]"
-          : "bg-transparent group-hover:bg-[#1e63f5] group-focus-visible:bg-[#1e63f5]"
-      }`} />
-    </div>
+      // 纯热区，不画任何可见元素：之前悬停 / 拖动时右边缘会亮一条 2px 蓝线，
+      // 拖动时那道线跟着鼠标跑，看着像多出来的一条线 —— 现在只留 col-resize 光标提示。
+      // 纯热区，不画任何可见元素：之前悬停 / 拖动时右边缘会亮一条 2px 蓝线，
+      // 拖动时那道线跟着鼠标跑，看着像多出来的一条线 —— 现在只留 col-resize 光标提示。
+      className="absolute right-0 top-0 z-30 h-full w-[8px] cursor-col-resize focus-visible:outline-2 focus-visible:outline-[#1e63f5]"
+    />
   );
 }
