@@ -16,7 +16,6 @@ import { Sheet } from "./components/ui/sheet";
 import { useIsMobile } from "./components/ui/use-mobile";
 import { OperationMenu } from "./components/operation-menu";
 import { AddContentMenu } from "./components/add-content-menu";
-import { ConnectorsView } from "./components/connectors-view";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
@@ -39,7 +38,6 @@ import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { type AgentEvent, type AgentSource } from "./agent-client";
 import { condenseAutomationTitle } from "./automation-title";
-import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
 // 自动化的常量/工具/类型直连子模块；组件走 lazy，避免聚合出口把整模块拖进首屏。
 import { INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, TASK_OPERATIONS } from "./components/automation/constants";
@@ -79,6 +77,8 @@ import { ChatHeader, TaskHeaderActions } from "./chat/ChatHeader";
 const AutomationView = lazy(() => import("./components/automation/automation-list").then(m => ({ default: m.AutomationView })));
 const AutomationDetailPanel = lazy(() => import("./components/automation/automation-detail-panel").then(m => ({ default: m.AutomationDetailPanel })));
 const DeleteTaskDialog = lazy(() => import("./components/automation/delete-task-dialog").then(m => ({ default: m.DeleteTaskDialog })));
+const ConnectorsView = lazy(() => import("./components/connectors-view").then(m => ({ default: m.ConnectorsView })));
+const LibraryView = lazy(() => import("./components/library-view").then(m => ({ default: m.LibraryView })));
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -294,6 +294,11 @@ export default function App() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // 资料库首次打开后才加载并挂载；之后即使关闭也保持挂载（仅 hidden），保住筛选/滚动状态。
+  const [libraryEverOpened, setLibraryEverOpened] = useState(false);
+  useEffect(() => {
+    if (libraryOpen) setLibraryEverOpened(true);
+  }, [libraryOpen]);
   // 资料库「上传到项目 → 新建项目」唤起同一个创建项目弹窗
   const [libraryCreateProjectOpen, setLibraryCreateProjectOpen] = useState(false);
   // 删除项目统一先弹确认窗（侧栏「···」、项目列表、项目详情、归档页共用）
@@ -2017,9 +2022,13 @@ export default function App() {
           onNewChat={handleNewChat}
         />
         )}
+        {libraryEverOpened && (
         <div className={libraryOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+          <Suspense fallback={null}>
           <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} onCreateProject={() => setLibraryCreateProjectOpen(true)} />
+          </Suspense>
         </div>
+        )}
         {libraryOpen ? null : automationOpen
           ? <Suspense fallback={null}><AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} onLocateRun={handleLocateRunRecord} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} /></Suspense>
           : archiveOpen
@@ -2034,7 +2043,7 @@ export default function App() {
               onSelectTask={id => { setArchiveOpen(false); setConnectorOpen(false); handleSelectHistory(id); }}
             />
           : connectorOpen
-          ? <ConnectorsView />
+          ? <Suspense fallback={null}><ConnectorsView /></Suspense>
           : projectListOpen
           ? <ProjectListPage
               projects={projects}
