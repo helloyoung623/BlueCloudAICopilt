@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { getInputFocusGeneration, subscribeInputFocus } from "./input-focus";
 import { AddContentMenu } from "../components/add-content-menu";
 import { AttachmentPicker } from "../components/attachment-picker";
 import type { AttachmentSource } from "../components/attachment-picker";
@@ -79,6 +80,11 @@ function ChatInput({ value, onChange, onSend, attachments, onAddFiles, onRemoveA
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  // 新建任务（handleNewChat）发出聚焦请求时，让当前显示的输入框获得焦点
+  const focusGeneration = useSyncExternalStore(subscribeInputFocus, getInputFocusGeneration, getInputFocusGeneration);
+  useEffect(() => {
+    if (focusGeneration > 0) textareaRef.current?.focus();
+  }, [focusGeneration]);
   const [attachmentSource, setAttachmentSource] = useState<AttachmentSource | null>(null);
   // 输入框最大高度跟随窗口高度收缩：矮窗口（如约 400px 高的预览面板）里，
   // 固定 328px 会把底部工具栏和发送按钮顶到窗口外

@@ -58,6 +58,7 @@ import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/
 import { addSourcesToProject, buildImportTasks, parseFileSize } from "./projects/project-files";
 import { ExecutionProcess, MergedProcess, PROCESS_PRESETS, intentIcon, runningActionText, toToolKind } from "./chat/execution-process";
 import { ChatInput } from "./chat/ChatInput";
+import { requestInputFocus } from "./chat/input-focus";
 import { ChatView } from "./chat/ChatView";
 import type { ProjectItem } from "./projects/types";
 import { CreateProjectDialog, ProjectActionsMenu, TaskProjectMoveMenu, TransferConfirmDialog } from "./projects/ProjectViews";
@@ -1477,6 +1478,9 @@ export default function App() {
     setActiveHistoryId(null);
     setActiveProjectId(null);
     setSelectedProjectId(null);
+    // 新建任务后直接把光标放进输入框：延后一个宏任务，等「旧对话 → 新首页」
+    // 的重渲染结束、新挂载的 ChatInput 订阅上焦点请求后再发（三处输入框统一生效）。
+    setTimeout(requestInputFocus, 0);
   };
   const handleAddLibraryFileToTask = (file: { id: string; name: string; size: string; extension?: string }) => {
     handleNewChat();

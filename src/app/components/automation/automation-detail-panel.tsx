@@ -28,7 +28,8 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
 }) {
   // 统一宽度规则：会话页 / 自动化任务页同一个默认宽度、同一套拖拽范围与铺满断点
   const panelRef = useRef<HTMLElement | null>(null);
-  const { overlay, page, pageStyle, dragging, style: panelStyle, handleProps } = useDetailPanelWidth(panelRef, { contentAware });
+  const { overlay, page, pageStyle, dragging, hovering, style: panelStyle, handleProps } = useDetailPanelWidth(panelRef, { contentAware });
+  // 与侧栏同款：hover 热区或正在拖动时显示渐变指示线（Figma 10209:42379）
 
   const [tab, setTab] = useState<DetailTab>("详情");
   const [advOpen, setAdvOpen] = useState(false);
@@ -108,15 +109,19 @@ export function AutomationDetailPanel({ task, onClose, onOperate, onChange, onLo
           ? "absolute inset-y-0 right-0 z-20 w-[320px] border-l border-[#f2f2f2] shadow-[-8px_0_24px_rgba(0,0,0,0.08)]"
           : "relative border-l border-[#f2f2f2]"}`}
     >
-      {/* 拖拽手柄：3px 宽热区贴着左侧 1px 描边，hover / 拖动时显示一条蓝色指示线（铺满/浮层态没有可拖空间） */}
+      {/* 拖拽手柄：hover / 拖动时显示渐变指示线，贴左边缘；与侧栏右边缘那条完全同款
+          （Figma 10209:42379。铺满/浮层态没有可拖空间，不渲染手柄） */}
       {!overlay && !page && (
         <div
           {...handleProps}
-          className="group absolute inset-y-0 left-[-3px] z-30 w-[6px] cursor-col-resize touch-none outline-none"
+          className="absolute inset-y-0 left-[-3px] z-30 w-[6px] cursor-col-resize touch-none focus-visible:outline-2 focus-visible:outline-[#1e63f5]"
         >
+          {/* 手柄左边缘在面板外侧 3px，left-[3px] 才落在面板那条 1px 边框上：
+              蓝线压住边框，避免「2px 蓝 + 1px 灰」并排看着像 3px（与侧栏同款处理） */}
           <span
             aria-hidden
-            className={`absolute inset-y-0 left-[2px] w-[2px] rounded-full transition-colors ${dragging ? "bg-[#1e63f5]" : "bg-transparent group-hover:bg-[#99c3ff] group-focus-visible:bg-[#99c3ff]"}`}
+            className="resize-indicator left-[3px]"
+            style={{ opacity: dragging || hovering ? 1 : 0 }}
           />
         </div>
       )}

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   clampSidebarWidth,
   resolveDraggedSidebarWidth,
@@ -20,6 +20,8 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange, on
   onHoverChange?: (hovering: boolean) => void;
 }) {
   const drag = useRef<{ startX: number; startWidth: number; latestWidth: number } | null>(null);
+  // hover 或拖动时显示那条渐变指示线（与详情栏拖动线统一样式，Figma 10209:42379）
+  const [lineActive, setLineActive] = useState(false);
   // 双击复位：pointerdown 里自己记时间戳判断，不依赖 dblclick
   // （手柄上有 preventDefault + 指针捕获，部分路径下 dblclick 不会触发）
   const lastDown = useRef<{ time: number; x: number; y: number } | null>(null);
@@ -36,6 +38,8 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange, on
     if (!drag.current) return;
     const current = drag.current;
     drag.current = null;
+    // 松手时若鼠标已离开热区则收起指示线（事件序列里 pointerleave 可能被吞）
+    if (!event.currentTarget.matches(":hover")) setLineActive(false);
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
     // 松手落在 241~271 的过渡带：按拖动方向吸附到稳定态
@@ -59,9 +63,9 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange, on
     "aria-valuemax": SIDEBAR_WIDTH_MAX,
     "aria-valuenow": width,
     tabIndex: 0,
-    // 悬停到右边缘热区就回报，让那条分隔线变品牌蓝（不需要真的按住拖动）
-    onPointerEnter: () => live.current.onHoverChange?.(true),
-    onPointerLeave: () => live.current.onHoverChange?.(false),
+    // 悬停到右边缘热区就显示渐变指示线（不需要真的按住拖动）
+    onPointerEnter: () => { setLineActive(true); live.current.onHoverChange?.(true); },
+    onPointerLeave: () => { if (!drag.current) setLineActive(false); live.current.onHoverChange?.(false); },
     onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
       event.preventDefault();
@@ -79,6 +83,7 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange, on
       // 焦点环留给键盘（Tab 过来时显示），鼠标拖动只留 col-resize 光标。
       event.currentTarget.setPointerCapture(event.pointerId);
       drag.current = { startX: event.clientX, startWidth: live.current.width, latestWidth: live.current.width };
+      setLineActive(true);
       live.current.onDraggingChange?.(true);
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
@@ -112,11 +117,16 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange, on
   return (
     <div
       {...handleProps}
-      // 纯热区，不画任何可见元素：之前悬停 / 拖动时右边缘会亮一条 2px 蓝线，
-      // 拖动时那道线跟着鼠标跑，看着像多出来的一条线 —— 现在只留 col-resize 光标提示。
-      // 纯热区，不画任何可见元素：之前悬停 / 拖动时右边缘会亮一条 2px 蓝线，
-      // 拖动时那道线跟着鼠标跑，看着像多出来的一条线 —— 现在只留 col-resize 光标提示。
       className="absolute right-0 top-0 z-30 h-full w-[8px] cursor-col-resize focus-visible:outline-2 focus-visible:outline-[#1e63f5]"
-    />
+    >
+      {/* 渐变指示线：与详情栏左边缘那条完全同款（Figma 10209:42379）。
+          right-[-1px] 把它压到侧栏那 1px 分隔边框上——蓝线 2px 直接替代原边框；
+          若与边框并排会变成「2px 蓝 + 1px 灰 = 3px」，看着比设计稿粗。 */}
+      <span
+        aria-hidden
+        className="resize-indicator right-[-1px]"
+        style={{ opacity: lineActive ? 1 : 0 }}
+      />
+    </div>
   );
 }

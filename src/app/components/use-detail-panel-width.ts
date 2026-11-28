@@ -46,6 +46,8 @@ export function useDetailPanelWidth(panelRef: React.RefObject<HTMLElement | null
   // 铺满态用：前一个兄弟相对父容器左边缘的偏移（会话页父容器含 240 导航，需要这个偏移）
   const [siblingLeft, setSiblingLeft] = React.useState(0);
   const [dragging, setDragging] = React.useState(false);
+  // 悬停到手柄热区也回报：和侧栏拖拽手柄一样，hover 或拖动时把面板边框变成品牌蓝
+  const [hovering, setHovering] = React.useState(false);
   const drag = React.useRef<{ startX: number; startWidth: number } | null>(null);
   // 双击手柄回到默认宽度：pointerdown 里自己记时间戳判断，
   // 不依赖 dblclick（手柄上有 preventDefault + 指针捕获，dblclick 在部分路径下不会触发）
@@ -109,6 +111,8 @@ export function useDetailPanelWidth(panelRef: React.RefObject<HTMLElement | null
     "aria-valuemax": maxWidth,
     "aria-valuenow": width,
     tabIndex: 0,
+    onPointerEnter: () => setHovering(true),
+    onPointerLeave: () => setHovering(false),
     onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
       event.preventDefault();
@@ -167,6 +171,8 @@ export function useDetailPanelWidth(panelRef: React.RefObject<HTMLElement | null
     width,
     maxWidth,
     dragging,
+    // hover 拖动热区也让边框变品牌蓝（与侧栏拖动线一致）
+    hovering,
     // 浮层 / 铺满态宽度由样式表固定，这里不再覆盖
     style: overlay || page ? undefined : { width, flex: "0 0 auto" as React.CSSProperties["flex"] },
     handleProps,
