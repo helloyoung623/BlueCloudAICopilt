@@ -58,7 +58,6 @@ import { startAgentStream } from "./chat/agent-stream";
 import type { OutlinePage, PptPageCount, PptStage } from "./ppt/types";
 import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/launch";
 import { addSourcesToProject, buildImportTasks, parseFileSize } from "./projects/project-files";
-import { AIIcon, OutlinePanel, PptGenerationToggle, RequirementPanel } from "./ppt/panels";
 import { ExecutionProcess, MergedProcess, PROCESS_PRESETS, intentIcon, runningActionText, toToolKind } from "./chat/execution-process";
 import { ChatInput } from "./chat/ChatInput";
 import { ChatView } from "./chat/ChatView";
@@ -80,6 +79,8 @@ const DeleteTaskDialog = lazy(() => import("./components/automation/delete-task-
 const ConnectorsView = lazy(() => import("./components/connectors-view").then(m => ({ default: m.ConnectorsView })));
 const LibraryView = lazy(() => import("./components/library-view").then(m => ({ default: m.LibraryView })));
 const PptPanel = lazy(() => import("./components/ppt-panel").then(m => ({ default: m.PptPanel })));
+const RequirementPanel = lazy(() => import("./ppt/flow-panels").then(m => ({ default: m.RequirementPanel })));
+const OutlinePanel = lazy(() => import("./ppt/flow-panels").then(m => ({ default: m.OutlinePanel })));
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -2206,17 +2207,21 @@ export default function App() {
       {/* panels / preview (z-50, fixed) */}
       {/*  these stay here so they overlay regardless of sidebar */}
 
+      <Suspense fallback={null}>
       <RequirementPanel
         visible={stage === "requirement"}
         onClose={resetPptFlow}
         onConfirm={handleRequirementConfirm}
         initialPages={pptPages}
       />
+      </Suspense>
+      <Suspense fallback={null}>
       <OutlinePanel
         visible={stage === "outline"}
         onClose={resetPptFlow}
         onConfirm={handleOutlineConfirm}
       />
+      </Suspense>
     </div>
     <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
     {/* Figma 9244:31238：选人后统一在 App 层弹确认窗，点确定才真正移交 */}
