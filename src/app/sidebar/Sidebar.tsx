@@ -986,8 +986,10 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
                       </div>
                     );
                   })}
+                  {/* 去掉上方的 pt-[10px]：这层留白把按钮和上一行任务隔开，悬停底色看着悬空；
+                      下方 pb-[8px] 保留，左右缩进用来和任务文字对齐 */}
                   {isProjectExpanded && projectTasks.length >= 10 && (
-                    <div className="flex w-full flex-col items-start px-[32px] pb-[8px] pt-[10px]">
+                    <div className="flex w-full flex-col items-start px-[32px] pb-[8px]">
                       <button
                         type="button"
                         aria-label={tasksCollapsed ? `展开${project.name}的全部任务` : `收起${project.name}的任务`}
@@ -1006,17 +1008,17 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
                 </div>
               );
             })}
-            {/* 项目 >= 10 时折叠，点「更多项目 / 收起项目」切换全部（Figma 101:1826） */}
+            {/* 项目 >= 10 时折叠，点「更多项目 / 收起」切换全部（Figma 101:1826） */}
             {/* 设计稿：「更多项目」与项目图标左对齐（缩进 12px），不同于「更多任务」与任务文字对齐（36px） */}
             {visibleSidebarProjects.length >= 10 && (
-              <div className="flex w-full flex-col items-start px-[8px] pb-[8px] pt-[10px]">
+              <div className="flex w-full flex-col items-start px-[8px] pb-[8px]">
                 <button
                   type="button"
                   aria-label={projectsCollapsed ? "展开全部项目" : "收起部分项目"}
                   onClick={() => setProjectsShowAll(showAll => !showAll)}
                   className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
                 >
-                  {projectsCollapsed ? "更多项目" : "收起项目"}
+                  {projectsCollapsed ? "更多项目" : "收起"}
                 </button>
               </div>
             )}
