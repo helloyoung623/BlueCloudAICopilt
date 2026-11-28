@@ -7,7 +7,7 @@ import { SmallTip } from "../components/task-artifacts";
 import { UserAvatar } from "../components/user-avatar";
 import { useUserProfile } from "../user-profile";
 import { SidebarResizeHandle } from "./SidebarResizeHandle";
-import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT } from "./sidebar-width";
+import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_WIDE } from "./sidebar-width";
 import svgSidebar from "@/imports/历史对话操作项/svg-1dh84d0t2n";
 import { CreateProjectDialog, ProjectActionsMenu, TaskProjectMoveMenu, showArchiveToast } from "../projects/ProjectViews";
 import { useConversationDomain } from "../chat/conversation-context";
@@ -524,49 +524,91 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
   };
   // 移动端是抽屉，宽度固定 240；桌面端按用户拖出来的宽度走
   const sidebarWidth = clampSidebarWidth(width ?? SIDEBAR_WIDTH_DEFAULT);
-  // 拖动时把右边缘那条分隔线换成品牌蓝：线还是这一条，只是颜色变了
+  // 右边缘那条分隔线：鼠标悬停到热区、或正在拖动时都换成品牌蓝；线还是这一条，只是颜色变了
   const [resizing, setResizing] = useState(false);
+  const [hoveringResize, setHoveringResize] = useState(false);
+  const resizeLineActive = resizing || hoveringResize;
+
+  // 宽度 240→272 对应窄版→宽版布局（Figma 10197:26519）：
+  // logo 从 y=52 上移到 y=20、新任务从 y=84 上移到 y=52、head 从 124 缩到 92，
+  // 同时「logo 上方」那组操作项淡出、「logo 右侧」那组淡入。
+  // 拖动中随宽度实时插值跟手，松手吸附瞬间到位——不引入 CSS 过渡：
+  // 过渡会让「松手/键盘/刷新后立即读宽度」落到动画中间值，破坏磁吸的确定性。
+  // 浮层抽屉固定走宽版布局（Figma 9254:45576）；桌面端按 240→272 插值
+  const layoutT = mobile ? 1 : Math.min(1, Math.max(0, (sidebarWidth - 240) / 32));
+  const headHeight = 124 - 32 * layoutT;
+  const logoTop = 52 - 32 * layoutT;
+  const newChatTop = 84 - 32 * layoutT;
 
   return (
     <div
-      className={`relative shrink-0 self-stretch border-r ${resizing ? "border-[#1e63f5]" : "border-[#f2f2f2]"} bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
-      style={{ width: mobile ? SIDEBAR_WIDTH_DEFAULT : sidebarWidth }}
+      className={`relative shrink-0 self-stretch border-r ${resizeLineActive ? "border-[#1e63f5]" : "border-[#f2f2f2]"} bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
+      style={{ width: mobile ? SIDEBAR_WIDTH_WIDE : sidebarWidth }}
     >
       {/* head —— 只有 logo / 搜索 / 新任务固定；新任务以下全部进入下方滚动区 */}
-      <div className="relative h-[124px] w-full shrink-0 bg-white">
-        {/* logo：按设计稿的固定位置摆放（左边距 24px），不随侧栏宽度漂移 */}
-        <div className="absolute left-[24px] top-[52px] h-[16px] w-[160.403px]">
+      <div className="relative w-full shrink-0 bg-white" style={{ height: headHeight }}>
+        {/* logo：窄版居中在 y=52，宽版上移到 y=20（Figma 宽版稿），左边距始终 24px */}
+        <div className="absolute left-[24px] h-[16px] w-[160.403px]" style={{ top: logoTop }}>
           <img alt="世纪互联办公智能体" className="absolute inset-0 block size-full max-w-none" src="/assets/9d907.svg" />
         </div>
-        {/* sidebar toggle (close) */}
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="收起侧边栏"
-          className="absolute left-[20px] top-[12px] flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
-        >
-          <span className="relative h-full min-w-px flex-1">
-            <img alt="" className="absolute inset-0 block size-full max-w-none" src={mobile ? "/assets/a8ef3.svg" : "/assets/0c886.svg"} />
-          </span>
-        </button>
-        {/* search button */}
-        <button
-          type="button"
-          aria-label="搜索"
-          onClick={onSearch}
-          className="absolute left-[52px] top-[12px] flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
-        >
-          <span className="relative h-full min-w-px flex-1">
-            <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/ed737.svg" />
-          </span>
-        </button>
+        {/* 窄版操作项组：logo 上方（y=12），随拖宽淡出到 0% */}
+        <div aria-hidden={layoutT > 0.5 ? true : undefined} className="absolute left-[20px] top-[12px] flex items-center gap-[8px]" style={{ opacity: 1 - layoutT, pointerEvents: layoutT > 0.5 ? "none" : undefined }}>
+          {/* sidebar toggle (close) */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={layoutT > 0.5 ? undefined : "收起侧边栏"}
+            className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
+          >
+            <span className="relative h-full min-w-px flex-1">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src={mobile ? "/assets/a8ef3.svg" : "/assets/0c886.svg"} />
+            </span>
+          </button>
+          {/* search button */}
+          <button
+            type="button"
+            aria-label={layoutT > 0.5 ? undefined : "搜索"}
+            onClick={onSearch}
+            className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
+          >
+            <span className="relative h-full min-w-px flex-1">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/ed737.svg" />
+            </span>
+          </button>
+        </div>
+        {/* 宽版操作项组：logo 右边（Figma x=204/y=16，距右 12px），随拖宽淡入到 100% */}
+        <div aria-hidden={layoutT > 0.5 ? undefined : true} className="absolute right-[12px] top-[16px] flex items-center gap-[8px]" style={{ opacity: layoutT, pointerEvents: layoutT > 0.5 ? undefined : "none" }}>
+          {/* search button */}
+          <button
+            type="button"
+            aria-label={layoutT > 0.5 ? "搜索" : undefined}
+            onClick={onSearch}
+            className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
+          >
+            <span className="relative h-full min-w-px flex-1">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/ed737.svg" />
+            </span>
+          </button>
+          {/* sidebar toggle：桌面是折叠 icon，浮层抽屉是关闭 icon（Figma 9254:45576） */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={layoutT > 0.5 ? (mobile ? "关闭侧边栏" : "收起侧边栏") : undefined}
+            className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
+          >
+            <span className="relative h-full min-w-px flex-1">
+              <img alt="" className="absolute inset-0 block size-full max-w-none" src={mobile ? "/assets/automation-close.svg" : "/assets/0c886.svg"} />
+            </span>
+          </button>
+        </div>
         {/* 新任务 */}
         <button
           type="button"
           onClick={onNewChat}
-          className={`absolute left-[12px] right-[12px] top-[84px] flex h-[40px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
+          className={`absolute left-[12px] right-[12px] flex h-[40px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
             !projectListOpen && !automationOpen && !libraryOpen && !connectorOpen && activeId === null && activeProjectId === null ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
           }`}
+          style={{ top: newChatTop }}
         >
           <span className="relative size-[16px] shrink-0">
             <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/a4798.svg" />
@@ -585,7 +627,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
 
       {/* 滚动后常驻的 12px 白色安全区：盖住「新任务」按钮下方被切半行的内容；只做遮罩、不参与布局 */}
       {sidebarScrolled && (
-        <div aria-hidden className="pointer-events-none absolute left-0 right-0 top-[124px] z-[15] h-[12px] bg-white" />
+        <div aria-hidden className="pointer-events-none absolute left-0 right-0 z-[15] h-[12px] bg-white" style={{ top: headHeight }} />
       )}
 
       {/* 滚动区域：新任务以下所有内容（导航 / 项目 / 任务）整体滚动；容器铺满 240px，滚动条贴侧栏最右侧 */}
@@ -1164,7 +1206,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
       {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
       {/* 右边缘的拖拽手柄：只在桌面端出现，移动端是固定宽度的抽屉 */}
       {!mobile && onWidthChange && (
-        <SidebarResizeHandle width={sidebarWidth} onWidthChange={onWidthChange} onDraggingChange={setResizing} />
+        <SidebarResizeHandle width={sidebarWidth} onWidthChange={onWidthChange} onDraggingChange={setResizing} onHoverChange={setHoveringResize} />
       )}
     </div>
   );
