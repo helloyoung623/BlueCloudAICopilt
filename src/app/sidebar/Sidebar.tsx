@@ -532,33 +532,32 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
   // 宽度 240→272 对应窄版→宽版布局（Figma 10197:26519）：
   // logo 从 y=52 上移到 y=20、新任务从 y=84 上移到 y=52、head 从 124 缩到 92，
   // 同时「logo 上方」那组操作项淡出、「logo 右侧」那组淡入。
-  // 拖动中随宽度实时插值跟手；松手吸附时才走 200ms 过渡。
+  // 拖动中随宽度实时插值跟手，松手吸附瞬间到位——不引入 CSS 过渡：
+  // 过渡会让「松手/键盘/刷新后立即读宽度」落到动画中间值，破坏磁吸的确定性。
   // 浮层抽屉固定走宽版布局（Figma 9254:45576）；桌面端按 240→272 插值
   const layoutT = mobile ? 1 : Math.min(1, Math.max(0, (sidebarWidth - 240) / 32));
   const headHeight = 124 - 32 * layoutT;
   const logoTop = 52 - 32 * layoutT;
   const newChatTop = 84 - 32 * layoutT;
-  const snapTransition = resizing ? "none" : "width 200ms ease-out";
-  const layoutTransition = resizing ? "none" : "top 200ms ease-out, height 200ms ease-out, opacity 200ms ease-out";
 
   return (
     <div
       className={`relative shrink-0 self-stretch border-r ${resizeLineActive ? "border-[#1e63f5]" : "border-[#f2f2f2]"} bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
-      style={{ width: mobile ? SIDEBAR_WIDTH_WIDE : sidebarWidth, transition: snapTransition }}
+      style={{ width: mobile ? SIDEBAR_WIDTH_WIDE : sidebarWidth }}
     >
       {/* head —— 只有 logo / 搜索 / 新任务固定；新任务以下全部进入下方滚动区 */}
-      <div className="relative w-full shrink-0 bg-white" style={{ height: headHeight, transition: layoutTransition }}>
+      <div className="relative w-full shrink-0 bg-white" style={{ height: headHeight }}>
         {/* logo：窄版居中在 y=52，宽版上移到 y=20（Figma 宽版稿），左边距始终 24px */}
-        <div className="absolute left-[24px] h-[16px] w-[160.403px]" style={{ top: logoTop, transition: layoutTransition }}>
+        <div className="absolute left-[24px] h-[16px] w-[160.403px]" style={{ top: logoTop }}>
           <img alt="世纪互联办公智能体" className="absolute inset-0 block size-full max-w-none" src="/assets/9d907.svg" />
         </div>
         {/* 窄版操作项组：logo 上方（y=12），随拖宽淡出到 0% */}
-        <div className="absolute left-[20px] top-[12px] flex items-center gap-[8px]" style={{ opacity: 1 - layoutT, transition: layoutTransition, pointerEvents: layoutT > 0.5 ? "none" : undefined }}>
+        <div aria-hidden={layoutT > 0.5 ? true : undefined} className="absolute left-[20px] top-[12px] flex items-center gap-[8px]" style={{ opacity: 1 - layoutT, pointerEvents: layoutT > 0.5 ? "none" : undefined }}>
           {/* sidebar toggle (close) */}
           <button
             type="button"
             onClick={onClose}
-            aria-label="收起侧边栏"
+            aria-label={layoutT > 0.5 ? undefined : "收起侧边栏"}
             className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
           >
             <span className="relative h-full min-w-px flex-1">
@@ -568,7 +567,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
           {/* search button */}
           <button
             type="button"
-            aria-label="搜索"
+            aria-label={layoutT > 0.5 ? undefined : "搜索"}
             onClick={onSearch}
             className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
           >
@@ -578,11 +577,11 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
           </button>
         </div>
         {/* 宽版操作项组：logo 右边（Figma x=204/y=16，距右 12px），随拖宽淡入到 100% */}
-        <div className="absolute right-[12px] top-[16px] flex items-center gap-[8px]" style={{ opacity: layoutT, transition: layoutTransition, pointerEvents: layoutT > 0.5 ? undefined : "none" }}>
+        <div aria-hidden={layoutT > 0.5 ? undefined : true} className="absolute right-[12px] top-[16px] flex items-center gap-[8px]" style={{ opacity: layoutT, pointerEvents: layoutT > 0.5 ? undefined : "none" }}>
           {/* search button */}
           <button
             type="button"
-            aria-label="搜索"
+            aria-label={layoutT > 0.5 ? "搜索" : undefined}
             onClick={onSearch}
             className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
           >
@@ -594,7 +593,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
           <button
             type="button"
             onClick={onClose}
-            aria-label={mobile ? "关闭侧边栏" : "收起侧边栏"}
+            aria-label={layoutT > 0.5 ? (mobile ? "关闭侧边栏" : "收起侧边栏") : undefined}
             className="flex size-[24px] cursor-pointer items-start rounded-[4px] p-[4px] hover:bg-[#f7f7f7]"
           >
             <span className="relative h-full min-w-px flex-1">
@@ -609,7 +608,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
           className={`absolute left-[12px] right-[12px] flex h-[40px] cursor-pointer items-center gap-[8px] overflow-clip rounded-[8px] py-[8px] pl-[12px] pr-[4px] transition-colors ${
             !projectListOpen && !automationOpen && !libraryOpen && !connectorOpen && activeId === null && activeProjectId === null ? "bg-[#f7f7f7]" : "hover:bg-[#f2f2f2]"
           }`}
-          style={{ top: newChatTop, transition: layoutTransition }}
+          style={{ top: newChatTop }}
         >
           <span className="relative size-[16px] shrink-0">
             <img alt="" className="absolute inset-0 block size-full max-w-none" src="/assets/a4798.svg" />

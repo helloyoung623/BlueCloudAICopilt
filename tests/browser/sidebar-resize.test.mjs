@@ -244,9 +244,15 @@ test("拖动时侧栏右边缘只有一条线，且这条线会变色", { timeou
     assert.equal(paint.outlineStyle, "none", "拖动时不应有描边");
     assert.equal(paint.borderRightColor, "rgb(30, 99, 245)", "拖动时分隔线应变成品牌蓝");
 
-    // 松手后恢复成原来的浅灰
+    // 松手时鼠标仍停在热区（手柄随侧栏移到了 x+60），hover 反馈生效 → 保持品牌蓝
     const afterColor = await page.$eval(HANDLE, (el) => getComputedStyle(el.parentElement).borderRightColor);
-    assert.equal(afterColor, "rgb(242, 242, 242)", "松手后分隔线应恢复浅灰");
+    assert.equal(afterColor, "rgb(30, 99, 245)", "松手后鼠标仍在热区，分隔线应保持品牌蓝");
+
+    // 鼠标真正移开热区后，才恢复成原来的浅灰
+    await page.mouse.move(x + 120, y);
+    await sleep(150);
+    const awayColor = await page.$eval(HANDLE, (el) => getComputedStyle(el.parentElement).borderRightColor);
+    assert.equal(awayColor, "rgb(242, 242, 242)", "鼠标移开热区后分隔线应恢复浅灰");
   });
 });
 
