@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "./ui/dialog";
 import { OperationMenu } from "./operation-menu";
-import { getAvatarInitial } from "./avatar-initial";
+import { AvatarInitialText } from "./avatar-initial-text";
 
 export type ProjectMember = {
   id: string;
@@ -76,7 +76,7 @@ export function ProjectInstructionDialog({ instruction, onClose, onSave }: {
 export function ProjectMemberTag({ member }: { member: Pick<ProjectMember, "name" | "color"> }) {
   return (
     <span className="inline-flex h-[24px] max-w-full items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px] text-[12px] font-normal leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.6)]">
-      <span className="flex size-[20px] shrink-0 items-center justify-center rounded-full text-white" style={{ backgroundColor: member.color }}>{getAvatarInitial(member.name)}</span>
+      <span className="flex size-[20px] shrink-0 items-center justify-center rounded-full text-white" style={{ backgroundColor: member.color }}><AvatarInitialText name={member.name} /></span>
       <span className="truncate">{member.name}</span>
     </span>
   );
