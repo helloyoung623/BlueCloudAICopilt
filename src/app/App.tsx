@@ -29,7 +29,6 @@ import { DEMO_PROJECT_FILES, ProjectFilesPanel, createCloudSourceFiles, pickSour
 import type { ProjectFiles } from "./components/project-files";
 import { SelectFileDialog } from "./components/select-file-dialog";
 import type { CloudSourceTab } from "./components/select-file-dialog";
-import { ImportTaskPanel } from "./components/import-task-panel";
 import type { ImportTask } from "./components/import-task-panel";
 import { FileFilterButton, EMPTY_UPLOADER_FILTER, SELF_OWNER } from "./components/file-filter";
 import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./components/file-filter";
@@ -81,6 +80,7 @@ const LibraryView = lazy(() => import("./components/library-view").then(m => ({ 
 const PptPanel = lazy(() => import("./components/ppt-panel").then(m => ({ default: m.PptPanel })));
 const RequirementPanel = lazy(() => import("./ppt/flow-panels").then(m => ({ default: m.RequirementPanel })));
 const OutlinePanel = lazy(() => import("./ppt/flow-panels").then(m => ({ default: m.OutlinePanel })));
+const ImportTaskPanel = lazy(() => import("./components/import-task-panel").then(m => ({ default: m.ImportTaskPanel })));
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -2239,6 +2239,7 @@ export default function App() {
     />
     {/* 导入面板只在「项目」「资料库」两个导航内出现；切到其他页面仅隐藏，记录与进度保留 */}
     {importTasks && (libraryOpen || projectListOpen || activeProjectId !== null) && (
+      <Suspense fallback={null}>
       <ImportTaskPanel
         tasks={importTasks}
         collapsed={importCollapsed}
@@ -2247,6 +2248,7 @@ export default function App() {
         onRetryAll={retryFailedImports}
         onClose={() => setImportTasks(null)}
       />
+      </Suspense>
     )}
     <Toaster position="top-center" />
     </Sheet>
