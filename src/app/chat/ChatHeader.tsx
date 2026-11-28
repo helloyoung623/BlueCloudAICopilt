@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { SheetTrigger } from "../components/ui/sheet";
 import { TaskArtifactsButton } from "../components/task-artifacts";
 import type { LocatedTaskArtifact } from "../components/task-artifacts";
-import { TaskOperationsMenu } from "../sidebar/Sidebar";
+import { RenameTaskDialog, TaskOperationsMenu } from "../sidebar/Sidebar";
 import { CreateProjectDialog, showArchiveToast } from "../projects/ProjectViews";
 import type { HistoryItem } from "../chat/types";
 import type { ProjectItem } from "../projects/types";
@@ -82,6 +82,7 @@ function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -128,7 +129,7 @@ function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects,
           task={task}
           projects={projects}
           onTogglePin={() => updateTask({ pinned: !task.pinned })}
-          onRename={title => updateTask({ title })}
+          onRename={() => setRenameOpen(true)}
           onMove={projectId => updateTask({ projectId })}
           onCreateProject={() => setCreateProjectOpen(true)}
           onArchive={() => {
@@ -147,6 +148,12 @@ function TaskHeaderActions({ task, projects, artifacts, setHistory, setProjects,
           setProjects(current => [...current, { ...project, id }]);
           updateTask({ projectId: id });
         }}
+      />
+      <RenameTaskDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        title={task.title}
+        onSubmit={title => updateTask({ title })}
       />
     </div>
   );

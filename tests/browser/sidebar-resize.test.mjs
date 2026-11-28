@@ -199,7 +199,7 @@ test("拖动改变侧栏宽度时，logo 位置保持不变", { timeout: 60000 }
   });
 });
 
-test("拖动时侧栏右边缘只有一条线，且这条线会变色", { timeout: 60000 }, async () => {
+test("拖动时侧栏右边缘显示渐变指示线（Figma 10209:42379）", { timeout: 60000 }, async () => {
   await withPage(browser, app, async ({ page }) => {
     await resetWidth(page);
     const handle = await page.$(HANDLE);
@@ -207,52 +207,59 @@ test("拖动时侧栏右边缘只有一条线，且这条线会变色", { timeou
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
 
-    await page.mouse.move(x, y);
-    await page.mouse.down();
-    await page.mouse.move(x + 60, y, { steps: 8 });
-
-    // 按住拖动中：手柄本身不该画任何可见元素，光标处也不该冒出蓝色细线
-    const paint = await page.evaluate(({ selector, px, py }) => {
-      const el = document.querySelector(selector);
-      const painted = [el, ...el.querySelectorAll("*")].filter((node) => {
-        const cs = getComputedStyle(node);
-        return cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent";
-      });
-      const blueAtCursor = document.elementsFromPoint(px, py).filter((node) => {
-        const cs = getComputedStyle(node);
-        const rect = node.getBoundingClientRect();
-        return cs.backgroundColor === "rgb(30, 99, 245)" && rect.width <= 4;
-      });
-      const cs = getComputedStyle(el);
+    // 这条线的样式与设计稿一致：2px 宽、品牌蓝垂直渐变、压在右侧 1px 边框上
+    const style = await page.$eval(HANDLE, (el) => {
+      const line = el.querySelector(".resize-indicator");
+      if (!line) throw new Error("找不到渐变指示线");
+      const cs = getComputedStyle(line);
+      const lr = line.getBoundingClientRect();
+      const pr = el.parentElement.getBoundingClientRect();
       return {
-        painted: painted.map((n) => `${n.tagName}.${String(n.className).slice(0, 40)}`),
-        blueAtCursor: blueAtCursor.map((n) => `${n.tagName}.${String(n.className).slice(0, 40)}`),
-        // 焦点环也是一条线：指针操作不该留下描边（outline-style: none 即不绘制）
-        outlineStyle: cs.outlineStyle,
-        focusVisible: el.matches(":focus-visible"),
-        // 侧栏自己的右边缘分隔线：拖动时应变成品牌蓝
+        width: cs.width,
+        background: cs.backgroundImage,
+        right: cs.right,
+        lineRight: lr.right,
+        panelRight: pr.right,
         borderRightColor: getComputedStyle(el.parentElement).borderRightColor,
       };
-    }, { selector: HANDLE, px: x + 60, py: y });
+    });
+    assert.equal(style.width, "2px", "指示线应为 2px 宽");
+    assert.match(style.background, /linear-gradient/, "指示线应为渐变背景");
+    assert.match(style.background, /rgba\(32, 100, 245/, "渐变应为品牌蓝 #2064F5");
+    assert.equal(style.right, "-1px", "侧栏指示线需外移 1px 压住分隔边框");
+    // 关键回归：蓝线右边缘必须与侧栏右边缘重合。若停在边框内侧，
+    // 2px 蓝 + 1px 灰并排就会变成视觉上的 3px（用户实测反馈过）
+    assert.equal(style.lineRight, style.panelRight, "蓝线右边缘应与侧栏右边缘重合（不叠出灰边）");
+    assert.equal(style.borderRightColor, "rgb(242, 242, 242)", "父容器分隔线保持浅灰");
+
+    const lineOpacity = () => page.$eval(HANDLE, (el) => getComputedStyle(el.querySelector(".resize-indicator")).opacity);
+    assert.equal(await lineOpacity(), "0", "未悬停时指示线隐藏");
+
+    // hover 热区 → 线淡入
+    await page.mouse.move(x, y);
+    await sleep(220);
+    assert.equal(await lineOpacity(), "1", "悬停热区时指示线显示");
+
+    // 拖动中保持显示
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y, { steps: 8 });
+    await sleep(120);
+    assert.equal(await lineOpacity(), "1", "拖动中指示线保持显示");
+
+    // 鼠标操作不应留下焦点环
+    const focus = await page.$eval(HANDLE, (el) => ({ focusVisible: el.matches(":focus-visible"), outlineStyle: getComputedStyle(el).outlineStyle }));
+    assert.equal(focus.focusVisible, false, "鼠标拖动不应触发焦点环");
+    assert.equal(focus.outlineStyle, "none", "拖动时不应有描边");
 
     await page.mouse.up();
+    // 松手时鼠标仍停在热区（手柄随侧栏移到了 x+60），保持显示
     await sleep(120);
+    assert.equal(await lineOpacity(), "1", "松手后鼠标仍在热区，指示线保持显示");
 
-    assert.deepEqual(paint.painted, [], "拖动手柄不应画出任何可见元素");
-    assert.deepEqual(paint.blueAtCursor, [], "拖动时右边缘不应出现额外的蓝色线条");
-    assert.equal(paint.focusVisible, false, "鼠标拖动不应触发焦点环");
-    assert.equal(paint.outlineStyle, "none", "拖动时不应有描边");
-    assert.equal(paint.borderRightColor, "rgb(30, 99, 245)", "拖动时分隔线应变成品牌蓝");
-
-    // 松手时鼠标仍停在热区（手柄随侧栏移到了 x+60），hover 反馈生效 → 保持品牌蓝
-    const afterColor = await page.$eval(HANDLE, (el) => getComputedStyle(el.parentElement).borderRightColor);
-    assert.equal(afterColor, "rgb(30, 99, 245)", "松手后鼠标仍在热区，分隔线应保持品牌蓝");
-
-    // 鼠标真正移开热区后，才恢复成原来的浅灰
+    // 鼠标真正移开热区后隐藏
     await page.mouse.move(x + 120, y);
-    await sleep(150);
-    const awayColor = await page.$eval(HANDLE, (el) => getComputedStyle(el.parentElement).borderRightColor);
-    assert.equal(awayColor, "rgb(242, 242, 242)", "鼠标移开热区后分隔线应恢复浅灰");
+    await sleep(220);
+    assert.equal(await lineOpacity(), "0", "鼠标移开热区后指示线隐藏");
   });
 });
 

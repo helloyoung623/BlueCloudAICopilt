@@ -1,4 +1,4 @@
-import { forwardRef, memo, useEffect, useRef, useState } from "react";
+import { forwardRef, memo, useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { DotmCircular2 } from "../components/dotm-circular-2";
@@ -213,7 +213,7 @@ const TaskOperationsMenu = forwardRef<HTMLDivElement, {
   align?: "start" | "end";
   gap?: number;
   onTogglePin: () => void;
-  onRename: (title: string) => void;
+  onRename: () => void;
   onMove: (projectId: number | undefined) => void;
   onCreateProject: () => void;
   onArchive: () => void;
@@ -245,11 +245,7 @@ const TaskOperationsMenu = forwardRef<HTMLDivElement, {
         <button
           type="button"
           role="menuitem"
-          onClick={() => {
-            const name = window.prompt("请输入新的任务名称", task.title)?.trim();
-            if (name) onRename(name);
-            onClose();
-          }}
+          onClick={() => { onRename(); onClose(); }}
           className={itemClassName}
         >
           <img src="/assets/e2b81.svg" alt="" className="shrink-0" />
@@ -333,6 +329,92 @@ function LogoutDialog({ open, onOpenChange, onConfirm }: {
 }
 
 /* ------------------------------------------------------------------ *
+ * 任务重命名弹窗 — Figma「AI Chat Component / 重命名」(160:189900)
+ * 480 宽对话框：标题「重命名」+ 关闭 X，输入框 32px 高、1px 品牌蓝边框、
+ * 字数限制 0/30，底部取消 + 确定（确定时空标题禁用）
+ * ------------------------------------------------------------------ */
+export function RenameTaskDialog({ open, onOpenChange, title: initialTitle, onSubmit }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  onSubmit: (title: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  useEffect(() => {
+    if (open) setValue(initialTitle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    onSubmit(trimmed);
+    onOpenChange(false);
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="w-[480px] max-w-[calc(100%-32px)] gap-0 overflow-hidden rounded-[12px] border-0 bg-white p-0 shadow-[0_0_12px_rgba(0,0,0,0.08)] sm:max-w-[calc(100%-32px)] [&>button]:hidden"
+      >
+        <form onSubmit={submit}>
+          <div className="flex flex-col gap-[4px] px-[24px] pb-[16px] pt-[16px]">
+            <div className="relative h-[24px] w-full">
+              <DialogTitle className="font-['PingFang_SC:Medium'] text-[16px] font-medium leading-[24px] tracking-[0.001em] text-[rgba(0,0,0,0.88)]">
+                重命名
+              </DialogTitle>
+              <DialogClose asChild>
+                <button
+                  type="button"
+                  aria-label="关闭重命名弹窗"
+                  className="absolute right-0 top-0 flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[#f7f7f7]"
+                >
+                  <img src="/assets/f802d.svg" alt="" className="size-[16px]" />
+                </button>
+              </DialogClose>
+            </div>
+          </div>
+          <div className="px-[24px] pb-[24px]">
+            <div className="flex h-[32px] w-full items-center gap-[4px] rounded-[8px] border border-[#1e63f5] px-[8px]">
+              <input
+                autoFocus
+                required
+                maxLength={30}
+                value={value}
+                onChange={event => setValue(event.target.value)}
+                placeholder="请输入"
+                aria-label="任务名称"
+                className="min-w-0 flex-1 bg-transparent font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.88)] outline-none placeholder:text-[rgba(0,0,0,0.26)]"
+              />
+              <span className="shrink-0 font-['PingFang_SC:Regular'] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)]">
+                {value.length}/30
+              </span>
+            </div>
+          </div>
+          <div className="flex h-[68px] w-full items-center justify-end gap-[24px] border-t border-[#f2f2f2] px-[24px]">
+            <DialogClose asChild>
+              <button
+                type="button"
+                className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.6)] hover:bg-[#f7f7f7]"
+              >
+                取消
+              </button>
+            </DialogClose>
+            <button
+              type="submit"
+              disabled={!value.trim()}
+              className="cursor-pointer rounded-[4px] bg-[#1e63f5] px-[16px] py-[5px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(255,255,255,0.98)] hover:bg-[#1554d1] disabled:cursor-not-allowed disabled:bg-[#99C3FF] disabled:hover:bg-[#99C3FF]"
+            >
+              确定
+            </button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * 搜索弹窗 — Figma「AI Chat Component / - Search」(8844:40946)
  * 弹窗固定 560 高；搜索框激活仅放大镜 icon 变色；
  * 列表滚动到底部自动加载，每批 10 条，「没有更多了」仅在发生一次加载后出现
@@ -380,6 +462,8 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   // 侧栏项目菜单「编辑项目信息」：与项目卡片/项目详情共用 CreateProjectDialog 编辑态
   const [sidebarEditProjectId, setSidebarEditProjectId] = useState<number | null>(null);
+  // 任务重命名弹窗：点菜单「重命名」后记下这条任务，弹窗确定时提交新标题
+  const [renameTaskId, setRenameTaskId] = useState<number | null>(null);
   const [profileHovered, setProfileHovered] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   // 退出登录先弹确认，确定后才跳回登录页
@@ -390,8 +474,10 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
   const [projectsExpanded, setProjectsExpanded] = useState(true);
   const [tasksExpanded, setTasksExpanded] = useState(true);
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<number>>(() => new Set());
-  // 项目下任务 >= 10 时默认只显示前 5 条，点「更多」后该项目显示完整任务列表
+  // 项目下任务 >= 10 时默认只显示前 5 条，点「更多任务」后该项目显示完整任务列表
   const [expandedTaskProjectIds, setExpandedTaskProjectIds] = useState<Set<number>>(() => new Set());
+  // 项目 >= 10 时默认只显示前 5 个，点「更多项目」后显示全部（Figma 101:1826）
+  const [projectsShowAll, setProjectsShowAll] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [pendingTaskMoveId, setPendingTaskMoveId] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -413,6 +499,9 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
   const standaloneTasks = tasks.filter(item => item.projectId === undefined && !item.archived);
   // 归档项目从侧栏「项目」分组移除（归档页仍可查看/取消归档），与项目列表页口径一致
   const visibleSidebarProjects = projects.filter(project => !project.archived);
+  // 项目 >= 10 时默认只显示前 5 个，点「更多项目」后显示全部；折叠判断用全部项目
+  const projectsCollapsed = visibleSidebarProjects.length >= 10 && !projectsShowAll;
+  const displayedSidebarProjects = projectsCollapsed ? visibleSidebarProjects.slice(0, 5) : visibleSidebarProjects;
   // 「折叠所有项目」只在有项目处于展开态时出现；全部收起或「项目」分组自身收起时隐藏
   const hasExpandedProjects = projectsExpanded && visibleSidebarProjects.some(project => expandedProjectIds.has(project.id));
   const openMemoryPanel = () => {
@@ -484,50 +573,64 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
   };
   const renderTaskStatus = (taskId: number) =>
     renderStatusIcon(runningTaskIds.has(taskId), unreadTaskIds.has(taskId));
-  const renderTaskTrailing = (taskId: number, pinned: boolean, isHover: boolean, hasMenu: boolean) => (
-    <span className="relative flex size-[24px] shrink-0 items-center justify-center bg-[inherit]">
-      {renderTaskStatus(taskId) ?? (pinned ? (
-        <svg width="12" height="13" viewBox="0 0 12 12.6667" fill="none">
-          <path d={svgSidebar.p3170f400} fill="black" fillOpacity="0.26" />
-          <path d="M0 0H12V1.33333H0V0Z" fill="black" fillOpacity="0.26" />
+  const renderTaskTrailing = (taskId: number, pinned: boolean, isHover: boolean, hasMenu: boolean) => {
+    const status = renderTaskStatus(taskId);
+    const pinIcon = !status && pinned ? (
+      <svg width="12" height="13" viewBox="0 0 12 12.6667" fill="none">
+        <path d={svgSidebar.p3170f400} fill="black" fillOpacity="0.26" />
+        <path d="M0 0H12V1.33333H0V0Z" fill="black" fillOpacity="0.26" />
+      </svg>
+    ) : null;
+    const moreButton = (
+      <button
+        type="button"
+        aria-label="任务更多操作"
+        onClick={event => {
+          event.stopPropagation();
+          if (hasMenu) {
+            setMenuId(null);
+            return;
+          }
+          setMenuAnchor(event.currentTarget);
+          setProjectMenuId(null);
+          setMenuId(taskId);
+          setHoverId(taskId);
+        }}
+        className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[rgba(0,0,0,0.06)]"
+      >
+        <svg width="3" height="12" viewBox="0 0 2.66667 12" fill="none">
+          <path d={svgSidebar.p19c91c80} fill="black" fillOpacity="0.38" />
         </svg>
-      ) : null)}
-      {(isHover || hasMenu) && (
-        <span className="absolute inset-0 flex items-center justify-center bg-[inherit]">
-          <button
-            type="button"
-            aria-label="任务更多操作"
-            onClick={event => {
-              event.stopPropagation();
-              if (hasMenu) {
-                setMenuId(null);
-                return;
-              }
-              setMenuAnchor(event.currentTarget);
-              setProjectMenuId(null);
-              setMenuId(taskId);
-              setHoverId(taskId);
-            }}
-            className="flex size-[24px] cursor-pointer items-center justify-center rounded-[4px] hover:bg-[rgba(0,0,0,0.06)]"
-          >
-            <svg width="3" height="12" viewBox="0 0 2.66667 12" fill="none">
-              <path d={svgSidebar.p19c91c80} fill="black" fillOpacity="0.38" />
-            </svg>
-          </button>
+      </button>
+    );
+    const showMore = isHover || hasMenu;
+    // 有状态图标 / 置顶标记：保留常驻 24px 槽位（信息本身要占地方），hover 时「...」覆盖其上
+    if (status || pinIcon) {
+      return (
+        <span className="relative flex size-[24px] shrink-0 items-center justify-center bg-[inherit]">
+          {status ?? pinIcon}
+          {showMore && (
+            <span className="absolute inset-0 flex items-center justify-center bg-[inherit]">{moreButton}</span>
+          )}
         </span>
-      )}
-    </span>
-  );
+      );
+    }
+    // 无状态、未 hover：完全不占槽位，标题撑满整行；hover 时才渲染「...」把标题挤短
+    if (showMore) {
+      return (
+        <span className="flex size-[24px] shrink-0 items-center justify-center bg-[inherit]">{moreButton}</span>
+      );
+    }
+    return null;
+  };
   const closeContextMenu = () => {
     setMenuId(null);
     setProjectMenuId(null);
   };
   // 移动端是抽屉，宽度固定 240；桌面端按用户拖出来的宽度走
   const sidebarWidth = clampSidebarWidth(width ?? SIDEBAR_WIDTH_DEFAULT);
-  // 右边缘那条分隔线：鼠标悬停到热区、或正在拖动时都换成品牌蓝；线还是这一条，只是颜色变了
-  const [resizing, setResizing] = useState(false);
-  const [hoveringResize, setHoveringResize] = useState(false);
-  const resizeLineActive = resizing || hoveringResize;
+  // 拖动反馈由手柄里那条渐变指示线承担（Figma 10209:42379，左右两处同款），
+  // 父容器的 1px 分隔线保持静态浅灰，不再跟着变色。
 
   // 宽度 240→272 对应窄版→宽版布局（Figma 10197:26519）：
   // logo 从 y=52 上移到 y=20、新任务从 y=84 上移到 y=52、head 从 124 缩到 92，
@@ -542,7 +645,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
 
   return (
     <div
-      className={`relative shrink-0 self-stretch border-r ${resizeLineActive ? "border-[#1e63f5]" : "border-[#f2f2f2]"} bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
+      className={`relative shrink-0 self-stretch border-r border-[#f2f2f2] bg-white p-0 flex flex-col items-center${mobile ? " h-full min-h-0" : ""}`}
       style={{ width: mobile ? SIDEBAR_WIDTH_WIDE : sidebarWidth }}
     >
       {/* head —— 只有 logo / 搜索 / 新任务固定；新任务以下全部进入下方滚动区 */}
@@ -751,7 +854,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
         )}
         {projectsExpanded && visibleSidebarProjects.length > 0 && (
           <div className="flex w-full flex-col items-start">
-            {visibleSidebarProjects.map(project => {
+            {displayedSidebarProjects.map(project => {
               const projectTasks = tasks.filter(item => item.projectId === project.id && !item.archived);
               // 10 条及以上先露 5 条；「更多 / 收起」只在展开的项目下出现
               const tasksCollapsed = projectTasks.length >= 10 && !expandedTaskProjectIds.has(project.id);
@@ -896,13 +999,27 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
                         })}
                         className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
                       >
-                        {tasksCollapsed ? "更多" : "收起"}
+                        {tasksCollapsed ? "更多任务" : "收起"}
                       </button>
                     </div>
                   )}
                 </div>
               );
             })}
+            {/* 项目 >= 10 时折叠，点「更多项目 / 收起项目」切换全部（Figma 101:1826） */}
+            {/* 设计稿：「更多项目」与项目图标左对齐（缩进 12px），不同于「更多任务」与任务文字对齐（36px） */}
+            {visibleSidebarProjects.length >= 10 && (
+              <div className="flex w-full flex-col items-start px-[8px] pb-[8px] pt-[10px]">
+                <button
+                  type="button"
+                  aria-label={projectsCollapsed ? "展开全部项目" : "收起部分项目"}
+                  onClick={() => setProjectsShowAll(showAll => !showAll)}
+                  className="cursor-pointer rounded-[4px] px-[4px] py-[3px] text-[14px] font-normal leading-[22px] tracking-[0.014px] text-[rgba(0,0,0,0.38)] hover:bg-[var(--Background-Gray-Hover,#E6E6E6)]"
+                >
+                  {projectsCollapsed ? "更多项目" : "收起项目"}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1005,6 +1122,14 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
         }}
       />
 
+      {/* 任务重命名弹窗：预填当前标题，确定后调用 renameTask 提交 */}
+      <RenameTaskDialog
+        open={renameTaskId !== null}
+        onOpenChange={open => { if (!open) setRenameTaskId(null); }}
+        title={renameTaskId === null ? "" : tasks.find(item => item.id === renameTaskId)?.title ?? ""}
+        onSubmit={title => { if (renameTaskId !== null) taskActions.renameTask(renameTaskId, title); }}
+      />
+
       {menuTask && (
         <TaskOperationsMenu
           ref={menuRef}
@@ -1012,7 +1137,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
           task={menuTask}
           projects={projects}
           onTogglePin={() => taskActions.togglePinned(menuTask.id, !menuTask.pinned)}
-          onRename={title => taskActions.renameTask(menuTask.id, title)}
+          onRename={() => setRenameTaskId(menuTask.id)}
           onMove={projectId => {
             taskActions.moveTask(menuTask.id, projectId);
             if (projectId !== undefined) setExpandedProjectIds(current => new Set(current).add(projectId));
@@ -1206,7 +1331,7 @@ function SidebarImpl({ projects, setProjects, onClose, onNewChat, onOpenProjects
       {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
       {/* 右边缘的拖拽手柄：只在桌面端出现，移动端是固定宽度的抽屉 */}
       {!mobile && onWidthChange && (
-        <SidebarResizeHandle width={sidebarWidth} onWidthChange={onWidthChange} onDraggingChange={setResizing} onHoverChange={setHoveringResize} />
+        <SidebarResizeHandle width={sidebarWidth} onWidthChange={onWidthChange} />
       )}
     </div>
   );

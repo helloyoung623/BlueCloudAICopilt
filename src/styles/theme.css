@@ -200,3 +200,23 @@
     line-height: 1.5;
   }
 }
+
+/* 拖动调整大小时显示的指示线（Figma 10209:42379，fileKey lozdW8OTkgL8sM546gweEm）：
+   2px 宽、垂直渐变——顶端透明 → 中部品牌蓝 #2064F5 → 底端透明，贯穿所在边全长。
+   侧栏右边缘、详情栏左边缘共用同一条线，不分左右，样式完全一致；
+   由各自的拖拽手柄在 hover 或拖动时切换 opacity 显示。 */
+.resize-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(32, 100, 245, 0) 0%,
+    rgba(32, 100, 245, 1) 50%,
+    rgba(32, 100, 245, 0) 100%
+  );
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
