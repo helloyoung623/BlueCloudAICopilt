@@ -11,7 +11,7 @@ import { SelectFileDialog } from "../components/select-file-dialog";
 import type { CloudSourceTab } from "../components/select-file-dialog";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "../components/project-settings-dialogs";
 import type { ProjectMember } from "../components/project-settings-dialogs";
-import { getAvatarInitial } from "../components/avatar-initial";
+import { AvatarInitialText } from "../components/avatar-initial-text";
 import { ChatInput } from "../chat/ChatInput";
 import type { HistoryItem } from "../chat/types";
 import type { ProjectItem } from "./types";
@@ -375,7 +375,7 @@ function ProjectActionsMenu({ project, anchor, gap = 0, onClose, onEdit, onArchi
                   >
                     <span className="flex h-[24px] max-w-[144px] items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px]">
                       <span className="flex size-[20px] shrink-0 items-center justify-center rounded-full bg-[#1e63f5] font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(255,255,255,0.98)]">
-                        {getAvatarInitial(member)}
+                        <AvatarInitialText name={member} />
                       </span>
                       <span className="truncate font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.6)]">
                         {member}
@@ -899,7 +899,7 @@ function ArchiveView({ projects, tasks, onUnarchiveProject, onEditProject, onTra
                       >
                         <span className="flex h-[24px] max-w-[144px] items-center gap-[4px] rounded-[16px] bg-[#f7f7f7] pl-[2px] pr-[8px]">
                           <span className="flex size-[20px] shrink-0 items-center justify-center rounded-full bg-[#1e63f5] font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(255,255,255,0.98)]">
-                            {getAvatarInitial(member)}
+                            <AvatarInitialText name={member} />
                           </span>
                           <span className="truncate font-['PingFang_SC:Regular'] text-[12px] leading-[20px] tracking-[0.012px] text-[rgba(0,0,0,0.6)]">
                             {member}
@@ -977,7 +977,7 @@ function ProjectConfigurationSections({ project, onEditInstruction, onAddMember 
         {project.members?.length ? (
           <div className="flex items-center py-[4px]">
             {project.members.slice(0, 8).map(member => (
-              <span key={member.id} title={member.name} className="-mr-[8px] flex size-[24px] shrink-0 items-center justify-center rounded-full border border-white text-[12px] font-normal text-white" style={{ backgroundColor: member.color }}>{getAvatarInitial(member.name)}</span>
+              <span key={member.id} title={member.name} className="-mr-[8px] flex size-[24px] shrink-0 items-center justify-center rounded-full border border-white text-[12px] font-normal text-white" style={{ backgroundColor: member.color }}><AvatarInitialText name={member.name} /></span>
             ))}
             {project.members.length > 8 && <span className="ml-[8px] rounded-full border border-[#ebf4ff] px-[4px] text-[12px] text-[#1e63f5]">+{project.members.length - 8}</span>}
           </div>

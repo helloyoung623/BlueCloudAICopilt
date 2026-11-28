@@ -18,7 +18,6 @@ import { OperationMenu } from "./components/operation-menu";
 import { AddContentMenu } from "./components/add-content-menu";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
-import { getAvatarInitial } from "./components/avatar-initial";
 import { UserAvatar } from "./components/user-avatar";
 import { useUserProfile } from "./user-profile";
 import { AttachmentTray, MessageAttachments, MAX_ATTACHMENTS, formatFileSize, getAttachmentExtension, getAttachmentIcon, getAttachmentValidationError, makeVirtualFile, readFileMeta, readVirtualFile } from "./components/attachment-tray";
