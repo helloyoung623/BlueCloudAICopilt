@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { motion } from "motion/react";
 import svgTask from "@/imports/任务执行过程/svg-tkwirjnqmk";
 import svgSearching from "@/imports/搜索中/svg-pcft5f0tqe";
-import { PptPanel, PptResultMessage } from "./components/ppt-result";import { DotmCircular2 } from "./components/dotm-circular-2";
+import { PptResultMessage } from "./components/ppt-result";import { DotmCircular2 } from "./components/dotm-circular-2";
 import { RadarArcLoader } from "./components/radar-arc-loader";
 import { HomeBackground } from "./components/home-background";
 import { RichText, RICH_TEXT_CSS, normalizeAiHtml, visibleTextLength, truncateHtmlByVisibleText } from "./components/rich-text";
@@ -79,6 +79,7 @@ const AutomationDetailPanel = lazy(() => import("./components/automation/automat
 const DeleteTaskDialog = lazy(() => import("./components/automation/delete-task-dialog").then(m => ({ default: m.DeleteTaskDialog })));
 const ConnectorsView = lazy(() => import("./components/connectors-view").then(m => ({ default: m.ConnectorsView })));
 const LibraryView = lazy(() => import("./components/library-view").then(m => ({ default: m.LibraryView })));
+const PptPanel = lazy(() => import("./components/ppt-panel").then(m => ({ default: m.PptPanel })));
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -2201,7 +2202,7 @@ export default function App() {
         </Suspense>
       )}
       {/* right-hand PPT viewer, shares the row with the chat column */}
-      {stage === "preview" && <PptPanel onClose={() => setStage("idle")} />}
+      {stage === "preview" && <Suspense fallback={null}><PptPanel onClose={() => setStage("idle")} /></Suspense>}
       {/* panels / preview (z-50, fixed) */}
       {/*  these stay here so they overlay regardless of sidebar */}
 
