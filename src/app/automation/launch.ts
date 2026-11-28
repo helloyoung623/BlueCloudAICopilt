@@ -1,5 +1,5 @@
 import type { ChatAttachment } from "../components/attachment-tray";
-import type { ScheduleState } from "../components/automation-view";
+import type { ScheduleState } from "../components/automation/types";
 import { condenseAutomationTitle } from "../automation-title.ts";
 
 // 「新建自动化任务」弹窗点创建时生成的请求参数。纯函数：不碰 UI 状态，也不发请求。

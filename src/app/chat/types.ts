@@ -2,7 +2,7 @@ import type { OneDriveFile, OutlookMail } from "../components/result-cards";
 import type { ChatAttachment } from "../components/attachment-tray";
 import type { TaskArtifact } from "../components/task-artifacts";
 import type { AgentSource } from "../agent-client";
-import type { AutomationIcon, AutomationCardStatus, ScheduleState } from "../components/automation-view";
+import type { AutomationIcon, AutomationCardStatus, ScheduleState } from "../components/automation/types";
 
 // 执行过程里一种步骤图标的语义键；界面只用它选图标，不显示 type 文字。
 export type ToolKind = "search" | "read" | "extract" | "analyze" | "generate" | "check" | "summarize" | "execute" | "fail" | "chevron"

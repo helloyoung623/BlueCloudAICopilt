@@ -1,9 +1,9 @@
-import { forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
+import { forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import type { CSSProperties } from "react";
 import { motion } from "motion/react";
 import svgTask from "@/imports/任务执行过程/svg-tkwirjnqmk";
 import svgSearching from "@/imports/搜索中/svg-pcft5f0tqe";
-import { PptPanel, PptResultMessage } from "./components/ppt-result";import { DotmCircular2 } from "./components/dotm-circular-2";
+import { PptResultMessage } from "./components/ppt-result";import { DotmCircular2 } from "./components/dotm-circular-2";
 import { RadarArcLoader } from "./components/radar-arc-loader";
 import { HomeBackground } from "./components/home-background";
 import { RichText, RICH_TEXT_CSS, normalizeAiHtml, visibleTextLength, truncateHtmlByVisibleText } from "./components/rich-text";
@@ -16,7 +16,6 @@ import { Sheet } from "./components/ui/sheet";
 import { useIsMobile } from "./components/ui/use-mobile";
 import { OperationMenu } from "./components/operation-menu";
 import { AddContentMenu } from "./components/add-content-menu";
-import { ConnectorsView } from "./components/connectors-view";
 import { ProjectInstructionDialog, ProjectMembersDialog, ProjectMemberTag } from "./components/project-settings-dialogs";
 import type { ProjectMember } from "./components/project-settings-dialogs";
 import { getAvatarInitial } from "./components/avatar-initial";
@@ -30,7 +29,6 @@ import { DEMO_PROJECT_FILES, ProjectFilesPanel, createCloudSourceFiles, pickSour
 import type { ProjectFiles } from "./components/project-files";
 import { SelectFileDialog } from "./components/select-file-dialog";
 import type { CloudSourceTab } from "./components/select-file-dialog";
-import { ImportTaskPanel } from "./components/import-task-panel";
 import type { ImportTask } from "./components/import-task-panel";
 import { FileFilterButton, EMPTY_UPLOADER_FILTER, SELF_OWNER } from "./components/file-filter";
 import type { FileFormat, FileStatus, TimeFilter, UploaderFilter } from "./components/file-filter";
@@ -39,9 +37,12 @@ import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 import { type AgentEvent, type AgentSource } from "./agent-client";
 import { condenseAutomationTitle } from "./automation-title";
-import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
-import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, useDismissOnOutside, TASK_OPERATIONS, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
+// 自动化的常量/工具/类型直连子模块；组件走 lazy，避免聚合出口把整模块拖进首屏。
+import { INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, TASK_OPERATIONS } from "./components/automation/constants";
+import { summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule } from "./components/automation/utils";
+import { useDismissOnOutside } from "./components/automation/hooks";
+import type { AutomationIcon, AutomationTask, AutomationCardStatus, ScheduleState, RunRecord } from "./components/automation/types";
 import type { AgentRound, HistoryItem, Message, ProcessPreset, ProcessVariant, ToolKind } from "./chat/types";
 import { deriveRunningTaskIds, findLastIndex, freezePreviousMessages, getAnswerDoneKey, sameIdSet, sameSidebarTasks, toInstantMessages, toSidebarTasks } from "./chat/conversation-state";
 import { ConversationDomainProvider, useLatestHandlers, useStableValue } from "./chat/conversation-context";
@@ -56,7 +57,6 @@ import { startAgentStream } from "./chat/agent-stream";
 import type { OutlinePage, PptPageCount, PptStage } from "./ppt/types";
 import { buildAutomationLaunch, type AutomationLaunchInput } from "./automation/launch";
 import { addSourcesToProject, buildImportTasks, parseFileSize } from "./projects/project-files";
-import { AIIcon, OutlinePanel, PptGenerationToggle, RequirementPanel } from "./ppt/panels";
 import { ExecutionProcess, MergedProcess, PROCESS_PRESETS, intentIcon, runningActionText, toToolKind } from "./chat/execution-process";
 import { ChatInput } from "./chat/ChatInput";
 import { ChatView } from "./chat/ChatView";
@@ -68,6 +68,19 @@ import { readStoredSidebarWidth, storeSidebarWidth } from "./sidebar/sidebar-wid
 import { DeleteChatTaskDialog, DeleteProjectDialog, SearchDialog } from "./dialogs/AppDialogs";
 import { HomeView } from "./home/HomeView";
 import { ChatHeader, TaskHeaderActions } from "./chat/ChatHeader";
+
+// ── 按需加载的页面/弹层 ──────────────────────────────────────────────────────
+// 这些模块只在用户点开对应入口后才渲染；拆成独立 chunk，首屏不再下载其代码。
+// fallback 用 null：它们出现时容器已就位，不额外占空间、不会让布局跳动。
+const AutomationView = lazy(() => import("./components/automation/automation-list").then(m => ({ default: m.AutomationView })));
+const AutomationDetailPanel = lazy(() => import("./components/automation/automation-detail-panel").then(m => ({ default: m.AutomationDetailPanel })));
+const DeleteTaskDialog = lazy(() => import("./components/automation/delete-task-dialog").then(m => ({ default: m.DeleteTaskDialog })));
+const ConnectorsView = lazy(() => import("./components/connectors-view").then(m => ({ default: m.ConnectorsView })));
+const LibraryView = lazy(() => import("./components/library-view").then(m => ({ default: m.LibraryView })));
+const PptPanel = lazy(() => import("./components/ppt-panel").then(m => ({ default: m.PptPanel })));
+const RequirementPanel = lazy(() => import("./ppt/flow-panels").then(m => ({ default: m.RequirementPanel })));
+const OutlinePanel = lazy(() => import("./ppt/flow-panels").then(m => ({ default: m.OutlinePanel })));
+const ImportTaskPanel = lazy(() => import("./components/import-task-panel").then(m => ({ default: m.ImportTaskPanel })));
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -283,6 +296,11 @@ export default function App() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  // 资料库首次打开后才加载并挂载；之后即使关闭也保持挂载（仅 hidden），保住筛选/滚动状态。
+  const [libraryEverOpened, setLibraryEverOpened] = useState(false);
+  useEffect(() => {
+    if (libraryOpen) setLibraryEverOpened(true);
+  }, [libraryOpen]);
   // 资料库「上传到项目 → 新建项目」唤起同一个创建项目弹窗
   const [libraryCreateProjectOpen, setLibraryCreateProjectOpen] = useState(false);
   // 删除项目统一先弹确认窗（侧栏「···」、项目列表、项目详情、归档页共用）
@@ -2006,11 +2024,15 @@ export default function App() {
           onNewChat={handleNewChat}
         />
         )}
+        {libraryEverOpened && (
         <div className={libraryOpen ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+          <Suspense fallback={null}>
           <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} onCreateProject={() => setLibraryCreateProjectOpen(true)} />
+          </Suspense>
         </div>
+        )}
         {libraryOpen ? null : automationOpen
-          ? <AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} onLocateRun={handleLocateRunRecord} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
+          ? <Suspense fallback={null}><AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} onLocateRun={handleLocateRunRecord} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} /></Suspense>
           : archiveOpen
           ? <ProjectArchivePage
               projects={projects}
@@ -2023,7 +2045,7 @@ export default function App() {
               onSelectTask={id => { setArchiveOpen(false); setConnectorOpen(false); handleSelectHistory(id); }}
             />
           : connectorOpen
-          ? <ConnectorsView />
+          ? <Suspense fallback={null}><ConnectorsView /></Suspense>
           : projectListOpen
           ? <ProjectListPage
               projects={projects}
@@ -2123,12 +2145,14 @@ export default function App() {
           onOpenChange={open => { if (!open) setDeleteProjectId(null); }}
           onConfirm={handleConfirmDeleteProject}
         />
+        <Suspense fallback={null}>
         <DeleteTaskDialog
           open={deleteAutomationTask !== null}
           taskTitle={deleteAutomationTask?.title ?? ""}
           onOpenChange={next => { if (!next) setDeleteAutomationTaskId(null); }}
           onConfirm={confirmDeleteAutomationTask}
         />
+        </Suspense>
         <DeleteChatTaskDialog
           open={deleteChatTaskId !== null}
           onOpenChange={next => { if (!next) setDeleteChatTaskId(null); }}
@@ -2148,6 +2172,7 @@ export default function App() {
           宽度与响应规则统一走 use-detail-panel-width：默认内容区 50%（320~720，可拖拽），
           内容区不足 640 时铺满内容区（不浮起来），顶部左箭头返回会话 */}
       {chatAutomationTask && (
+        <Suspense fallback={null}>
         <AutomationDetailPanel
           task={chatAutomationTask}
           contentAware
@@ -2175,23 +2200,28 @@ export default function App() {
             }
           }}
         />
+        </Suspense>
       )}
       {/* right-hand PPT viewer, shares the row with the chat column */}
-      {stage === "preview" && <PptPanel onClose={() => setStage("idle")} />}
+      {stage === "preview" && <Suspense fallback={null}><PptPanel onClose={() => setStage("idle")} /></Suspense>}
       {/* panels / preview (z-50, fixed) */}
       {/*  these stay here so they overlay regardless of sidebar */}
 
+      <Suspense fallback={null}>
       <RequirementPanel
         visible={stage === "requirement"}
         onClose={resetPptFlow}
         onConfirm={handleRequirementConfirm}
         initialPages={pptPages}
       />
+      </Suspense>
+      <Suspense fallback={null}>
       <OutlinePanel
         visible={stage === "outline"}
         onClose={resetPptFlow}
         onConfirm={handleOutlineConfirm}
       />
+      </Suspense>
     </div>
     <SearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} />
     {/* Figma 9244:31238：选人后统一在 App 层弹确认窗，点确定才真正移交 */}
@@ -2209,6 +2239,7 @@ export default function App() {
     />
     {/* 导入面板只在「项目」「资料库」两个导航内出现；切到其他页面仅隐藏，记录与进度保留 */}
     {importTasks && (libraryOpen || projectListOpen || activeProjectId !== null) && (
+      <Suspense fallback={null}>
       <ImportTaskPanel
         tasks={importTasks}
         collapsed={importCollapsed}
@@ -2217,6 +2248,7 @@ export default function App() {
         onRetryAll={retryFailedImports}
         onClose={() => setImportTasks(null)}
       />
+      </Suspense>
     )}
     <Toaster position="top-center" />
     </Sheet>
