@@ -11,19 +11,21 @@ import {
 
 // 侧边栏右边缘的拖拽手柄：按住左右拖动改宽，双击回到默认宽度，方向键微调。
 // 交互与右侧详情栏的手柄（use-detail-panel-width）保持一致。
-export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange }: {
+export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange, onHoverChange }: {
   width: number;
   onWidthChange: (width: number) => void;
   // 拖动状态回报给外层：拖动时把侧栏右边缘那条分隔线换成品牌蓝，作为拖动反馈
   onDraggingChange?: (dragging: boolean) => void;
+  // 悬停状态回报给外层：鼠标移到右边缘那条线（热区）上就把分隔线换成品牌蓝
+  onHoverChange?: (hovering: boolean) => void;
 }) {
-  const drag = useRef<{ startX: number; startWidth: number } | null>(null);
+  const drag = useRef<{ startX: number; startWidth: number; latestWidth: number } | null>(null);
   // 双击复位：pointerdown 里自己记时间戳判断，不依赖 dblclick
   // （手柄上有 preventDefault + 指针捕获，部分路径下 dblclick 不会触发）
   const lastDown = useRef<{ time: number; x: number; y: number } | null>(null);
   // 拖动过程要读最新的宽度与回调，避免闭包拿到旧值
-  const live = useRef({ width, onWidthChange, onDraggingChange });
-  live.current = { width, onWidthChange, onDraggingChange };
+  const live = useRef({ width, onWidthChange, onDraggingChange, onHoverChange });
+  live.current = { width, onWidthChange, onDraggingChange, onHoverChange };
 
   useEffect(() => () => {
     document.body.style.userSelect = "";
@@ -32,9 +34,17 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange }: 
 
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!drag.current) return;
+    const current = drag.current;
     drag.current = null;
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
+    // 松手落在 241~271 的过渡带：按拖动方向吸附到稳定态
+    // 往宽拖 → 272（左 logo 右操作项）；往窄拖 → 240（操作项在 logo 上方）
+    const target = current.latestWidth;
+    if (target > 240 && target < 272) {
+      const movingWider = target >= current.startWidth;
+      live.current.onWidthChange(movingWider ? 272 : 240);
+    }
     live.current.onDraggingChange?.(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -49,6 +59,9 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange }: 
     "aria-valuemax": SIDEBAR_WIDTH_MAX,
     "aria-valuenow": width,
     tabIndex: 0,
+    // 悬停到右边缘热区就回报，让那条分隔线变品牌蓝（不需要真的按住拖动）
+    onPointerEnter: () => live.current.onHoverChange?.(true),
+    onPointerLeave: () => live.current.onHoverChange?.(false),
     onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
       event.preventDefault();
@@ -65,7 +78,7 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange }: 
       // 会在右边缘画出一圈 2px 蓝色描边，拖动时看着像多出来的一条线。
       // 焦点环留给键盘（Tab 过来时显示），鼠标拖动只留 col-resize 光标。
       event.currentTarget.setPointerCapture(event.pointerId);
-      drag.current = { startX: event.clientX, startWidth: live.current.width };
+      drag.current = { startX: event.clientX, startWidth: live.current.width, latestWidth: live.current.width };
       live.current.onDraggingChange?.(true);
       document.body.style.userSelect = "none";
       document.body.style.cursor = "col-resize";
@@ -74,7 +87,9 @@ export function SidebarResizeHandle({ width, onWidthChange, onDraggingChange }: 
       const current = drag.current;
       if (!current) return;
       // 侧边栏在左边：往右拖 = 变宽
-      live.current.onWidthChange(resolveDraggedSidebarWidth(current.startWidth, current.startX, event.clientX));
+      const nextWidth = resolveDraggedSidebarWidth(current.startWidth, current.startX, event.clientX);
+      current.latestWidth = nextWidth;
+      live.current.onWidthChange(nextWidth);
     },
     onPointerUp: endDrag,
     // 手指被系统手势打断 / pointercancel 时也要收尾，别把 body 的 cursor 留在 col-resize

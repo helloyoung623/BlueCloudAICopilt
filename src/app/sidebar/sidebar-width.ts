@@ -3,6 +3,8 @@
 
 /** 默认宽度：与设计稿一致 */
 export const SIDEBAR_WIDTH_DEFAULT = 240;
+/** 宽版布局宽度：拖动吸附点（241~271 往宽拖到此处），也是浮层抽屉固定宽度（Figma 9254:45576 Sidebar=272） */
+export const SIDEBAR_WIDTH_WIDE = 272;
 /** 最窄宽度：再窄就放不下「项目 / 自动化任务 / 资料库」这些导航项 */
 export const SIDEBAR_WIDTH_MIN = 200;
 /** 最宽宽度：再宽会把主内容区挤得太窄 */
