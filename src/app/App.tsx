@@ -1,4 +1,4 @@
-import { forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
+import { forwardRef, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import type { CSSProperties } from "react";
 import { motion } from "motion/react";
 import svgTask from "@/imports/任务执行过程/svg-tkwirjnqmk";
@@ -41,7 +41,11 @@ import { type AgentEvent, type AgentSource } from "./agent-client";
 import { condenseAutomationTitle } from "./automation-title";
 import { LibraryView } from "./components/library-view";
 import { ListPageHeader } from "./components/list-page-header";
-import { AutomationView, AutomationDetailPanel, DeleteTaskDialog, INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule, useDismissOnOutside, TASK_OPERATIONS, type AutomationIcon, type AutomationTask, type AutomationCardStatus, type ScheduleState, type RunRecord } from "./components/automation-view";
+// 自动化的常量/工具/类型直连子模块；组件走 lazy，避免聚合出口把整模块拖进首屏。
+import { INITIAL_TASKS as INITIAL_AUTOMATION_TASKS, TASK_OPERATIONS } from "./components/automation/constants";
+import { summarizeSchedule, describeSchedule, cardSubtitle, resolveAutomationIcon, automationIconSrc, buildRunRecords, makeRunRecord, buildDefaultSchedule } from "./components/automation/utils";
+import { useDismissOnOutside } from "./components/automation/hooks";
+import type { AutomationIcon, AutomationTask, AutomationCardStatus, ScheduleState, RunRecord } from "./components/automation/types";
 import type { AgentRound, HistoryItem, Message, ProcessPreset, ProcessVariant, ToolKind } from "./chat/types";
 import { deriveRunningTaskIds, findLastIndex, freezePreviousMessages, getAnswerDoneKey, sameIdSet, sameSidebarTasks, toInstantMessages, toSidebarTasks } from "./chat/conversation-state";
 import { ConversationDomainProvider, useLatestHandlers, useStableValue } from "./chat/conversation-context";
@@ -68,6 +72,13 @@ import { readStoredSidebarWidth, storeSidebarWidth } from "./sidebar/sidebar-wid
 import { DeleteChatTaskDialog, DeleteProjectDialog, SearchDialog } from "./dialogs/AppDialogs";
 import { HomeView } from "./home/HomeView";
 import { ChatHeader, TaskHeaderActions } from "./chat/ChatHeader";
+
+// ── 按需加载的页面/弹层 ──────────────────────────────────────────────────────
+// 这些模块只在用户点开对应入口后才渲染；拆成独立 chunk，首屏不再下载其代码。
+// fallback 用 null：它们出现时容器已就位，不额外占空间、不会让布局跳动。
+const AutomationView = lazy(() => import("./components/automation/automation-list").then(m => ({ default: m.AutomationView })));
+const AutomationDetailPanel = lazy(() => import("./components/automation/automation-detail-panel").then(m => ({ default: m.AutomationDetailPanel })));
+const DeleteTaskDialog = lazy(() => import("./components/automation/delete-task-dialog").then(m => ({ default: m.DeleteTaskDialog })));
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -2010,7 +2021,7 @@ export default function App() {
           <LibraryView active={libraryOpen} onAddToTask={handleAddLibraryFileToTask} projects={projects.filter(project => !project.archived).map(project => ({ id: project.id, name: project.name }))} onUploadToProject={(file, projectId) => startFileImport([{ name: file.name, size: parseFileSize(file.size) }], "产物", projectId)} onCreateProject={() => setLibraryCreateProjectOpen(true)} />
         </div>
         {libraryOpen ? null : automationOpen
-          ? <AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} onLocateRun={handleLocateRunRecord} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} />
+          ? <Suspense fallback={null}><AutomationView tasks={automationTasks} onTasksChange={applyTasks} onLaunchChat={handleLaunchAutomationChat} onRunTask={handleRunAutomationTask} onLocateRun={handleLocateRunRecord} navCollapsed={!isMobile && !sidebarOpen} onSidebarToggle={() => setSidebarOpen(o => !o)} onNewChat={handleNewChat} /></Suspense>
           : archiveOpen
           ? <ProjectArchivePage
               projects={projects}
@@ -2123,12 +2134,14 @@ export default function App() {
           onOpenChange={open => { if (!open) setDeleteProjectId(null); }}
           onConfirm={handleConfirmDeleteProject}
         />
+        <Suspense fallback={null}>
         <DeleteTaskDialog
           open={deleteAutomationTask !== null}
           taskTitle={deleteAutomationTask?.title ?? ""}
           onOpenChange={next => { if (!next) setDeleteAutomationTaskId(null); }}
           onConfirm={confirmDeleteAutomationTask}
         />
+        </Suspense>
         <DeleteChatTaskDialog
           open={deleteChatTaskId !== null}
           onOpenChange={next => { if (!next) setDeleteChatTaskId(null); }}
@@ -2148,6 +2161,7 @@ export default function App() {
           宽度与响应规则统一走 use-detail-panel-width：默认内容区 50%（320~720，可拖拽），
           内容区不足 640 时铺满内容区（不浮起来），顶部左箭头返回会话 */}
       {chatAutomationTask && (
+        <Suspense fallback={null}>
         <AutomationDetailPanel
           task={chatAutomationTask}
           contentAware
@@ -2175,6 +2189,7 @@ export default function App() {
             }
           }}
         />
+        </Suspense>
       )}
       {/* right-hand PPT viewer, shares the row with the chat column */}
       {stage === "preview" && <PptPanel onClose={() => setStage("idle")} />}
